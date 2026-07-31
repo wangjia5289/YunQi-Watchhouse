@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   dateFromLocalIso,
   formatClock,
@@ -8,7 +8,6 @@ import {
 } from "../../lib/format";
 import {
   ActivityState,
-  TimelineEntry,
   TimelineFilters,
   deleteTimelineSession,
   deleteTimelineSessions,
@@ -27,6 +26,7 @@ import {
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { useLocale } from "../../lib/i18n";
+import { summarizeByHour } from "./timelineModel";
 import { useTimeline } from "./useTimeline";
 import { ApplicationIcon } from "../applications/ApplicationIcon";
 
@@ -55,20 +55,6 @@ function DayButton({
   );
 }
 
-interface HourApplication {
-  id: number;
-  name: string;
-  durationMs: number;
-}
-
-interface HourSummary {
-  startedAtMs: number;
-  activeDurationMs: number;
-  idleDurationMs: number;
-  sessionCount: number;
-  applications: HourApplication[];
-}
-
 type TimelineActionDialog = {
   kind: "note" | "category" | "delete";
   sessionIds: number[];
@@ -78,7 +64,8 @@ type TimelineActionDialog = {
 function optionalDurationMilliseconds(value: string): number | null {
   if (!value) return null;
   const minutes = Number(value);
-  return Number.isFinite(minutes) && minutes >= 0 ? minutes * 60_000 : null;
+  const milliseconds = minutes * 60_000;
+  return Number.isFinite(milliseconds) && milliseconds >= 0 ? milliseconds : null;
 }
 
 function optionalClockMinutes(value: string): number | null {
@@ -89,65 +76,20 @@ function optionalClockMinutes(value: string): number | null {
     : null;
 }
 
-function summarizeByHour(entries: TimelineEntry[]): HourSummary[] {
-  const groups = new Map<number, {
-    activeDurationMs: number;
-    idleDurationMs: number;
-    sessionIds: Set<number>;
-    applications: Map<number, HourApplication>;
-  }>();
-
-  for (const entry of entries) {
-    let cursor = entry.startedAtMs;
-    while (cursor < entry.endedAtMs) {
-      const hour = new Date(cursor);
-      hour.setMinutes(0, 0, 0);
-      const hourStart = hour.getTime();
-      const segmentEnd = Math.min(entry.endedAtMs, hourStart + 60 * 60 * 1_000);
-      const durationMs = Math.max(0, segmentEnd - cursor);
-      const group = groups.get(hourStart) ?? {
-        activeDurationMs: 0,
-        idleDurationMs: 0,
-        sessionIds: new Set<number>(),
-        applications: new Map<number, HourApplication>(),
-      };
-      group.sessionIds.add(entry.sessionId);
-      if (entry.state === "IDLE") {
-        group.idleDurationMs += durationMs;
-      } else {
-        group.activeDurationMs += durationMs;
-        if (entry.applicationId !== null) {
-          const application = group.applications.get(entry.applicationId) ?? {
-            id: entry.applicationId,
-            name: entry.applicationName ?? "Unknown application",
-            durationMs: 0,
-          };
-          application.durationMs += durationMs;
-          group.applications.set(entry.applicationId, application);
-        }
-      }
-      groups.set(hourStart, group);
-      cursor = segmentEnd;
-    }
-  }
-
-  return [...groups.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([startedAtMs, group]) => ({
-      startedAtMs,
-      activeDurationMs: group.activeDurationMs,
-      idleDurationMs: group.idleDurationMs,
-      sessionCount: group.sessionIds.size,
-      applications: [...group.applications.values()]
-        .sort((left, right) => right.durationMs - left.durationMs)
-        .slice(0, 3),
-    }));
+interface TimelineProps {
+  initialDate?: string;
+  initialSessionId?: number;
+  onDateChange?: (date: string) => void;
 }
 
-export function Timeline() {
+export function Timeline({
+  initialDate,
+  initialSessionId,
+  onDateChange,
+}: TimelineProps) {
   const { locale, t } = useLocale();
   const today = localIsoDate();
-  const [date, setDate] = useState(today);
+  const [date, setDate] = useState(initialDate ?? today);
   const [view, setView] = useState<"overview" | "details">("overview");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -201,14 +143,49 @@ export function Timeline() {
   const [importFormat, setImportFormat] = useState<"json" | "csv">("json");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [conflictPolicy, setConflictPolicy] = useState<"skip" | "merge">("skip");
+  const [highlightedSessionId, setHighlightedSessionId] = useState<number | null>(
+    initialSessionId ?? null,
+  );
+  const locatedSessionRef = useRef<number | null>(null);
   const filteredEntries = entries;
   const hours = useMemo(() => summarizeByHour(filteredEntries), [filteredEntries]);
   const visibleEntries = filteredEntries;
+
+  const selectDate = (nextDate: string) => {
+    setDate(nextDate);
+    onDateChange?.(nextDate);
+  };
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDebouncedQuery(query), 180);
     return () => window.clearTimeout(timeout);
   }, [query]);
+  useEffect(() => {
+    if (!initialSessionId) return;
+    locatedSessionRef.current = null;
+    setHighlightedSessionId(initialSessionId);
+    setView("details");
+  }, [initialSessionId]);
+  useEffect(() => {
+    if (!initialSessionId || locatedSessionRef.current === initialSessionId || loading) return;
+    const targetLoaded = entries.some((entry) => entry.sessionId === initialSessionId);
+    if (!targetLoaded) {
+      if (hasMore) loadAll();
+      return;
+    }
+    locatedSessionRef.current = initialSessionId;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(`timeline-session-${initialSessionId}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    const timeout = window.setTimeout(() => {
+      setHighlightedSessionId((current) => current === initialSessionId ? null : current);
+    }, 4_000);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
+  }, [entries, hasMore, initialSessionId, loadAll, loading]);
   useEffect(() => {
     setSelectedIds(new Set());
   }, [date, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo]);
@@ -287,7 +264,7 @@ export function Timeline() {
         <div className="date-controls">
           <DayButton
             direction="previous"
-            onClick={() => setDate(shiftLocalDate(date, -1))}
+            onClick={() => selectDate(shiftLocalDate(date, -1))}
           />
           <label className="date-picker">
             <span>{dateTitle}</span>
@@ -296,7 +273,7 @@ export function Timeline() {
               value={date}
               max={today}
               onChange={(event) => {
-                if (event.currentTarget.value) setDate(event.currentTarget.value);
+                if (event.currentTarget.value) selectDate(event.currentTarget.value);
               }}
               aria-label={t("Timeline date")}
             />
@@ -304,10 +281,10 @@ export function Timeline() {
           <DayButton
             direction="next"
             disabled={isToday}
-            onClick={() => setDate(shiftLocalDate(date, 1))}
+            onClick={() => selectDate(shiftLocalDate(date, 1))}
           />
           {!isToday && (
-            <button className="today-button" type="button" onClick={() => setDate(today)}>
+            <button className="today-button" type="button" onClick={() => selectDate(today)}>
               {t("Today")}
             </button>
           )}
@@ -664,7 +641,13 @@ export function Timeline() {
             ? t("Idle")
             : entry.applicationName ?? t("Unknown application");
           return (
-            <article className={`timeline-row${idle ? " idle" : ""}`} key={entry.sessionId}>
+            <article
+              id={`timeline-session-${entry.sessionId}`}
+              className={`timeline-row${idle ? " idle" : ""}${
+                highlightedSessionId === entry.sessionId ? " target" : ""
+              }`}
+              key={entry.sessionId}
+            >
               {!entry.isOpen && (
                 <input
                   className="session-select"

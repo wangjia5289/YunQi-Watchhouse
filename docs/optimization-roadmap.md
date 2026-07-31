@@ -339,3 +339,38 @@ Validation:
 - Frontend production build passed.
 - 76 Rust tests passed; the deterministic performance baseline remained ignored by default.
 - Rust formatting and Clippy passed with warnings denied.
+
+## Phase 16: Cross-Date Activity Search
+
+Status: Complete
+
+- [x] Add a dedicated cross-date Search view for the last 7 days, last 30 days, or a custom range.
+- [x] Search and filter up to 366 inclusive local calendar days in SQLite.
+- [x] Return newest results first with exact active, idle, and matching-session totals.
+- [x] Group loaded results by local date and paginate without loading the full range.
+- [x] Open a result in its single-day Timeline, load its page, scroll to it, and highlight it.
+- [x] Save, apply, replace, and remove named searches in device-local interface storage.
+- [x] Validate date, duration, and clock bounds in both the interface and backend.
+- [x] Preserve hourly Timeline progress through repeated daylight-saving hours.
+
+Decisions:
+
+- Cross-date searches are limited to 366 days so an accidental broad query cannot scan an
+  unbounded activity history.
+- Global results use descending `(started_at_ms, id)` ordering, while the single-day Timeline
+  retains chronological ordering.
+- Global search does not refresh on every activity checkpoint because that would discard loaded
+  pages and repeatedly scan long ranges.
+- Saved searches are device-specific interface state; preset ranges remain relative to today,
+  while custom ranges preserve their explicit dates.
+- User-owned application names, categories, window titles, notes, and saved-search names remain
+  untranslated.
+
+Validation:
+
+- 13 frontend localization, date-model, grouping, and daylight-saving tests passed.
+- Frontend production build passed.
+- 83 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting and Clippy passed with warnings denied.
+- Chinese and English Search views were visually checked at desktop, 375 px, and 320 px widths.
+- Mobile layouts had no horizontal overflow.

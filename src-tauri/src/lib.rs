@@ -643,6 +643,7 @@ pub fn run() {
             commands::statistics::get_today_focus_summary,
             commands::statistics::get_timeline,
             commands::statistics::get_timeline_page,
+            commands::statistics::search_timeline_range,
             commands::statistics::get_app_usage,
             commands::statistics::get_category_usage,
             commands::statistics::get_daily_usage,

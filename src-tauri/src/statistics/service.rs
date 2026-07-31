@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use chrono::{Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike};
+use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -306,16 +306,50 @@ impl StatisticsService {
         search: &TimelineSearch,
     ) -> AppResult<TimelinePage> {
         let range = local_day_range(date)?;
+        self.timeline_page_filtered(range, offset, limit, search, false)
+    }
+
+    pub fn timeline_page_for_date_range_filtered(
+        &self,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        offset: usize,
+        limit: usize,
+        search: &TimelineSearch,
+    ) -> AppResult<TimelinePage> {
+        let range = local_date_range_inclusive(start_date, end_date)?;
+        self.timeline_page_filtered(range, offset, limit, search, true)
+    }
+
+    fn timeline_page_filtered(
+        &self,
+        range: TimeRange,
+        offset: usize,
+        limit: usize,
+        search: &TimelineSearch,
+        newest_first: bool,
+    ) -> AppResult<TimelinePage> {
         let (total_count, active_duration_ms, idle_duration_ms) = self
             .repository
             .timeline_page_totals_filtered(range.start_ms, range.end_ms, search)?;
-        let records = self.repository.records_overlapping_page_filtered(
-            range.start_ms,
-            range.end_ms,
-            offset,
-            limit,
-            search,
-        )?;
+        let records = if newest_first {
+            self.repository
+                .records_overlapping_page_filtered_descending(
+                    range.start_ms,
+                    range.end_ms,
+                    offset,
+                    limit,
+                    search,
+                )?
+        } else {
+            self.repository.records_overlapping_page_filtered(
+                range.start_ms,
+                range.end_ms,
+                offset,
+                limit,
+                search,
+            )?
+        };
         let entries = timeline_entries(records, range);
         Ok(TimelinePage {
             has_more: offset.saturating_add(entries.len()) < total_count,
@@ -625,24 +659,42 @@ fn clipped_bounds(record: &ActivityRecord, range: TimeRange) -> Option<(i64, i64
 }
 
 pub fn local_day_range(date: NaiveDate) -> AppResult<TimeRange> {
-    let next_date = date
+    local_date_range_inclusive(date, date)
+}
+
+pub fn local_date_range_inclusive(
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> AppResult<TimeRange> {
+    if end_date < start_date {
+        return Err(AppError::InvalidTimeRange(
+            "end date must not be before start date".to_owned(),
+        ));
+    }
+    let next_date = end_date
         .succ_opt()
         .ok_or_else(|| AppError::InvalidTimeRange("local date overflow".to_owned()))?;
     TimeRange::new(
-        resolve_local_midnight(date)?,
+        resolve_local_midnight(start_date)?,
         resolve_local_midnight(next_date)?,
     )
 }
 
 fn resolve_local_midnight(date: NaiveDate) -> AppResult<i64> {
     let midnight = date.and_time(NaiveTime::MIN);
-    match Local.from_local_datetime(&midnight) {
-        LocalResult::Single(value) => Ok(value.timestamp_millis()),
-        LocalResult::Ambiguous(earliest, _) => Ok(earliest.timestamp_millis()),
-        LocalResult::None => Err(AppError::InvalidTimeRange(format!(
-            "local midnight does not exist for {date}"
-        ))),
+    for minute in 0..=24 * 60 {
+        let candidate = midnight
+            .checked_add_signed(Duration::minutes(minute))
+            .ok_or_else(|| AppError::InvalidTimeRange("local date overflow".to_owned()))?;
+        match Local.from_local_datetime(&candidate) {
+            LocalResult::Single(value) => return Ok(value.timestamp_millis()),
+            LocalResult::Ambiguous(earliest, _) => return Ok(earliest.timestamp_millis()),
+            LocalResult::None => {}
+        }
     }
+    Err(AppError::InvalidTimeRange(format!(
+        "local date has no representable boundary for {date}"
+    )))
 }
 
 #[cfg(test)]
@@ -763,6 +815,74 @@ mod tests {
         assert_eq!(second.total_count, 2);
         assert_eq!(second.entries.len(), 1);
         assert!(!second.has_more);
+    }
+
+    #[test]
+    fn filtered_timeline_date_range_includes_both_endpoint_days() {
+        let (service, repository, application_id) = setup();
+        let first_date = NaiveDate::from_ymd_opt(2025, 1, 15).expect("date should be valid");
+        let second_date = first_date.succ_opt().expect("next date should exist");
+        let third_date = second_date.succ_opt().expect("third date should exist");
+        let first_range = local_day_range(first_date).expect("first local day should resolve");
+        let second_range = local_day_range(second_date).expect("second local day should resolve");
+        let third_range = local_day_range(third_date).expect("third local day should resolve");
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            first_range.end_ms - 10 * 60_000,
+            second_range.start_ms + 10 * 60_000,
+        );
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            second_range.start_ms + 60 * 60_000,
+            second_range.start_ms + 75 * 60_000,
+        );
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            third_range.start_ms + 60 * 60_000,
+            third_range.start_ms + 90 * 60_000,
+        );
+        let search = TimelineSearch {
+            query: Some("idea".to_owned()),
+            ..TimelineSearch::default()
+        };
+
+        let first_page = service
+            .timeline_page_for_date_range_filtered(first_date, second_date, 0, 1, &search)
+            .expect("first range page should load");
+        assert_eq!(first_page.total_count, 2);
+        assert_eq!(first_page.active_duration_ms, 35 * 60_000);
+        assert_eq!(first_page.entries.len(), 1);
+        assert_eq!(
+            first_page.entries[0].started_at_ms,
+            second_range.start_ms + 60 * 60_000
+        );
+        assert!(first_page.has_more);
+
+        let second_page = service
+            .timeline_page_for_date_range_filtered(first_date, second_date, 1, 1, &search)
+            .expect("second range page should load");
+        assert_eq!(second_page.entries.len(), 1);
+        assert_eq!(
+            second_page.entries[0].started_at_ms,
+            first_range.end_ms - 10 * 60_000
+        );
+        assert!(!second_page.has_more);
+    }
+
+    #[test]
+    fn local_date_range_rejects_reversed_dates() {
+        let start = NaiveDate::from_ymd_opt(2025, 1, 16).expect("date should be valid");
+        let end = start.pred_opt().expect("previous date should exist");
+        assert!(matches!(
+            local_date_range_inclusive(start, end),
+            Err(AppError::InvalidTimeRange(_))
+        ));
     }
 
     #[test]

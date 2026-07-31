@@ -312,12 +312,14 @@ button {
 }
 
 .error-banner button {
+  flex: 0 0 auto;
   padding: 5px 9px;
   border: 0;
   border-radius: 7px;
   color: inherit;
   background: rgba(137, 91, 60, 0.09);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .timeline-filters {
@@ -1745,6 +1747,11 @@ button {
 .session-card:hover {
   border-color: rgba(63, 115, 98, 0.17);
   transform: translateX(2px);
+}
+
+.timeline-row.target .session-card {
+  border-color: var(--green-500);
+  box-shadow: 0 0 0 3px rgba(95, 145, 119, 0.14);
 }
 
 .timeline-row.idle .session-card {
@@ -3204,7 +3211,7 @@ button {
     grid-row: 2;
     min-width: 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 2px;
   }
 

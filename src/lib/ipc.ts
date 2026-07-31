@@ -303,6 +303,22 @@ export function getTimelinePage(
   return invoke("get_timeline_page", { date, offset, limit, filters });
 }
 
+export function searchTimelineRange(
+  startDate: string,
+  endDate: string,
+  offset: number,
+  limit = 200,
+  filters: TimelineFilters = {},
+): Promise<TimelinePage> {
+  return invoke("search_timeline_range", {
+    startDate,
+    endDate,
+    offset,
+    limit,
+    filters,
+  });
+}
+
 export interface TimelineMutationResult {
   affectedCount: number;
   undoToken: string | null;

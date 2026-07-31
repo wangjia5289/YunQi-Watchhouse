@@ -1824,12 +1824,50 @@ impl ActivityRepository {
         limit: usize,
         search: &TimelineSearch,
     ) -> AppResult<Vec<ActivityRecord>> {
+        self.records_overlapping_page_filtered_ordered(
+            range_start_ms,
+            range_end_ms,
+            offset,
+            limit,
+            search,
+            false,
+        )
+    }
+
+    pub fn records_overlapping_page_filtered_descending(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+        offset: usize,
+        limit: usize,
+        search: &TimelineSearch,
+    ) -> AppResult<Vec<ActivityRecord>> {
+        self.records_overlapping_page_filtered_ordered(
+            range_start_ms,
+            range_end_ms,
+            offset,
+            limit,
+            search,
+            true,
+        )
+    }
+
+    fn records_overlapping_page_filtered_ordered(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+        offset: usize,
+        limit: usize,
+        search: &TimelineSearch,
+        descending: bool,
+    ) -> AppResult<Vec<ActivityRecord>> {
         if range_end_ms <= range_start_ms || !(1..=1_000).contains(&limit) {
             return Err(AppError::InvalidTimeRange(
                 "invalid timeline page range or limit".to_owned(),
             ));
         }
         let parameters = TimelineSearchParameters::new(search)?;
+        let order = if descending { "DESC" } else { "ASC" };
         let connection = self.database.lock()?;
         let mut statement = connection.prepare(&format!(
             "SELECT
@@ -1842,7 +1880,7 @@ impl ActivityRepository {
              FROM activity_sessions s
              LEFT JOIN applications a ON a.id = s.application_id
              WHERE {TIMELINE_SEARCH_WHERE}
-             ORDER BY s.started_at_ms, s.id
+             ORDER BY s.started_at_ms {order}, s.id {order}
              LIMIT ?9 OFFSET ?10"
         ))?;
         Ok(statement
@@ -2000,6 +2038,15 @@ impl TimelineSearchParameters {
                 "timeline duration filters cannot be negative".to_owned(),
             ));
         }
+        if search
+            .minimum_duration_ms
+            .zip(search.maximum_duration_ms)
+            .is_some_and(|(minimum, maximum)| minimum > maximum)
+        {
+            return Err(AppError::InvalidTimeRange(
+                "timeline minimum duration cannot exceed maximum duration".to_owned(),
+            ));
+        }
         if [search.time_from_minutes, search.time_to_minutes]
             .into_iter()
             .flatten()
@@ -2007,6 +2054,15 @@ impl TimelineSearchParameters {
         {
             return Err(AppError::InvalidTimeRange(
                 "timeline time filters must be valid local clock minutes".to_owned(),
+            ));
+        }
+        if search
+            .time_from_minutes
+            .zip(search.time_to_minutes)
+            .is_some_and(|(from, to)| from > to)
+        {
+            return Err(AppError::InvalidTimeRange(
+                "timeline start time cannot be after end time".to_owned(),
             ));
         }
 
@@ -2789,6 +2845,80 @@ mod tests {
                 .expect("start time totals should succeed"),
             (1, 80 * 60_000, 0),
         );
+    }
+
+    #[test]
+    fn timeline_search_range_clips_boundary_sessions_and_paginates() {
+        let repository = repository();
+        let app = application(&repository, 0);
+        let day_ms = 24 * 60 * 60_000_i64;
+        let range_start = day_ms;
+        let range_end = 3 * day_ms;
+
+        for (start, end) in [
+            (range_start - 100, range_start + 100),
+            (range_end - 100, range_end + 100),
+            (range_end + 200, range_end + 300),
+        ] {
+            let session = repository
+                .create_session(&NewSession {
+                    state: ActivityState::Active,
+                    application_id: Some(app.id),
+                    window_title: None,
+                    started_at_ms: start,
+                })
+                .expect("session should open");
+            repository
+                .close_session(session.id, end, ClosedReason::AppChanged)
+                .expect("session should close");
+        }
+        let search = TimelineSearch {
+            query: Some("idea".to_owned()),
+            ..TimelineSearch::default()
+        };
+
+        assert_eq!(
+            repository
+                .timeline_page_totals_filtered(range_start, range_end, &search)
+                .expect("range totals should load"),
+            (2, 200, 0)
+        );
+        let first_page = repository
+            .records_overlapping_page_filtered(range_start, range_end, 0, 1, &search)
+            .expect("first page should load");
+        let second_page = repository
+            .records_overlapping_page_filtered(range_start, range_end, 1, 1, &search)
+            .expect("second page should load");
+        let newest_page = repository
+            .records_overlapping_page_filtered_descending(range_start, range_end, 0, 1, &search)
+            .expect("newest page should load");
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(second_page.len(), 1);
+        assert!(first_page[0].session.id < second_page[0].session.id);
+        assert_eq!(newest_page[0].session.id, second_page[0].session.id);
+    }
+
+    #[test]
+    fn timeline_search_rejects_reversed_filter_bounds() {
+        let repository = repository();
+        let searches = [
+            TimelineSearch {
+                minimum_duration_ms: Some(2),
+                maximum_duration_ms: Some(1),
+                ..TimelineSearch::default()
+            },
+            TimelineSearch {
+                time_from_minutes: Some(60),
+                time_to_minutes: Some(30),
+                ..TimelineSearch::default()
+            },
+        ];
+        for search in searches {
+            assert!(matches!(
+                repository.timeline_page_totals_filtered(0, 1, &search),
+                Err(AppError::InvalidTimeRange(_))
+            ));
+        }
     }
 
     #[test]

@@ -56,6 +56,26 @@ pub async fn get_timeline_page(
 }
 
 #[tauri::command]
+pub async fn search_timeline_range(
+    start_date: String,
+    end_date: String,
+    offset: usize,
+    limit: usize,
+    filters: Option<TimelineSearch>,
+    statistics: State<'_, StatisticsService>,
+) -> IpcResult<TimelinePage> {
+    let (start_date, end_date) = parse_timeline_date_range(&start_date, &end_date)?;
+    validate_timeline_page_limit(limit)?;
+    let filters = filters.unwrap_or_default();
+    let statistics = statistics.inner().clone();
+    run_blocking(move || {
+        statistics
+            .timeline_page_for_date_range_filtered(start_date, end_date, offset, limit, &filters)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn get_app_usage(
     range_start_ms: i64,
     range_end_ms: i64,
@@ -199,6 +219,38 @@ fn parse_date(value: &str) -> IpcResult<NaiveDate> {
     })
 }
 
+fn parse_timeline_date_range(
+    start_date: &str,
+    end_date: &str,
+) -> IpcResult<(NaiveDate, NaiveDate)> {
+    let start_date = parse_date(start_date)?;
+    let end_date = parse_date(end_date)?;
+    if end_date < start_date {
+        return Err(AppError::InvalidTimeRange(
+            "end date must not be before start date".to_owned(),
+        )
+        .into());
+    }
+    let inclusive_days = end_date.signed_duration_since(start_date).num_days() + 1;
+    if inclusive_days > 366 {
+        return Err(AppError::InvalidTimeRange(
+            "timeline search range cannot exceed 366 days".to_owned(),
+        )
+        .into());
+    }
+    Ok((start_date, end_date))
+}
+
+fn validate_timeline_page_limit(limit: usize) -> IpcResult<()> {
+    if !(1..=1_000).contains(&limit) {
+        return Err(AppError::InvalidTimeRange(
+            "timeline page limit must be between 1 and 1000".to_owned(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +267,33 @@ mod tests {
     fn rejects_ambiguous_display_date() {
         let error = parse_date("07/30/2026").expect_err("date should fail");
         assert_eq!(error.code, "INVALID_TIME_RANGE");
+    }
+
+    #[test]
+    fn accepts_timeline_range_of_up_to_366_inclusive_days() {
+        let (start, end) = parse_timeline_date_range("2024-01-01", "2024-12-31")
+            .expect("366-day range should be valid");
+        assert_eq!(end.signed_duration_since(start).num_days() + 1, 366);
+    }
+
+    #[test]
+    fn rejects_reversed_or_oversized_timeline_range() {
+        for (start, end) in [("2026-07-31", "2026-07-30"), ("2024-01-01", "2025-01-01")] {
+            let error =
+                parse_timeline_date_range(start, end).expect_err("date range should be rejected");
+            assert_eq!(error.code, "INVALID_TIME_RANGE");
+        }
+    }
+
+    #[test]
+    fn rejects_timeline_page_limit_outside_supported_range() {
+        for limit in [0, 1_001] {
+            let error =
+                validate_timeline_page_limit(limit).expect_err("page limit should be rejected");
+            assert_eq!(error.code, "INVALID_TIME_RANGE");
+        }
+        validate_timeline_page_limit(1).expect("minimum page limit should be valid");
+        validate_timeline_page_limit(1_000).expect("maximum page limit should be valid");
     }
 
     #[test]

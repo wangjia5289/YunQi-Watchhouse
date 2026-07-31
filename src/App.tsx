@@ -6,6 +6,7 @@ import { Applications } from "./features/applications/Applications";
 import { History } from "./features/history/History";
 import { Settings } from "./features/settings/Settings";
 import { Reports } from "./features/reports/Reports";
+import { GlobalSearch } from "./features/search/GlobalSearch";
 import {
   CurrentActivity,
   errorMessage,
@@ -21,6 +22,7 @@ import { useLocale } from "./lib/i18n";
 const navigation = [
   { label: "Today", icon: "today", page: "today", enabled: true },
   { label: "Timeline", icon: "timeline", page: "timeline", enabled: true },
+  { label: "Search", icon: "search", page: "search", enabled: true },
   { label: "Applications", icon: "apps", page: "applications", enabled: true },
   { label: "History", icon: "history", page: "history", enabled: true },
   { label: "Reports", icon: "reports", page: "reports", enabled: true },
@@ -32,6 +34,12 @@ function NavIcon({ name }: { name: string }) {
   const paths: Record<string, React.ReactNode> = {
     today: <path d="M5 4.5h14v15H5zM8 2.5v4M16 2.5v4M5 9h14" />,
     timeline: <path d="M6 4v16M6 7h5M6 12h9M6 17h7" />,
+    search: (
+      <>
+        <circle cx="10.5" cy="10.5" r="6.5" />
+        <path d="m15.5 15.5 4 4" />
+      </>
+    ),
     apps: (
       <>
         <rect x="4" y="4" width="6" height="6" rx="1.5" />
@@ -64,6 +72,10 @@ function App() {
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [tracking, setTracking] = useState<CurrentActivity | null>(null);
+  const [timelineTarget, setTimelineTarget] = useState<{
+    date?: string;
+    sessionId?: number;
+  }>({});
 
   function loadSettings() {
     setSettingsError(null);
@@ -177,7 +189,21 @@ function App() {
           </div>
         )}
         {page === "today" && <Dashboard />}
-        {page === "timeline" && <Timeline />}
+        {page === "timeline" && (
+          <Timeline
+            initialDate={timelineTarget.date}
+            initialSessionId={timelineTarget.sessionId}
+            onDateChange={(date) => setTimelineTarget({ date })}
+          />
+        )}
+        {page === "search" && (
+          <GlobalSearch
+            onOpenDate={(date, sessionId) => {
+              setTimelineTarget({ date, sessionId });
+              setPage("timeline");
+            }}
+          />
+        )}
         {page === "applications" && <Applications />}
         {page === "history" && <History />}
         {page === "reports" && <Reports />}
