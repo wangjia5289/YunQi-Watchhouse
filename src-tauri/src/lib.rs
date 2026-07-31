@@ -95,6 +95,21 @@ fn send_usage_limit_notifications(
             return;
         }
     }
+    let settings = match repository.settings() {
+        Ok(settings) => settings,
+        Err(error) => {
+            log::warn!("could not read settings for usage limit notifications: {error}");
+            return;
+        }
+    };
+    let local_time = chrono::Local::now().format("%H:%M").to_string();
+    if focus::is_quiet_hours(
+        &local_time,
+        &settings.quiet_hours_start,
+        &settings.quiet_hours_end,
+    ) {
+        return;
+    }
     let progress = match statistics::StatisticsService::new(repository.clone())
         .today_notifiable_usage_limit_progress()
     {
@@ -138,11 +153,10 @@ fn send_usage_limit_notifications(
             log::warn!("could not show usage limit notification: {error}");
             continue;
         }
-        let reached_thresholds: &[i64] = if threshold == 100 { &[80, 100] } else { &[80] };
         if let Err(error) = repository.mark_usage_limit_alerts_delivered(
             item.id,
             &item.local_date,
-            reached_thresholds,
+            &[threshold],
             now_ms,
         ) {
             log::warn!("could not persist usage limit alert delivery: {error}");
@@ -758,6 +772,11 @@ pub fn run() {
             commands::usage_limits::update_usage_limit,
             commands::usage_limits::delete_usage_limit,
             commands::usage_limits::get_today_usage_limit_progress,
+            commands::usage_limits::get_usage_limit_reminder_history,
+            commands::usage_limits::snooze_usage_limit_notifications,
+            commands::usage_limits::silence_usage_limit_notifications_for_today,
+            commands::usage_limits::add_temporary_usage_limit_minutes,
+            commands::usage_limits::clear_temporary_usage_limit_minutes,
             commands::timeline::delete_timeline_session,
             commands::timeline::delete_timeline_sessions,
             commands::timeline::merge_timeline_sessions,

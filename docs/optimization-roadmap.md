@@ -406,3 +406,25 @@ Validation:
 - The macOS application bundle was generated and passed ad-hoc strict code-signature verification.
 - Interactive visual checks were blocked because the current execution environment denied local
   port binding after the initial preview server stopped.
+
+## Phase 18: Usage Limit Reminder Center
+
+Status: Complete
+
+- [x] Add a reminder center with delivered 80% and 100% notification history.
+- [x] Allow a rule's notifications to be delayed for 30 minutes or muted for the local day.
+- [x] Add temporary daily allowance increases without changing the regular weekday or weekend rule.
+- [x] Show effective daily limits and temporary adjustments immediately across Settings and Today.
+- [x] Apply the existing quiet-hours schedule to both focus-break and usage-limit notifications.
+- [x] Keep reminder history readable after a rule changes or is deleted.
+- [x] Clear reminder history, deduplication records, and daily exceptions with Delete All Activity.
+
+Decisions:
+
+- Daily exceptions are keyed by rule and local calendar date, so they expire naturally at the next
+  local day without a cleanup job.
+- Reminder history stores an immutable target snapshot so later application, category, or rule
+  changes do not rewrite what was actually delivered.
+- Existing installations backfill prior delivered reminders while filtering the legacy synthetic
+  80% marker created when a rule first crossed directly to 100%.
+- Temporary allowance increases are cumulative but capped at 1,440 minutes for a single day.

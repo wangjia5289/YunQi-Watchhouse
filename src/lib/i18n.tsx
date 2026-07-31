@@ -249,6 +249,57 @@ const zh: Record<string, string> = {
   "Show a local reminder after continuous focus.": "持续专注后显示本地提醒。",
   Wellbeing: "数字健康",
   "Application usage limits": "应用使用限额",
+  "Usage limit reminders": "限额提醒中心",
+  "Reminder history range": "提醒历史范围",
+  "Manage today’s reminder exceptions without changing your regular usage limits.":
+    "管理今天的提醒例外，不会修改常规使用限额。",
+  "Today’s rules": "今日规则",
+  "Temporary changes reset tomorrow.": "临时调整将在明天重置。",
+  "Loading reminder controls…": "正在加载提醒控制…",
+  "No usage limits for today": "今天没有使用限额",
+  "Add a usage limit to manage its reminders here.": "添加使用限额后，可在这里管理其提醒。",
+  "Today’s limit": "今日限额",
+  Includes: "包含",
+  "extra today": "今日额外时长",
+  "This rule is disabled. Enable it above to manage today’s exceptions.":
+    "此规则已禁用。请在上方启用后再管理今天的例外。",
+  "Reminders are muted for today.": "今天的提醒已静音。",
+  "Reminders delayed until": "提醒已延后至",
+  "Delay 30 minutes": "延后 30 分钟",
+  "Delaying…": "正在延后…",
+  "Mute for today": "今日静音",
+  "Muting…": "正在静音…",
+  "Extra time": "额外时长",
+  "Add time": "增加时长",
+  "Adding…": "正在增加…",
+  "Clear extra time": "清除额外时长",
+  "Clearing…": "正在清除…",
+  "Recent reminder history": "最近提醒历史",
+  "Only delivered reminders are shown.": "仅显示已投递的提醒。",
+  "Loading reminder history…": "正在加载提醒历史…",
+  "No reminder history": "暂无提醒历史",
+  "Delivered 80% and 100% usage limit reminders will appear here.":
+    "已投递的 80% 和 100% 限额提醒会显示在这里。",
+  "Reminders delayed for 30 minutes.": "提醒已延后 30 分钟。",
+  "Reminders muted for today.": "今天的提醒已静音。",
+  "Temporary time added for today.": "已增加今日临时时长。",
+  "Temporary time cleared.": "已清除今日临时时长。",
+  "usage limit reminder history days must be between 1 and 90":
+    "限额提醒历史天数必须在 1 到 90 天之间。",
+  "usage limit reminder history date overflow": "限额提醒历史日期超出可用范围。",
+  "current local time could not be resolved": "无法获取当前本地时间。",
+  "usage limit notification snooze must be between 5 and 1440 minutes":
+    "限额提醒延后时长必须在 5 到 1440 分钟之间。",
+  "usage limit snooze must be scheduled during its local day":
+    "限额提醒只能在当天本地时间内延后。",
+  "usage limit snooze overflows time": "限额提醒延后时间超出可用范围。",
+  "usage limit notification snooze cannot cross the local day boundary":
+    "限额提醒不能延后到次日。",
+  "temporary usage limit minutes must be between 1 and 1440":
+    "临时限额时长必须在 1 到 1440 分钟之间。",
+  "usage limit reminder history end date must not be before its start date":
+    "限额提醒历史的结束日期不能早于开始日期。",
+  "usage limit local date must use YYYY-MM-DD": "限额本地日期必须使用 YYYY-MM-DD 格式。",
   "Add limit": "添加限额",
   "Set separate daily limits for weekdays and weekends. Alerts are sent at 80% and 100%.":
     "分别设置工作日和周末的每日限额，并在达到 80% 和 100% 时提醒。",
@@ -313,6 +364,8 @@ const zh: Record<string, string> = {
   "Reminders reset when a new focus block starts.": "新的专注块开始时会重置提醒。",
   "Quiet Hours": "免打扰时段",
   "Break reminders stay silent during this period.": "此时间段内不会发送休息提醒。",
+  "Break and usage limit reminders stay silent during this period.":
+    "此时间段内不会发送休息提醒和限额提醒。",
   to: "至",
   Privacy: "隐私",
   Data: "数据",

@@ -1,5 +1,6 @@
 use std::{path::Path, time::Duration};
 
+use chrono::NaiveDate;
 use rusqlite::{Connection, OptionalExtension, Row, backup::Backup, params};
 
 use crate::{
@@ -135,6 +136,30 @@ pub struct UsageLimitApplicationTarget {
 pub struct UsageLimitTargets {
     pub applications: Vec<UsageLimitApplicationTarget>,
     pub categories: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitDailyException {
+    pub rule_id: i64,
+    pub local_date: String,
+    pub temporary_added_minutes: i64,
+    pub notifications_snoozed_until_ms: Option<i64>,
+    pub notifications_silenced: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitReminderHistoryEntry {
+    pub rule_id: i64,
+    pub scope_type: UsageLimitScopeType,
+    pub application_id: Option<i64>,
+    pub application_name: Option<String>,
+    pub category: Option<String>,
+    pub target_name: String,
+    pub local_date: String,
+    pub threshold: i64,
+    pub delivered_at_ms: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -908,18 +933,206 @@ impl ActivityRepository {
                 "usage limit alert threshold must be 80 or 100".to_owned(),
             ));
         }
+        validate_usage_limit_local_date(local_date)?;
         let mut connection = self.database.lock()?;
+        let target =
+            usage_limit_reminder_target_by_rule_id(&connection, rule_id)?.ok_or_else(|| {
+                AppError::InvalidTimeRange("usage limit rule was not found".to_owned())
+            })?;
         let transaction = connection.transaction()?;
         for threshold in thresholds {
-            transaction.execute(
+            let inserted = transaction.execute(
                 "INSERT OR IGNORE INTO usage_limit_alerts (
                     rule_id, local_date, threshold, delivered_at_ms
                  ) VALUES (?1, ?2, ?3, ?4)",
                 params![rule_id, local_date, threshold, delivered_at_ms],
             )?;
+            if inserted == 1 {
+                transaction.execute(
+                    "INSERT INTO usage_limit_reminder_history (
+                        rule_id, scope_type, application_id, application_name, category,
+                        target_name, local_date, threshold, delivered_at_ms
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        rule_id,
+                        target.scope_type,
+                        target.application_id,
+                        target.application_name,
+                        target.category,
+                        target.target_name,
+                        local_date,
+                        threshold,
+                        delivered_at_ms,
+                    ],
+                )?;
+            }
         }
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn usage_limit_daily_exception(
+        &self,
+        rule_id: i64,
+        local_date: &str,
+    ) -> AppResult<UsageLimitDailyException> {
+        validate_usage_limit_local_date(local_date)?;
+        let connection = self.database.lock()?;
+        usage_limit_daily_exception_by_rule_and_date(&connection, rule_id, local_date)
+    }
+
+    pub fn snooze_usage_limit_notifications(
+        &self,
+        rule_id: i64,
+        local_date: &str,
+        minutes: i64,
+        now_ms: i64,
+        day_start_ms: i64,
+        day_end_ms: i64,
+    ) -> AppResult<UsageLimitDailyException> {
+        if !(5..=1_440).contains(&minutes) {
+            return Err(AppError::InvalidTimeRange(
+                "usage limit notification snooze must be between 5 and 1440 minutes".to_owned(),
+            ));
+        }
+        validate_usage_limit_local_date(local_date)?;
+        if now_ms < day_start_ms || day_end_ms <= now_ms {
+            return Err(AppError::InvalidTimeRange(
+                "usage limit snooze must be scheduled during its local day".to_owned(),
+            ));
+        }
+        let snoozed_until_ms = now_ms
+            .checked_add(minutes.saturating_mul(60_000))
+            .ok_or_else(|| {
+                AppError::InvalidTimeRange("usage limit snooze overflows time".to_owned())
+            })?;
+        if snoozed_until_ms > day_end_ms {
+            return Err(AppError::InvalidTimeRange(
+                "usage limit notification snooze cannot cross the local day boundary".to_owned(),
+            ));
+        }
+
+        let connection = self.database.lock()?;
+        ensure_usage_limit_rule_exists(&connection, rule_id)?;
+        connection.execute(
+            "INSERT INTO usage_limit_daily_exceptions (
+                rule_id, local_date, notifications_snoozed_until_ms,
+                created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(rule_id, local_date) DO UPDATE SET
+                notifications_snoozed_until_ms = excluded.notifications_snoozed_until_ms,
+                notifications_silenced = 0,
+                updated_at_ms = excluded.updated_at_ms",
+            params![rule_id, local_date, snoozed_until_ms, now_ms],
+        )?;
+        usage_limit_daily_exception_by_rule_and_date(&connection, rule_id, local_date)
+    }
+
+    pub fn silence_usage_limit_notifications_for_today(
+        &self,
+        rule_id: i64,
+        local_date: &str,
+        now_ms: i64,
+    ) -> AppResult<UsageLimitDailyException> {
+        validate_usage_limit_local_date(local_date)?;
+        let connection = self.database.lock()?;
+        ensure_usage_limit_rule_exists(&connection, rule_id)?;
+        connection.execute(
+            "INSERT INTO usage_limit_daily_exceptions (
+                rule_id, local_date, notifications_silenced, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, 1, ?3, ?3)
+             ON CONFLICT(rule_id, local_date) DO UPDATE SET
+                notifications_snoozed_until_ms = NULL,
+                notifications_silenced = 1,
+                updated_at_ms = excluded.updated_at_ms",
+            params![rule_id, local_date, now_ms],
+        )?;
+        usage_limit_daily_exception_by_rule_and_date(&connection, rule_id, local_date)
+    }
+
+    pub fn add_temporary_usage_limit_minutes(
+        &self,
+        rule_id: i64,
+        local_date: &str,
+        minutes: i64,
+        now_ms: i64,
+    ) -> AppResult<UsageLimitDailyException> {
+        if !(1..=1_440).contains(&minutes) {
+            return Err(AppError::InvalidTimeRange(
+                "temporary usage limit minutes must be between 1 and 1440".to_owned(),
+            ));
+        }
+        validate_usage_limit_local_date(local_date)?;
+        let connection = self.database.lock()?;
+        ensure_usage_limit_rule_exists(&connection, rule_id)?;
+        connection.execute(
+            "INSERT INTO usage_limit_daily_exceptions (
+                rule_id, local_date, temporary_added_minutes, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?4)
+             ON CONFLICT(rule_id, local_date) DO UPDATE SET
+                temporary_added_minutes = MIN(1440, temporary_added_minutes + excluded.temporary_added_minutes),
+                updated_at_ms = excluded.updated_at_ms",
+            params![rule_id, local_date, minutes, now_ms],
+        )?;
+        usage_limit_daily_exception_by_rule_and_date(&connection, rule_id, local_date)
+    }
+
+    pub fn clear_temporary_usage_limit_minutes(
+        &self,
+        rule_id: i64,
+        local_date: &str,
+        now_ms: i64,
+    ) -> AppResult<UsageLimitDailyException> {
+        validate_usage_limit_local_date(local_date)?;
+        let mut connection = self.database.lock()?;
+        ensure_usage_limit_rule_exists(&connection, rule_id)?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE usage_limit_daily_exceptions
+             SET temporary_added_minutes = 0, updated_at_ms = ?3
+             WHERE rule_id = ?1 AND local_date = ?2",
+            params![rule_id, local_date, now_ms],
+        )?;
+        transaction.execute(
+            "DELETE FROM usage_limit_daily_exceptions
+             WHERE rule_id = ?1 AND local_date = ?2
+               AND temporary_added_minutes = 0
+               AND notifications_snoozed_until_ms IS NULL
+               AND notifications_silenced = 0",
+            params![rule_id, local_date],
+        )?;
+        transaction.commit()?;
+        usage_limit_daily_exception_by_rule_and_date(&connection, rule_id, local_date)
+    }
+
+    pub fn usage_limit_reminder_history(
+        &self,
+        start_local_date: &str,
+        end_local_date: &str,
+    ) -> AppResult<Vec<UsageLimitReminderHistoryEntry>> {
+        let start_date = validate_usage_limit_local_date(start_local_date)?;
+        let end_date = validate_usage_limit_local_date(end_local_date)?;
+        if end_date < start_date {
+            return Err(AppError::InvalidTimeRange(
+                "usage limit reminder history end date must not be before its start date"
+                    .to_owned(),
+            ));
+        }
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT rule_id, scope_type, application_id, application_name, category,
+                    target_name, local_date, threshold, delivered_at_ms
+             FROM usage_limit_reminder_history
+             WHERE local_date >= ?1 AND local_date <= ?2
+             ORDER BY delivered_at_ms DESC, id DESC",
+        )?;
+        statement
+            .query_map(
+                params![start_local_date, end_local_date],
+                map_usage_limit_reminder_history,
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
     pub fn data_health_summary(&self) -> AppResult<DataHealthSummary> {
@@ -1185,6 +1398,9 @@ impl ActivityRepository {
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute("DELETE FROM activity_sessions", [])?;
+        transaction.execute("DELETE FROM usage_limit_reminder_history", [])?;
+        transaction.execute("DELETE FROM usage_limit_alerts", [])?;
+        transaction.execute("DELETE FROM usage_limit_daily_exceptions", [])?;
         transaction.execute(
             "DELETE FROM applications
              WHERE NOT EXISTS (
@@ -2553,6 +2769,117 @@ fn usage_limit_rule_by_id(connection: &Connection, id: i64) -> AppResult<Option<
         .map_err(Into::into)
 }
 
+struct UsageLimitReminderTarget {
+    scope_type: String,
+    application_id: Option<i64>,
+    application_name: Option<String>,
+    category: Option<String>,
+    target_name: String,
+}
+
+fn usage_limit_reminder_target_by_rule_id(
+    connection: &Connection,
+    rule_id: i64,
+) -> AppResult<Option<UsageLimitReminderTarget>> {
+    connection
+        .query_row(
+            "SELECT r.scope_type, r.application_id, a.name, r.category,
+                    COALESCE(a.name, r.category)
+             FROM usage_limit_rules r
+             LEFT JOIN applications a ON a.id = r.application_id
+             WHERE r.id = ?1",
+            [rule_id],
+            |row| {
+                Ok(UsageLimitReminderTarget {
+                    scope_type: row.get(0)?,
+                    application_id: row.get(1)?,
+                    application_name: row.get(2)?,
+                    category: row.get(3)?,
+                    target_name: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn ensure_usage_limit_rule_exists(connection: &Connection, rule_id: i64) -> AppResult<()> {
+    let exists = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM usage_limit_rules WHERE id = ?1)",
+        [rule_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(AppError::InvalidTimeRange(
+            "usage limit rule was not found".to_owned(),
+        ))
+    }
+}
+
+fn validate_usage_limit_local_date(local_date: &str) -> AppResult<NaiveDate> {
+    NaiveDate::parse_from_str(local_date, "%Y-%m-%d").map_err(|_| {
+        AppError::InvalidTimeRange("usage limit local date must use YYYY-MM-DD".to_owned())
+    })
+}
+
+fn usage_limit_daily_exception_by_rule_and_date(
+    connection: &Connection,
+    rule_id: i64,
+    local_date: &str,
+) -> AppResult<UsageLimitDailyException> {
+    connection
+        .query_row(
+            "SELECT rule_id, local_date, temporary_added_minutes,
+                    notifications_snoozed_until_ms, notifications_silenced
+             FROM usage_limit_daily_exceptions
+             WHERE rule_id = ?1 AND local_date = ?2",
+            params![rule_id, local_date],
+            |row| {
+                Ok(UsageLimitDailyException {
+                    rule_id: row.get(0)?,
+                    local_date: row.get(1)?,
+                    temporary_added_minutes: row.get(2)?,
+                    notifications_snoozed_until_ms: row.get(3)?,
+                    notifications_silenced: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map(|exception| {
+            exception.unwrap_or_else(|| UsageLimitDailyException {
+                rule_id,
+                local_date: local_date.to_owned(),
+                temporary_added_minutes: 0,
+                notifications_snoozed_until_ms: None,
+                notifications_silenced: false,
+            })
+        })
+        .map_err(Into::into)
+}
+
+fn map_usage_limit_reminder_history(
+    row: &Row<'_>,
+) -> rusqlite::Result<UsageLimitReminderHistoryEntry> {
+    let scope_type = match row.get::<_, String>(1)?.as_str() {
+        "APPLICATION" => UsageLimitScopeType::Application,
+        "CATEGORY" => UsageLimitScopeType::Category,
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(UsageLimitReminderHistoryEntry {
+        rule_id: row.get(0)?,
+        scope_type,
+        application_id: row.get(2)?,
+        application_name: row.get(3)?,
+        category: row.get(4)?,
+        target_name: row.get(5)?,
+        local_date: row.get(6)?,
+        threshold: row.get(7)?,
+        delivered_at_ms: row.get(8)?,
+    })
+}
+
 fn map_usage_limit_rule(row: &Row<'_>) -> rusqlite::Result<UsageLimitRule> {
     let scope_type = match row.get::<_, String>(1)?.as_str() {
         "APPLICATION" => UsageLimitScopeType::Application,
@@ -2697,6 +3024,26 @@ mod tests {
                 seen_at_ms,
             })
             .expect("application should be stored")
+    }
+
+    fn application_usage_limit(
+        repository: &ActivityRepository,
+        application_id: i64,
+    ) -> UsageLimitRule {
+        repository
+            .create_usage_limit(
+                &UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Application,
+                    application_id: Some(application_id),
+                    category: None,
+                    weekday_limit_minutes: 60,
+                    weekend_limit_minutes: 90,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                1_000,
+            )
+            .expect("usage limit should be created")
     }
 
     #[test]
@@ -3070,6 +3417,201 @@ mod tests {
                 .expect("alerts should load")
                 .is_empty()
         );
+        assert_eq!(
+            repository
+                .usage_limit_reminder_history("2026-07-31", "2026-07-31")
+                .expect("immutable reminder history should load")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn usage_limit_daily_exceptions_validate_boundaries_and_expire_by_local_date() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let rule = application_usage_limit(&repository, app.id);
+        let day = "2026-07-31";
+
+        assert!(
+            repository
+                .snooze_usage_limit_notifications(rule.id, day, 4, 100_000, 0, 1_000_000)
+                .is_err()
+        );
+        assert!(
+            repository
+                .snooze_usage_limit_notifications(rule.id, day, 5, 900_000, 0, 1_000_000)
+                .is_err()
+        );
+        let snoozed = repository
+            .snooze_usage_limit_notifications(rule.id, day, 5, 100_000, 0, 1_000_000)
+            .expect("snooze should be stored");
+        assert_eq!(snoozed.notifications_snoozed_until_ms, Some(400_000));
+
+        let silenced = repository
+            .silence_usage_limit_notifications_for_today(rule.id, day, 110_000)
+            .expect("silence should be stored");
+        assert!(silenced.notifications_silenced);
+        assert_eq!(silenced.notifications_snoozed_until_ms, None);
+        let resumed = repository
+            .snooze_usage_limit_notifications(rule.id, day, 5, 120_000, 0, 1_000_000)
+            .expect("snoozing should resume notifications after the delay");
+        assert!(!resumed.notifications_silenced);
+
+        repository
+            .add_temporary_usage_limit_minutes(rule.id, day, 1_000, 130_000)
+            .expect("temporary limit should be stored");
+        let capped = repository
+            .add_temporary_usage_limit_minutes(rule.id, day, 1_000, 140_000)
+            .expect("temporary limit should cap instead of overflowing");
+        assert_eq!(capped.temporary_added_minutes, 1_440);
+        assert!(
+            repository
+                .add_temporary_usage_limit_minutes(rule.id, day, 0, 150_000)
+                .is_err()
+        );
+        assert_eq!(
+            repository
+                .usage_limit_daily_exception(rule.id, "2026-08-01")
+                .expect("the following date should load a fresh exception")
+                .temporary_added_minutes,
+            0
+        );
+        let cleared = repository
+            .clear_temporary_usage_limit_minutes(rule.id, day, 160_000)
+            .expect("temporary limit should be cleared");
+        assert_eq!(cleared.temporary_added_minutes, 0);
+        assert_eq!(cleared.notifications_snoozed_until_ms, Some(420_000));
+    }
+
+    #[test]
+    fn usage_limit_exception_constraints_and_application_cascade_are_enforced() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let rule = application_usage_limit(&repository, app.id);
+        repository
+            .add_temporary_usage_limit_minutes(rule.id, "2026-07-31", 30, 100)
+            .expect("exception should be stored");
+        let connection = repository.database.lock().expect("database should lock");
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO usage_limit_daily_exceptions (
+                    rule_id, local_date, temporary_added_minutes, created_at_ms, updated_at_ms
+                 ) VALUES (?1, 'bad-date', 0, 1, 1)",
+                    [rule.id],
+                )
+                .is_err()
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO usage_limit_daily_exceptions (
+                    rule_id, local_date, temporary_added_minutes, created_at_ms, updated_at_ms
+                 ) VALUES (?1, '2026-08-01', 1441, 1, 1)",
+                    [rule.id],
+                )
+                .is_err()
+        );
+        connection
+            .execute("DELETE FROM applications WHERE id = ?1", [app.id])
+            .expect("deleting an application should cascade through its usage rule");
+        let exceptions: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM usage_limit_daily_exceptions WHERE rule_id = ?1",
+                [rule.id],
+                |row| row.get(0),
+            )
+            .expect("exception count should load");
+        assert_eq!(exceptions, 0);
+    }
+
+    #[test]
+    fn reminder_history_uses_delivery_snapshots_and_orders_newest_first() {
+        let repository = repository();
+        let first_app = application(&repository, 100);
+        let second_app = repository
+            .upsert_application(&NewApplication {
+                name: "Browser".to_owned(),
+                bundle_id: Some("example.browser".to_owned()),
+                executable_path: None,
+                seen_at_ms: 100,
+            })
+            .expect("second application should be stored");
+        let first_rule = application_usage_limit(&repository, first_app.id);
+        let second_rule = application_usage_limit(&repository, second_app.id);
+        repository
+            .mark_usage_limit_alerts_delivered(first_rule.id, "2026-07-30", &[80], 100)
+            .expect("first alert should be recorded");
+        repository
+            .mark_usage_limit_alerts_delivered(second_rule.id, "2026-07-31", &[100], 300)
+            .expect("second alert should be recorded");
+
+        repository
+            .update_usage_limit(
+                first_rule.id,
+                &UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Application,
+                    application_id: Some(first_app.id),
+                    category: None,
+                    weekday_limit_minutes: 120,
+                    weekend_limit_minutes: 90,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                400,
+            )
+            .expect("updating a rule should reset only its dedupe record");
+        repository
+            .delete_usage_limit(second_rule.id)
+            .expect("the second rule should be deleted");
+
+        let history = repository
+            .usage_limit_reminder_history("2026-07-30", "2026-07-31")
+            .expect("history should load");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].target_name, "Browser");
+        assert_eq!(history[0].threshold, 100);
+        assert_eq!(history[1].target_name, "IntelliJ IDEA");
+        assert_eq!(history[1].threshold, 80);
+    }
+
+    #[test]
+    fn delete_all_activity_clears_usage_limit_reminders_and_today_exceptions() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let rule = application_usage_limit(&repository, app.id);
+        repository
+            .mark_usage_limit_alerts_delivered(rule.id, "2026-07-31", &[80], 100)
+            .expect("alert should be recorded");
+        repository
+            .add_temporary_usage_limit_minutes(rule.id, "2026-07-31", 30, 100)
+            .expect("today exception should be recorded");
+
+        repository
+            .delete_all_activity()
+            .expect("all activity data should be deleted");
+
+        assert!(
+            repository
+                .delivered_usage_limit_thresholds(rule.id, "2026-07-31")
+                .expect("dedupe records should load")
+                .is_empty()
+        );
+        assert!(
+            repository
+                .usage_limit_reminder_history("2026-07-31", "2026-07-31")
+                .expect("history should load")
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .usage_limit_daily_exception(rule.id, "2026-07-31")
+                .expect("exception should load")
+                .temporary_added_minutes,
+            0
+        );
+        assert_eq!(repository.usage_limit_rules().unwrap().len(), 1);
     }
 
     #[test]

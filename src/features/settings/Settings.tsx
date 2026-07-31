@@ -43,6 +43,7 @@ import { notifyActivityDataChanged } from "../../lib/events";
 import { clearApplicationIconMemoryCache } from "../applications/ApplicationIcon";
 import { PrivacyNotice } from "../onboarding/PrivacyNotice";
 import { UsageLimits } from "./UsageLimits";
+import { UsageLimitReminderCenter } from "./UsageLimitReminderCenter";
 
 function Toggle({
   checked,
@@ -340,19 +341,19 @@ export function Settings() {
           </select>
         </label>
         <div className="setting-row">
-          <div><strong>{t("Quiet Hours")}</strong><small>{t("Break reminders stay silent during this period.")}</small></div>
+          <div><strong>{t("Quiet Hours")}</strong><small>{t("Break and usage limit reminders stay silent during this period.")}</small></div>
           <span className="quiet-hours">
             <input
               type="time"
               value={settings.quietHoursStart}
-              disabled={saving || !settings.breakRemindersEnabled}
+              disabled={saving}
               onChange={(event) => void save({ ...settings, quietHoursStart: event.currentTarget.value })}
             />
             <span>{t("to")}</span>
             <input
               type="time"
               value={settings.quietHoursEnd}
-              disabled={saving || !settings.breakRemindersEnabled}
+              disabled={saving}
               onChange={(event) => void save({ ...settings, quietHoursEnd: event.currentTarget.value })}
             />
           </span>
@@ -360,6 +361,7 @@ export function Settings() {
       </section>
 
       <UsageLimits />
+      <UsageLimitReminderCenter />
 
       {shortcuts && (
         <section className="settings-card">

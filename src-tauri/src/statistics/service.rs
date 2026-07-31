@@ -163,7 +163,11 @@ pub struct UsageLimitProgress {
     pub notifications_enabled: bool,
     pub enabled: bool,
     pub local_date: String,
+    pub base_limit_minutes: i64,
     pub limit_minutes: i64,
+    pub temporary_added_minutes: i64,
+    pub notifications_snoozed_until_ms: Option<i64>,
+    pub notifications_silenced: bool,
     pub used_duration_ms: i64,
     pub percentage: f64,
     pub threshold_state: UsageLimitThresholdState,
@@ -188,13 +192,24 @@ impl StatisticsService {
     }
 
     pub fn today_notifiable_usage_limit_progress(&self) -> AppResult<Vec<UsageLimitProgress>> {
-        let date = Local::now().date_naive();
+        let now = Local::now();
+        let date = now.date_naive();
+        let now_ms = now.timestamp_millis();
         let rules = self
             .repository
             .usage_limit_rules()?
             .into_iter()
             .filter(|rule| rule.enabled && rule.notifications_enabled);
-        self.usage_limit_progress_for_rules(date, rules)
+        Ok(self
+            .usage_limit_progress_for_rules(date, rules)?
+            .into_iter()
+            .filter(|progress| {
+                !progress.notifications_silenced
+                    && progress
+                        .notifications_snoozed_until_ms
+                        .is_none_or(|until_ms| until_ms <= now_ms)
+            })
+            .collect())
     }
 
     pub fn usage_limit_progress_for_date(
@@ -218,7 +233,15 @@ impl StatisticsService {
                     range.start_ms,
                     range.end_ms,
                 )?;
-                Ok(usage_limit_progress(rule, date, used_duration_ms))
+                let exception = self
+                    .repository
+                    .usage_limit_daily_exception(rule.id, &date.to_string())?;
+                Ok(usage_limit_progress(
+                    rule,
+                    date,
+                    used_duration_ms,
+                    exception,
+                ))
             })
             .collect()
     }
@@ -692,12 +715,14 @@ fn usage_limit_progress(
     rule: UsageLimitRule,
     date: NaiveDate,
     used_duration_ms: i64,
+    exception: crate::database::UsageLimitDailyException,
 ) -> UsageLimitProgress {
-    let limit_minutes = if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
+    let base_limit_minutes = if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
         rule.weekend_limit_minutes
     } else {
         rule.weekday_limit_minutes
     };
+    let limit_minutes = base_limit_minutes.saturating_add(exception.temporary_added_minutes);
     let limit_ms = limit_minutes.saturating_mul(60_000);
     let used_duration_ms = used_duration_ms.max(0);
     let threshold_state = if used_duration_ms.saturating_mul(100) >= limit_ms.saturating_mul(100) {
@@ -718,7 +743,11 @@ fn usage_limit_progress(
         notifications_enabled: rule.notifications_enabled,
         enabled: rule.enabled,
         local_date: date.to_string(),
+        base_limit_minutes,
         limit_minutes,
+        temporary_added_minutes: exception.temporary_added_minutes,
+        notifications_snoozed_until_ms: exception.notifications_snoozed_until_ms,
+        notifications_silenced: exception.notifications_silenced,
         used_duration_ms,
         percentage: used_duration_ms as f64 / limit_ms as f64 * 100.0,
         threshold_state,
@@ -1229,12 +1258,23 @@ mod tests {
         assert_eq!(weekday.threshold_state, UsageLimitThresholdState::Reached80);
 
         let saturday = NaiveDate::from_ymd_opt(2025, 1, 18).expect("Saturday should exist");
+        let rule_id = repository
+            .usage_limit_rules()
+            .expect("usage rules should load")
+            .pop()
+            .expect("usage rule should exist")
+            .id;
+        repository
+            .add_temporary_usage_limit_minutes(rule_id, &saturday.to_string(), 30, 0)
+            .expect("weekend exception should be stored");
         let weekend = service
             .usage_limit_progress_for_date(saturday)
             .expect("weekend progress should load")
             .pop()
             .expect("rule should have progress");
-        assert_eq!(weekend.limit_minutes, 2);
+        assert_eq!(weekend.base_limit_minutes, 2);
+        assert_eq!(weekend.temporary_added_minutes, 30);
+        assert_eq!(weekend.limit_minutes, 32);
         assert_eq!(weekend.used_duration_ms, 0);
         assert_eq!(weekend.threshold_state, UsageLimitThresholdState::Below80);
     }

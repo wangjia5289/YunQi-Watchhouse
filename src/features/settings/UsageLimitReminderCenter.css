@@ -1,0 +1,281 @@
+.usage-limit-reminders-heading {
+  align-items: center;
+}
+
+.usage-limit-history-range {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-limit-history-range select,
+.usage-limit-reminder-allowance-actions select {
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+  font-size: 11px;
+}
+
+.usage-limit-reminders-notice {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--green-700);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.usage-limit-reminders-notice.error {
+  color: #a44843;
+}
+
+.usage-limit-reminders-notice button,
+.usage-limit-reminder-rule-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+  font-size: 11px;
+}
+
+.usage-limit-reminder-rule-actions button:disabled,
+.usage-limit-history-range select:disabled,
+.usage-limit-reminder-allowance-actions select:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.usage-limit-reminders-section {
+  margin-top: 18px;
+}
+
+.usage-limit-reminders-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.usage-limit-reminders-section-heading h3 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.usage-limit-reminders-section-heading span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.usage-limit-reminders-empty {
+  min-height: 72px;
+  margin: 12px 0 0;
+  padding: 14px;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.usage-limit-reminders-empty strong {
+  color: inherit;
+  font-size: 12px;
+}
+
+.usage-limit-reminders-list,
+.usage-limit-reminder-history-list {
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.usage-limit-reminder-rule {
+  min-width: 0;
+  padding: 14px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-limit-reminder-rule.disabled .usage-limit-reminder-rule-summary {
+  opacity: 0.55;
+}
+
+.usage-limit-reminder-rule-summary {
+  min-width: 0;
+}
+
+.usage-limit-reminder-rule-summary p,
+.usage-limit-reminder-rule-summary small,
+.usage-limit-reminder-history-entry p {
+  margin: 7px 0 0;
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.usage-limit-reminder-extra {
+  color: var(--green-700);
+}
+
+.usage-limit-reminder-rule-actions {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.usage-limit-reminder-notification-actions,
+.usage-limit-reminder-allowance-actions {
+  display: flex;
+  align-items: end;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.usage-limit-reminder-allowance-actions label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 620;
+}
+
+.usage-limit-reminder-rule-actions button:first-child,
+.usage-limit-reminder-allowance-actions button:not(.clear) {
+  color: white;
+  border-color: var(--green-700);
+  background: var(--green-700);
+  font-weight: 650;
+}
+
+.usage-limit-reminder-rule-actions button.clear {
+  color: #a44843;
+  border-color: rgba(164, 72, 67, 0.2);
+  background: rgba(164, 72, 67, 0.06);
+}
+
+.usage-limit-reminder-history {
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.usage-limit-reminder-history-entry {
+  min-width: 0;
+  padding: 12px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-limit-reminder-history-entry:last-child {
+  border-bottom: 0;
+}
+
+.usage-limit-reminder-history-meta {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
+
+.usage-limit-reminder-history-meta strong {
+  color: var(--green-700);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-limit-reminder-history-meta time {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 620px) {
+  .usage-limit-reminder-rule {
+    grid-template-columns: 1fr;
+    gap: 13px;
+  }
+
+  .usage-limit-reminder-rule-actions {
+    justify-items: start;
+  }
+
+  .usage-limit-reminder-notification-actions,
+  .usage-limit-reminder-allowance-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 420px) {
+  .usage-limit-reminders-heading,
+  .usage-limit-reminders-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .usage-limit-reminders-section-heading span {
+    text-align: left;
+  }
+
+  .usage-limit-history-range {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .usage-limit-history-range select {
+    flex: 1;
+  }
+
+  .usage-limit-reminder-notification-actions,
+  .usage-limit-reminder-allowance-actions {
+    width: 100%;
+  }
+
+  .usage-limit-reminder-notification-actions button {
+    flex: 1;
+  }
+
+  .usage-limit-reminder-allowance-actions label {
+    flex: 1 1 72px;
+  }
+
+  .usage-limit-reminder-allowance-actions select {
+    width: 100%;
+  }
+
+  .usage-limit-reminder-allowance-actions button {
+    flex: 1 1 86px;
+  }
+
+  .usage-limit-reminder-history-entry {
+    align-items: start;
+  }
+
+  .usage-limit-reminder-history-meta time {
+    max-width: 105px;
+    overflow-wrap: anywhere;
+  }
+}

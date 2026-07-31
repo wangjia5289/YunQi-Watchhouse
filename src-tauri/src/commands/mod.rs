@@ -27,8 +27,10 @@ pub use timeline::{
     update_timeline_session_categories, update_timeline_session_notes,
 };
 pub use usage_limits::{
-    create_usage_limit, delete_usage_limit, get_today_usage_limit_progress,
-    get_usage_limit_targets, get_usage_limits, update_usage_limit,
+    add_temporary_usage_limit_minutes, clear_temporary_usage_limit_minutes, create_usage_limit,
+    delete_usage_limit, get_today_usage_limit_progress, get_usage_limit_reminder_history,
+    get_usage_limit_targets, get_usage_limits, silence_usage_limit_notifications_for_today,
+    snooze_usage_limit_notifications, update_usage_limit,
 };
 
 use serde::Serialize;

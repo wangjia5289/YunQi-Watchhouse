@@ -187,9 +187,33 @@ export type UsageLimitThresholdState = "BELOW_80" | "REACHED_80" | "REACHED_100"
 export interface UsageLimitProgress extends UsageLimitRule {
   localDate: string;
   limitMinutes: number;
+  baseLimitMinutes: number;
+  temporaryAddedMinutes: number;
+  notificationsSnoozedUntilMs: number | null;
+  notificationsSilenced: boolean;
   usedDurationMs: number;
   percentage: number;
   thresholdState: UsageLimitThresholdState;
+}
+
+export interface UsageLimitDailyException {
+  ruleId: number;
+  localDate: string;
+  temporaryAddedMinutes: number;
+  notificationsSnoozedUntilMs: number | null;
+  notificationsSilenced: boolean;
+}
+
+export interface UsageLimitReminderHistoryEntry {
+  ruleId: number;
+  scopeType: UsageLimitScopeType;
+  applicationId: number | null;
+  applicationName: string | null;
+  category: string | null;
+  targetName: string;
+  localDate: string;
+  threshold: 80 | 100;
+  deliveredAtMs: number;
 }
 
 export interface ApplicationIcon {
@@ -531,6 +555,38 @@ export function deleteUsageLimit(ruleId: number): Promise<void> {
 
 export function getTodayUsageLimitProgress(): Promise<UsageLimitProgress[]> {
   return invoke("get_today_usage_limit_progress");
+}
+
+export function getUsageLimitReminderHistory(
+  days = 7,
+): Promise<UsageLimitReminderHistoryEntry[]> {
+  return invoke("get_usage_limit_reminder_history", { days });
+}
+
+export function snoozeUsageLimitNotifications(
+  ruleId: number,
+  minutes: number,
+): Promise<UsageLimitDailyException> {
+  return invoke("snooze_usage_limit_notifications", { ruleId, minutes });
+}
+
+export function silenceUsageLimitNotificationsForToday(
+  ruleId: number,
+): Promise<UsageLimitDailyException> {
+  return invoke("silence_usage_limit_notifications_for_today", { ruleId });
+}
+
+export function addTemporaryUsageLimitMinutes(
+  ruleId: number,
+  minutes: number,
+): Promise<UsageLimitDailyException> {
+  return invoke("add_temporary_usage_limit_minutes", { ruleId, minutes });
+}
+
+export function clearTemporaryUsageLimitMinutes(
+  ruleId: number,
+): Promise<UsageLimitDailyException> {
+  return invoke("clear_temporary_usage_limit_minutes", { ruleId });
 }
 
 export function getApplicationIcon(
