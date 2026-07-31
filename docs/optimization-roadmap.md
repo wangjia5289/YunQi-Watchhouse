@@ -445,3 +445,55 @@ Decisions:
 - All decorative artwork is CSS-generated and original; no copyrighted characters or franchise assets are used.
 - Visual changes stay separate from activity tracking, statistics, limits, reminders, and localization logic.
 - Motion is intentionally subtle and disabled when the operating system requests reduced motion.
+
+## Phase 20: Automatic Classification And Local Insights
+
+Status: Complete
+
+- [x] Add prioritized classification rules for application names, bundle identifiers, and window titles.
+- [x] Apply automatic categories at the session level so browsers can be classified by context.
+- [x] Reapply current rules to historical active sessions and clear stale automatic overrides.
+- [x] Use effective session categories consistently in reports, Timeline search, and category limits.
+- [x] Add private weekly insights for activity change, strongest day, peak hour, leading category,
+  and Focus Plan completion.
+- [x] Add complete Chinese and English copy for rules, results, errors, and insights.
+
+Decisions:
+
+- A rule never overwrites the application's manually selected fallback category.
+- Lower priority numbers run first; ties retain stable creation order.
+- Matching is a case-insensitive substring operation and all analysis remains local.
+
+## Phase 21: Tray Overview And Modular Styles
+
+Status: Complete
+
+- [x] Show today's active time, current application, today's focus time, and closest usage limit in
+  the macOS tray menu.
+- [x] Refresh tray summaries every 30 seconds and immediately after a locale change.
+- [x] Keep existing tracking, Focus Mode, countdown, template, window, and quit actions.
+- [x] Move authoritative light and dark theme tokens into `src/styles/tokens.css`.
+- [x] Move Reports styles and responsive rules into the Reports feature directory.
+- [x] Keep new classification, insights, and updater styles isolated by feature.
+
+## Phase 22: Signed Releases And Updates
+
+Status: Complete
+
+- [x] Build `.app` and `.dmg` bundles by default on macOS.
+- [x] Add release-version consistency checks across npm, Cargo, and Tauri configuration.
+- [x] Add a tag-triggered universal macOS GitHub Release workflow.
+- [x] Configure Developer ID signing, Apple notarization, updater artifact signing, and
+  `latest.json` generation through repository secrets.
+- [x] Import and verify the Developer ID certificate, verify the updater key pair, and pin release
+  actions to reviewed commit hashes before exposing signing credentials.
+- [x] Add automatic update checks plus manual check, install, signature verification, and restart.
+- [x] Document certificate, notarization, updater-key, secret, tag, and local-build workflows.
+
+Decisions:
+
+- The production updater config is generated only in release CI, so local builds never contain a
+  fake public key or unusable endpoint.
+- Developer ID signing and Apple notarization cannot be verified locally without the owner's
+  certificate and Apple credentials; CI rejects missing secrets instead of publishing an unsigned
+  release.

@@ -1,14 +1,20 @@
 pub(crate) mod activity;
 pub(crate) mod applications;
+pub(crate) mod category_rules;
 pub(crate) mod focus;
 pub(crate) mod settings;
 pub(crate) mod statistics;
 pub(crate) mod timeline;
+pub(crate) mod updater;
 pub(crate) mod usage_limits;
 
 pub use activity::{get_current_activity, set_tracking_paused};
 pub use applications::{
     clear_application_icon_cache, get_application_icon, update_application_preferences,
+};
+pub use category_rules::{
+    create_category_rule, delete_category_rule, get_category_rules, reapply_category_rules,
+    update_category_rule,
 };
 pub use focus::{get_focus_mode, set_focus_mode};
 pub use settings::{
@@ -26,6 +32,7 @@ pub use timeline::{
     preview_activity_import, undo_timeline_edit, update_timeline_session,
     update_timeline_session_categories, update_timeline_session_notes,
 };
+pub use updater::{check_for_updates, install_update};
 pub use usage_limits::{
     add_temporary_usage_limit_minutes, clear_temporary_usage_limit_minutes, create_usage_limit,
     delete_usage_limit, get_today_usage_limit_progress, get_usage_limit_reminder_history,

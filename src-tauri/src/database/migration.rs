@@ -24,5 +24,6 @@ pub(super) fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/0014_usage_limit_reminders.sql"
         )),
+        M::up(include_str!("../../migrations/0015_category_rules.sql")),
     ])
 }

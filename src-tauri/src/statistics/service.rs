@@ -517,7 +517,10 @@ impl StatisticsService {
             let Some(application) = record.application else {
                 continue;
             };
-            let item = usage.entry(application.category).or_default();
+            let category = record
+                .effective_category
+                .unwrap_or_else(|| application.category.clone());
+            let item = usage.entry(category).or_default();
             item.0 += end - start;
             item.1.insert(application.id);
         }
@@ -774,10 +777,7 @@ fn timeline_entries(records: Vec<ActivityRecord>, range: TimeRange) -> Vec<Timel
                     .application
                     .as_ref()
                     .and_then(|application| application.bundle_id.clone()),
-                category: record
-                    .application
-                    .as_ref()
-                    .map(|application| application.category.clone()),
+                category: record.effective_category,
                 window_title: record.session.window_title,
                 note: record.session.note,
                 started_at_ms: start,
@@ -868,11 +868,30 @@ mod tests {
         start_ms: i64,
         end_ms: i64,
     ) {
+        store_session_with_category_override(
+            repository,
+            state,
+            application_id,
+            None,
+            start_ms,
+            end_ms,
+        );
+    }
+
+    fn store_session_with_category_override(
+        repository: &ActivityRepository,
+        state: ActivityState,
+        application_id: Option<i64>,
+        category_override: Option<&str>,
+        start_ms: i64,
+        end_ms: i64,
+    ) {
         let session = repository
             .create_session(&NewSession {
                 state,
                 application_id,
                 window_title: None,
+                category_override: category_override.map(str::to_owned),
                 started_at_ms: start_ms,
             })
             .expect("session should open");
@@ -1046,6 +1065,81 @@ mod tests {
             .expect("usage should succeed");
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].duration_ms, 250);
+    }
+
+    #[test]
+    fn effective_categories_do_not_replace_the_application_base_category() {
+        let (service, repository, application_id) = setup();
+        repository
+            .update_application_preferences(application_id, "Base category", false, false)
+            .expect("base category should update");
+        store_session_with_category_override(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            Some("Rule A"),
+            100,
+            200,
+        );
+        store_session_with_category_override(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            Some("Rule B"),
+            200,
+            350,
+        );
+        let range = TimeRange::new(0, 500).expect("range should be valid");
+
+        let applications = service
+            .app_usage(range)
+            .expect("application usage should load");
+        assert_eq!(applications.len(), 1);
+        assert_eq!(applications[0].category, "Base category");
+
+        let timeline = service.timeline(range).expect("timeline should load");
+        assert_eq!(timeline[0].category.as_deref(), Some("Rule A"));
+        assert_eq!(timeline[1].category.as_deref(), Some("Rule B"));
+
+        let categories = service
+            .category_usage(range)
+            .expect("category usage should load");
+        assert_eq!(
+            categories,
+            vec![
+                CategoryUsage {
+                    category: "Rule B".to_owned(),
+                    duration_ms: 150,
+                    application_count: 1,
+                },
+                CategoryUsage {
+                    category: "Rule A".to_owned(),
+                    duration_ms: 100,
+                    application_count: 1,
+                },
+            ]
+        );
+
+        let limit = repository
+            .create_usage_limit(
+                &crate::database::UsageLimitRuleInput {
+                    scope_type: crate::database::UsageLimitScopeType::Category,
+                    application_id: None,
+                    category: Some("Rule A".to_owned()),
+                    weekday_limit_minutes: 60,
+                    weekend_limit_minutes: 60,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                500,
+            )
+            .expect("category limit should be stored");
+        assert_eq!(
+            repository
+                .active_usage_duration_for_rule(&limit, range.start_ms, range.end_ms)
+                .expect("category usage limit duration should load"),
+            100
+        );
     }
 
     #[test]

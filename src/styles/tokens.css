@@ -1,0 +1,48 @@
+/* Authoritative visual tokens. Feature styles should consume these variables. */
+:root,
+:root[data-theme="light"] {
+  color: #34415f;
+  background: #f5f8ff;
+  --green-900: #3f5180;
+  --green-700: #6b7fd7;
+  --green-500: #91a8ec;
+  --green-100: #e8edff;
+  --surface: rgba(255, 255, 255, 0.76);
+  --surface-solid: #fcfdff;
+  --border: rgba(102, 121, 184, 0.14);
+  --muted: #7d87a5;
+  --sidebar: #eef4ff;
+  --shadow: 0 18px 48px rgba(103, 119, 177, 0.11);
+  --accent-sky: #91c9ff;
+  --accent-sakura: #f2a9c6;
+  --accent-lilac: #ad9ce8;
+}
+
+:root[data-theme="dark"] {
+  color: #e8ebfa;
+  background: #171a2b;
+  --green-900: #d5dafe;
+  --green-700: #a9b6ff;
+  --green-500: #8999df;
+  --green-100: #292f4d;
+  --surface: rgba(31, 35, 57, 0.79);
+  --surface-solid: #252941;
+  --border: rgba(205, 213, 255, 0.1);
+  --muted: #9ba3c3;
+  --sidebar: #1d2035;
+  --shadow: 0 20px 55px rgba(4, 6, 18, 0.22);
+  --accent-sky: #72a8dd;
+  --accent-sakura: #d789aa;
+  --accent-lilac: #9584d6;
+}
+
+:root[data-theme="dark"] .app-shell {
+  background:
+    radial-gradient(circle at 76% 5%, rgba(126, 145, 224, 0.12), transparent 28%),
+    radial-gradient(circle at 18% 94%, rgba(204, 125, 171, 0.09), transparent 27%),
+    linear-gradient(145deg, #171a2b, #1b1d34 54%, #241d35);
+}
+
+:root[data-theme="dark"] .sidebar {
+  background: linear-gradient(180deg, rgba(29, 33, 55, 0.94), rgba(35, 29, 52, 0.92));
+}

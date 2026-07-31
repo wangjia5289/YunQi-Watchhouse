@@ -1,0 +1,285 @@
+.category-rules-heading {
+  align-items: center;
+}
+
+.category-rule-add,
+.category-rule-editor button,
+.category-rule-controls > button,
+.category-rule-history > button,
+.category-rule-load-error > button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+  font-size: 11px;
+}
+
+.category-rule-add {
+  color: var(--green-700);
+  font-weight: 650;
+}
+
+.category-rules-card button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.category-rule-notice {
+  margin: 14px 0 0;
+  color: var(--green-700);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.category-rule-notice.error {
+  color: #a44843;
+}
+
+.category-rule-load-error {
+  margin-top: 14px;
+  padding: 12px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid rgba(164, 72, 67, 0.18);
+  border-bottom: 1px solid rgba(164, 72, 67, 0.18);
+}
+
+.category-rule-load-error > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.category-rule-load-error strong {
+  color: #a44843;
+  font-size: 11px;
+}
+
+.category-rule-load-error small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.category-rule-editor {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-solid) 76%, transparent);
+}
+
+.category-rule-editor-heading,
+.category-rule-editor-footer,
+.category-rule-history {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.category-rule-form-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.category-rule-form-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.category-rule-form-grid input,
+.category-rule-form-grid select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+  font-size: 12px;
+}
+
+.category-rule-editor-footer {
+  margin-top: 16px;
+}
+
+.category-rule-editor-footer > label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.category-rule-editor-footer > button {
+  color: white;
+  border-color: var(--green-700);
+  background: var(--green-700);
+  font-weight: 650;
+}
+
+.category-rule-empty {
+  min-height: 86px;
+  margin: 16px 0 0;
+  padding: 18px;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.category-rules-list {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.category-rule {
+  min-width: 0;
+  padding: 15px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.category-rule.disabled .category-rule-main {
+  opacity: 0.48;
+}
+
+.category-rule-main {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.category-rule-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.category-rule-title > span {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  background: var(--surface-solid);
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.category-rule-title strong,
+.category-rule-title b {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-rule-title b {
+  color: var(--green-700);
+}
+
+.category-rule-title i,
+.category-rule-main small {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.category-rule-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.category-rule-controls > button.delete {
+  color: #a44843;
+  border-color: rgba(164, 72, 67, 0.2);
+  background: rgba(164, 72, 67, 0.06);
+}
+
+.category-rule-history {
+  margin-top: 18px;
+  padding-top: 17px;
+  border-top: 1px solid var(--border);
+}
+
+.category-rule-history > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.category-rule-history strong {
+  font-size: 12px;
+}
+
+.category-rule-history small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+@media (max-width: 620px) {
+  .category-rule,
+  .category-rule-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .category-rule-controls {
+    justify-content: flex-end;
+  }
+
+  .category-rule-history {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .category-rule-load-error {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 420px) {
+  .category-rules-heading,
+  .category-rule-editor-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .category-rule-title {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .category-rule-controls {
+    justify-content: space-between;
+  }
+}

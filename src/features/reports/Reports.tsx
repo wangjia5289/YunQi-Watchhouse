@@ -10,6 +10,9 @@ import {
   startFocusPlan,
 } from "../../lib/ipc";
 import { useLocale } from "../../lib/i18n";
+import { WeeklyInsights } from "./WeeklyInsights";
+import { shiftReportRangeByDays } from "./weeklyInsightModel";
+import "./Reports.css";
 
 type ReportPeriod = "week" | "month" | "custom";
 
@@ -56,6 +59,7 @@ export function Reports() {
   const [customStart, setCustomStart] = useState(shiftLocalDate(today, -6));
   const [customEnd, setCustomEnd] = useState(today);
   const [report, setReport] = useState<ProductivityReport | null>(null);
+  const [previousWeekReport, setPreviousWeekReport] = useState<ProductivityReport | null>(null);
   const [focusHistory, setFocusHistory] = useState<FocusPlanHistorySummary | null>(null);
   const [focusMessage, setFocusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,14 +69,31 @@ export function Reports() {
   );
 
   useEffect(() => {
+    let cancelled = false;
     setError(null);
-    void getProductivityReport(range.startMs, range.endMs)
-      .then(setReport)
-      .catch((reason) => setError(errorMessage(reason)));
-    void getFocusPlanHistory(range.startMs, range.endMs)
-      .then(setFocusHistory)
-      .catch((reason) => setError(errorMessage(reason)));
-  }, [range.endMs, range.startMs]);
+    setReport(null);
+    setPreviousWeekReport(null);
+    setFocusHistory(null);
+    const previousWeekRange = shiftReportRangeByDays(range, -7);
+    const previousWeekRequest: Promise<ProductivityReport | null> = period === "week"
+      ? getProductivityReport(previousWeekRange.startMs, previousWeekRange.endMs)
+      : Promise.resolve(null);
+    void Promise.all([
+      getProductivityReport(range.startMs, range.endMs),
+      getFocusPlanHistory(range.startMs, range.endMs),
+      previousWeekRequest,
+    ]).then(([nextReport, nextFocusHistory, nextPreviousWeekReport]) => {
+      if (cancelled) return;
+      setReport(nextReport);
+      setFocusHistory(nextFocusHistory);
+      setPreviousWeekReport(nextPreviousWeekReport);
+    }).catch((reason) => {
+      if (!cancelled) setError(errorMessage(reason));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [period, range.endMs, range.startMs]);
 
   const dailyMaximum = Math.max(
     1,
@@ -169,6 +190,14 @@ export function Reports() {
           <small>{t(`${report?.dailyUsage.length ?? 0} recorded days`)}</small>
         </article>
       </section>
+
+      {period === "week" && report && previousWeekReport && (
+        <WeeklyInsights
+          report={report}
+          focusHistory={focusHistory}
+          previousWeekActiveDurationMs={previousWeekReport.activeDurationMs}
+        />
+      )}
 
       <section className="report-section focus-history" aria-labelledby="focus-history-title">
         <div className="section-heading">

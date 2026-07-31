@@ -195,6 +195,7 @@ pub fn set_app_locale(locale: String, app: AppHandle) -> Result<(), String> {
         })
         .map_err(|error| error.to_string())?;
     }
+    crate::update_tray_overview(&app);
     Ok(())
 }
 

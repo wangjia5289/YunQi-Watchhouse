@@ -42,6 +42,8 @@ import { useLocale } from "../../lib/i18n";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { clearApplicationIconMemoryCache } from "../applications/ApplicationIcon";
 import { PrivacyNotice } from "../onboarding/PrivacyNotice";
+import { CategoryRules } from "./CategoryRules";
+import { SoftwareUpdates } from "./SoftwareUpdates";
 import { UsageLimits } from "./UsageLimits";
 import { UsageLimitReminderCenter } from "./UsageLimitReminderCenter";
 import "./SettingsAnime.css";
@@ -361,6 +363,7 @@ export function Settings() {
         </div>
       </section>
 
+      <CategoryRules />
       <UsageLimits />
       <UsageLimitReminderCenter />
 
@@ -631,6 +634,8 @@ export function Settings() {
           <button onClick={() => void openLogDirectory()}>{t("Show Diagnostic Logs")}</button>
         </div>
       </section>
+
+      <SoftwareUpdates />
 
       <section className="settings-card">
         <div className="list-heading"><div><p className="section-kicker">{t("About")}</p><h2>{t("YunQi-Watchhouse")}</h2></div><span>{t(diagnostics ? `Version ${diagnostics.applicationVersion}` : "Version…")}</span></div>

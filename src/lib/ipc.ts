@@ -155,6 +155,23 @@ export interface CategoryUsage {
   applicationCount: number;
 }
 
+export type CategoryRuleMatchField =
+  | "APPLICATION_NAME"
+  | "BUNDLE_ID"
+  | "WINDOW_TITLE";
+
+export interface CategoryRuleInput {
+  matchField: CategoryRuleMatchField;
+  pattern: string;
+  category: string;
+  priority: number;
+  enabled: boolean;
+}
+
+export interface CategoryRule extends CategoryRuleInput {
+  id: number;
+}
+
 export type UsageLimitScopeType = "APPLICATION" | "CATEGORY";
 
 export interface UsageLimitRuleInput {
@@ -237,6 +254,15 @@ export interface ProductivityReport {
   dailyUsage: DailyUsage[];
   hourlyUsage: { hour: number; activeDurationMs: number }[];
   categoryUsage: CategoryUsage[];
+}
+
+export interface UpdateCheck {
+  configured: boolean;
+  available: boolean;
+  currentVersion: string;
+  version: string | null;
+  notes: string | null;
+  publishedAt: string | null;
 }
 
 export interface Settings {
@@ -528,6 +554,29 @@ export function getCategoryUsage(
   return invoke("get_category_usage", { rangeStartMs, rangeEndMs });
 }
 
+export function getCategoryRules(): Promise<CategoryRule[]> {
+  return invoke("get_category_rules");
+}
+
+export function createCategoryRule(input: CategoryRuleInput): Promise<CategoryRule> {
+  return invoke("create_category_rule", { input });
+}
+
+export function updateCategoryRule(
+  ruleId: number,
+  input: CategoryRuleInput,
+): Promise<CategoryRule> {
+  return invoke("update_category_rule", { ruleId, input });
+}
+
+export function deleteCategoryRule(ruleId: number): Promise<void> {
+  return invoke("delete_category_rule", { ruleId });
+}
+
+export function reapplyCategoryRules(): Promise<number> {
+  return invoke("reapply_category_rules");
+}
+
 export function getUsageLimits(): Promise<UsageLimitRule[]> {
   return invoke("get_usage_limits");
 }
@@ -689,6 +738,14 @@ export function updateShortcutSettings(
 
 export function setAppLocale(locale: "en" | "zh-CN"): Promise<void> {
   return invoke("set_app_locale", { locale });
+}
+
+export function checkForUpdates(): Promise<UpdateCheck> {
+  return invoke("check_for_updates");
+}
+
+export function installUpdate(): Promise<void> {
+  return invoke("install_update");
 }
 
 export function getDataHealthSummary(): Promise<DataHealthSummary> {

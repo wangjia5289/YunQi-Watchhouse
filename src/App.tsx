@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import "./App.css";
+import "./styles/tokens.css";
 import { Dashboard } from "./features/dashboard/Dashboard";
 import { Timeline } from "./features/timeline/Timeline";
 import { Applications } from "./features/applications/Applications";

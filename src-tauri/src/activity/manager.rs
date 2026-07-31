@@ -269,11 +269,17 @@ impl SessionManager {
                     )
                 })?;
                 let application = self.upsert_application(foreground, sample.observed_at_ms)?;
+                let category_override = self.repository.resolve_category_rule(
+                    &application.name,
+                    application.bundle_id.as_deref(),
+                    foreground.window_title.as_deref(),
+                )?;
                 Ok(PreparedSession {
                     session: NewSession {
                         state: ActivityState::Active,
                         application_id: Some(application.id),
                         window_title: foreground.window_title.clone(),
+                        category_override,
                         started_at_ms,
                     },
                     application_identity: Some(application.identity_key),
@@ -284,6 +290,7 @@ impl SessionManager {
                     state: ActivityState::Idle,
                     application_id: None,
                     window_title: None,
+                    category_override: None,
                     started_at_ms,
                 },
                 application_identity: None,

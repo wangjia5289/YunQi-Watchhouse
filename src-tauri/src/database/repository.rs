@@ -66,9 +66,11 @@ pub enum RecoveryOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActivityRecord {
     pub session: ActivitySession,
     pub application: Option<Application>,
+    pub effective_category: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
@@ -80,6 +82,54 @@ pub struct TimelineSearch {
     pub maximum_duration_ms: Option<i64>,
     pub time_from_minutes: Option<i64>,
     pub time_to_minutes: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CategoryRuleMatchField {
+    ApplicationName,
+    BundleId,
+    WindowTitle,
+}
+
+impl CategoryRuleMatchField {
+    fn as_database_value(self) -> &'static str {
+        match self {
+            Self::ApplicationName => "APPLICATION_NAME",
+            Self::BundleId => "BUNDLE_ID",
+            Self::WindowTitle => "WINDOW_TITLE",
+        }
+    }
+
+    fn from_database_value(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "APPLICATION_NAME" => Ok(Self::ApplicationName),
+            "BUNDLE_ID" => Ok(Self::BundleId),
+            "WINDOW_TITLE" => Ok(Self::WindowTitle),
+            _ => Err(rusqlite::Error::InvalidQuery),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRuleInput {
+    pub match_field: CategoryRuleMatchField,
+    pub pattern: String,
+    pub category: String,
+    pub priority: i64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRule {
+    pub id: i64,
+    pub match_field: CategoryRuleMatchField,
+    pub pattern: String,
+    pub category: String,
+    pub priority: i64,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -370,6 +420,136 @@ impl ActivityRepository {
         drop(connection);
         self.application(application_id)?
             .ok_or_else(|| AppError::InvalidSession("updated application was not found".to_owned()))
+    }
+
+    pub fn category_rules(&self) -> AppResult<Vec<CategoryRule>> {
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, match_field, pattern, category, priority, enabled
+             FROM category_rules ORDER BY priority, id",
+        )?;
+        Ok(statement
+            .query_map([], map_category_rule)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn create_category_rule(&self, input: &CategoryRuleInput) -> AppResult<CategoryRule> {
+        let normalized = normalize_category_rule(input)?;
+        let now_ms = now_millis();
+        let connection = self.database.lock()?;
+        connection.execute(
+            "INSERT INTO category_rules (
+                match_field, pattern, category, priority, enabled, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                normalized.match_field.as_database_value(),
+                normalized.pattern,
+                normalized.category,
+                normalized.priority,
+                normalized.enabled,
+                now_ms,
+            ],
+        )?;
+        find_category_rule(&connection, connection.last_insert_rowid())?.ok_or_else(|| {
+            AppError::InvalidSession("created category rule was not found".to_owned())
+        })
+    }
+
+    pub fn update_category_rule(
+        &self,
+        rule_id: i64,
+        input: &CategoryRuleInput,
+    ) -> AppResult<CategoryRule> {
+        let normalized = normalize_category_rule(input)?;
+        let connection = self.database.lock()?;
+        let changed = connection.execute(
+            "UPDATE category_rules
+             SET match_field = ?2, pattern = ?3, category = ?4,
+                 priority = ?5, enabled = ?6, updated_at_ms = ?7
+             WHERE id = ?1",
+            params![
+                rule_id,
+                normalized.match_field.as_database_value(),
+                normalized.pattern,
+                normalized.category,
+                normalized.priority,
+                normalized.enabled,
+                now_millis(),
+            ],
+        )?;
+        if changed == 0 {
+            return Err(AppError::InvalidSession(
+                "category rule was not found".to_owned(),
+            ));
+        }
+        find_category_rule(&connection, rule_id)?.ok_or_else(|| {
+            AppError::InvalidSession("updated category rule was not found".to_owned())
+        })
+    }
+
+    pub fn delete_category_rule(&self, rule_id: i64) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        if connection.execute("DELETE FROM category_rules WHERE id = ?1", [rule_id])? == 0 {
+            return Err(AppError::InvalidSession(
+                "category rule was not found".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn resolve_category_rule(
+        &self,
+        application_name: &str,
+        bundle_id: Option<&str>,
+        window_title: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        let connection = self.database.lock()?;
+        let rules = enabled_category_rules(&connection)?;
+        Ok(resolve_category_from_rules(
+            &rules,
+            application_name,
+            bundle_id,
+            window_title,
+        ))
+    }
+
+    pub fn reapply_category_rules(&self) -> AppResult<usize> {
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let rules = enabled_category_rules(&transaction)?;
+        let sessions = {
+            let mut statement = transaction.prepare(
+                "SELECT s.id, a.name, a.bundle_id, s.window_title, s.category_override
+                 FROM activity_sessions s
+                 JOIN applications a ON a.id = s.application_id
+                 WHERE s.state = 'ACTIVE'",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut changed = 0;
+        for (session_id, name, bundle_id, title, previous) in sessions {
+            let next =
+                resolve_category_from_rules(&rules, &name, bundle_id.as_deref(), title.as_deref());
+            if next != previous {
+                transaction.execute(
+                    "UPDATE activity_sessions SET category_override = ?2 WHERE id = ?1",
+                    params![session_id, next],
+                )?;
+                changed += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(changed)
     }
 
     pub fn should_record_window_title(&self, identity_key: &str) -> AppResult<bool> {
@@ -748,8 +928,11 @@ impl ActivityRepository {
         };
         let categories = {
             let mut statement = connection.prepare(
-                "SELECT DISTINCT category FROM applications
-                 WHERE length(trim(category)) > 0
+                "SELECT category FROM (
+                    SELECT category FROM applications WHERE length(trim(category)) > 0
+                    UNION
+                    SELECT category FROM category_rules WHERE length(trim(category)) > 0
+                 )
                  ORDER BY category COLLATE NOCASE",
             )?;
             statement
@@ -872,7 +1055,7 @@ impl ActivityRepository {
                     .into(),
             ),
             UsageLimitScopeType::Category => (
-                "a.category COLLATE NOCASE",
+                "COALESCE(s.category_override, a.category) COLLATE NOCASE",
                 rule.category
                     .clone()
                     .ok_or_else(|| {
@@ -2124,13 +2307,15 @@ impl ActivityRepository {
         connection.execute(
             "INSERT INTO activity_sessions (
                 state, application_id, window_title, started_at_ms, ended_at_ms,
-                duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?4, 0, 1, NULL, ?4, ?4)",
+                duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms,
+                category_override
+             ) VALUES (?1, ?2, ?3, ?4, ?4, 0, 1, NULL, ?4, ?4, ?5)",
             params![
                 session.state.as_db_str(),
                 session.application_id,
                 session.window_title,
                 session.started_at_ms,
+                session.category_override,
             ],
         )?;
 
@@ -2213,13 +2398,15 @@ impl ActivityRepository {
         transaction.execute(
             "INSERT INTO activity_sessions (
                 state, application_id, window_title, started_at_ms, ended_at_ms,
-                duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?4, 0, 1, NULL, ?4, ?4)",
+                duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms,
+                category_override
+             ) VALUES (?1, ?2, ?3, ?4, ?4, 0, 1, NULL, ?4, ?4, ?5)",
             params![
                 next_session.state.as_db_str(),
                 next_session.application_id,
                 next_session.window_title,
                 next_session.started_at_ms,
+                next_session.category_override,
             ],
         )?;
         let next_session_id = transaction.last_insert_rowid();
@@ -2283,37 +2470,15 @@ impl ActivityRepository {
                 s.closed_reason, s.created_at_ms, s.updated_at_ms, s.note,
                 a.id, a.identity_key, a.name, a.bundle_id, a.executable_path,
                 a.category, a.is_ignored, a.record_window_titles,
-                a.first_seen_at_ms, a.last_seen_at_ms
+                a.first_seen_at_ms, a.last_seen_at_ms,
+                COALESCE(s.category_override, a.category)
              FROM activity_sessions s
              LEFT JOIN applications a ON a.id = s.application_id
              WHERE s.started_at_ms < ?2 AND s.ended_at_ms > ?1
              ORDER BY s.started_at_ms, s.id",
         )?;
         let records = statement
-            .query_map(params![range_start_ms, range_end_ms], |row| {
-                let session = map_session(row)?;
-                let application_id: Option<i64> = row.get(12)?;
-                let application = application_id
-                    .map(|id| {
-                        Ok::<Application, rusqlite::Error>(Application {
-                            id,
-                            identity_key: row.get(13)?,
-                            name: row.get(14)?,
-                            bundle_id: row.get(15)?,
-                            executable_path: row.get(16)?,
-                            category: row.get(17)?,
-                            is_ignored: row.get(18)?,
-                            record_window_titles: row.get(19)?,
-                            first_seen_at_ms: row.get(20)?,
-                            last_seen_at_ms: row.get(21)?,
-                        })
-                    })
-                    .transpose()?;
-                Ok(ActivityRecord {
-                    session,
-                    application,
-                })
-            })?
+            .query_map(params![range_start_ms, range_end_ms], map_activity_record)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(records)
     }
@@ -2394,7 +2559,8 @@ impl ActivityRepository {
                 s.closed_reason, s.created_at_ms, s.updated_at_ms, s.note,
                 a.id, a.identity_key, a.name, a.bundle_id, a.executable_path,
                 a.category, a.is_ignored, a.record_window_titles,
-                a.first_seen_at_ms, a.last_seen_at_ms
+                a.first_seen_at_ms, a.last_seen_at_ms,
+                COALESCE(s.category_override, a.category)
              FROM activity_sessions s
              LEFT JOIN applications a ON a.id = s.application_id
              WHERE {TIMELINE_SEARCH_WHERE}
@@ -2521,7 +2687,7 @@ const TIMELINE_SEARCH_WHERE: &str = r#"
       ?8 IS NULL
       OR COALESCE(a.name, '') LIKE ?8 ESCAPE '\'
       OR COALESCE(a.bundle_id, '') LIKE ?8 ESCAPE '\'
-      OR COALESCE(a.category, '') LIKE ?8 ESCAPE '\'
+      OR COALESCE(s.category_override, a.category, '') LIKE ?8 ESCAPE '\'
       OR COALESCE(s.window_title, '') LIKE ?8 ESCAPE '\'
       OR COALESCE(s.note, '') LIKE ?8 ESCAPE '\'
     )
@@ -2899,6 +3065,91 @@ fn map_usage_limit_rule(row: &Row<'_>) -> rusqlite::Result<UsageLimitRule> {
     })
 }
 
+fn map_category_rule(row: &Row<'_>) -> rusqlite::Result<CategoryRule> {
+    Ok(CategoryRule {
+        id: row.get(0)?,
+        match_field: CategoryRuleMatchField::from_database_value(&row.get::<_, String>(1)?)?,
+        pattern: row.get(2)?,
+        category: row.get(3)?,
+        priority: row.get(4)?,
+        enabled: row.get(5)?,
+    })
+}
+
+fn find_category_rule(
+    connection: &rusqlite::Connection,
+    rule_id: i64,
+) -> AppResult<Option<CategoryRule>> {
+    connection
+        .query_row(
+            "SELECT id, match_field, pattern, category, priority, enabled
+             FROM category_rules WHERE id = ?1",
+            [rule_id],
+            map_category_rule,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn enabled_category_rules(connection: &Connection) -> AppResult<Vec<CategoryRule>> {
+    let mut statement = connection.prepare(
+        "SELECT id, match_field, pattern, category, priority, enabled
+         FROM category_rules WHERE enabled = 1 ORDER BY priority, id",
+    )?;
+    Ok(statement
+        .query_map([], map_category_rule)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn normalize_category_rule(input: &CategoryRuleInput) -> AppResult<CategoryRuleInput> {
+    let pattern = input.pattern.trim();
+    let category = input.category.trim();
+    if pattern.is_empty() || pattern.chars().count() > 120 {
+        return Err(AppError::InvalidSession(
+            "category rule pattern must contain between 1 and 120 characters".to_owned(),
+        ));
+    }
+    if category.is_empty() || category.chars().count() > 40 {
+        return Err(AppError::InvalidSession(
+            "category rule category must contain between 1 and 40 characters".to_owned(),
+        ));
+    }
+    if !(0..=9999).contains(&input.priority) {
+        return Err(AppError::InvalidSession(
+            "category rule priority must be between 0 and 9999".to_owned(),
+        ));
+    }
+    Ok(CategoryRuleInput {
+        match_field: input.match_field,
+        pattern: pattern.to_owned(),
+        category: category.to_owned(),
+        priority: input.priority,
+        enabled: input.enabled,
+    })
+}
+
+fn resolve_category_from_rules(
+    rules: &[CategoryRule],
+    application_name: &str,
+    bundle_id: Option<&str>,
+    window_title: Option<&str>,
+) -> Option<String> {
+    rules.iter().find_map(|rule| {
+        if !rule.enabled {
+            return None;
+        }
+        let candidate = match rule.match_field {
+            CategoryRuleMatchField::ApplicationName => Some(application_name),
+            CategoryRuleMatchField::BundleId => bundle_id,
+            CategoryRuleMatchField::WindowTitle => window_title,
+        }?;
+        candidate
+            .to_lowercase()
+            .contains(&rule.pattern.to_lowercase())
+            .then(|| rule.category.clone())
+    })
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3002,6 +3253,7 @@ fn map_activity_record(row: &Row<'_>) -> rusqlite::Result<ActivityRecord> {
     Ok(ActivityRecord {
         session,
         application,
+        effective_category: row.get(22)?,
     })
 }
 
@@ -3055,6 +3307,157 @@ mod tests {
         assert_eq!(first.id, second.id);
         assert_eq!(second.first_seen_at_ms, 100);
         assert_eq!(second.last_seen_at_ms, 250);
+    }
+
+    #[test]
+    fn category_rules_match_case_insensitively_by_priority_and_field() {
+        let repository = repository();
+        repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "intellij".to_owned(),
+                category: "Development".to_owned(),
+                priority: 100,
+                enabled: true,
+            })
+            .unwrap();
+        repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::BundleId,
+                pattern: "JETBRAINS".to_owned(),
+                category: "Focused work".to_owned(),
+                priority: 10,
+                enabled: true,
+            })
+            .unwrap();
+        repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::WindowTitle,
+                pattern: "private".to_owned(),
+                category: "Ignored rule".to_owned(),
+                priority: 0,
+                enabled: false,
+            })
+            .unwrap();
+
+        assert_eq!(
+            repository
+                .resolve_category_rule(
+                    "IntelliJ IDEA",
+                    Some("com.jetbrains.intellij"),
+                    Some("Private project")
+                )
+                .unwrap()
+                .as_deref(),
+            Some("Focused work")
+        );
+        assert_eq!(
+            repository
+                .resolve_category_rule("Safari", None, Some("A normal page"))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn category_rules_reclassify_and_clear_existing_session_overrides() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let first = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: Some("übersicht · pull request".to_owned()),
+                category_override: None,
+                started_at_ms: 100,
+            })
+            .unwrap();
+        repository
+            .close_session(first.id, 200, ClosedReason::AppChanged)
+            .unwrap();
+        let second = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: Some("Video break".to_owned()),
+                category_override: Some("Old rule".to_owned()),
+                started_at_ms: 200,
+            })
+            .unwrap();
+        repository
+            .close_session(second.id, 300, ClosedReason::AppChanged)
+            .unwrap();
+
+        repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::WindowTitle,
+                pattern: "ÜBERSICHT".to_owned(),
+                category: "Development".to_owned(),
+                priority: 10,
+                enabled: true,
+            })
+            .unwrap();
+        assert_eq!(
+            repository
+                .resolve_category_rule(
+                    "IntelliJ IDEA",
+                    Some("com.jetbrains.intellij"),
+                    Some("übersicht · pull request")
+                )
+                .unwrap()
+                .as_deref(),
+            Some("Development")
+        );
+        assert_eq!(repository.reapply_category_rules().unwrap(), 2);
+
+        let records = repository.records_overlapping(0, 400).unwrap();
+        assert_eq!(
+            records[0].application.as_ref().unwrap().category,
+            "Uncategorized"
+        );
+        assert_eq!(
+            records[0].effective_category.as_deref(),
+            Some("Development")
+        );
+        assert_eq!(
+            records[1].application.as_ref().unwrap().category,
+            "Uncategorized"
+        );
+        assert_eq!(
+            records[1].effective_category.as_deref(),
+            Some("Uncategorized")
+        );
+        assert_eq!(repository.reapply_category_rules().unwrap(), 0);
+    }
+
+    #[test]
+    fn category_rules_validate_input_lengths_and_priority() {
+        let repository = repository();
+        for input in [
+            CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "".to_owned(),
+                category: "Work".to_owned(),
+                priority: 100,
+                enabled: true,
+            },
+            CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "Editor".to_owned(),
+                category: "".to_owned(),
+                priority: 100,
+                enabled: true,
+            },
+            CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "Editor".to_owned(),
+                category: "Work".to_owned(),
+                priority: 10_000,
+                enabled: true,
+            },
+        ] {
+            assert!(repository.create_category_rule(&input).is_err());
+        }
     }
 
     #[test]
@@ -3331,6 +3734,15 @@ mod tests {
         repository
             .update_application_preferences(app.id, "Deep Work", false, false)
             .expect("category should update");
+        repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::WindowTitle,
+                pattern: "meeting".to_owned(),
+                category: "Communication".to_owned(),
+                priority: 100,
+                enabled: true,
+            })
+            .expect("category rule should be stored");
 
         let targets = repository
             .usage_limit_targets()
@@ -3342,7 +3754,7 @@ mod tests {
                 application_name: "IntelliJ IDEA".to_owned(),
             }]
         );
-        assert_eq!(targets.categories, vec!["Deep Work"]);
+        assert_eq!(targets.categories, vec!["Communication", "Deep Work"]);
     }
 
     #[test]
@@ -3371,6 +3783,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 50,
             })
             .expect("session should open");
@@ -3664,6 +4077,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect_err("invalid session should fail");
@@ -3679,6 +4093,7 @@ mod tests {
                 state: ActivityState::Idle,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("first session should open");
@@ -3688,6 +4103,7 @@ mod tests {
                 state: ActivityState::Idle,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: 200,
             })
             .expect_err("second open session should fail");
@@ -3704,6 +4120,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("session should open");
@@ -3753,6 +4170,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("session should open");
@@ -3794,6 +4212,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("old session should open");
@@ -3805,6 +4224,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 9_000,
             })
             .expect("recent session should open");
@@ -3868,6 +4288,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 0,
             })
             .expect("session should open");
@@ -3893,6 +4314,7 @@ mod tests {
                     state: ActivityState::Active,
                     application_id: Some(app.id),
                     window_title: None,
+                    category_override: None,
                     started_at_ms: start,
                 })
                 .expect("session should open");
@@ -3951,6 +4373,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(idea.id),
                 window_title: Some("Project Alpha".to_owned()),
+                category_override: None,
                 started_at_ms: local_timestamp(9, 0),
             })
             .expect("first session should open");
@@ -3966,6 +4389,7 @@ mod tests {
                 state: ActivityState::Idle,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: local_timestamp(9, 30),
             })
             .expect("idle session should open");
@@ -3978,6 +4402,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(terminal.id),
                 window_title: Some("Shell".to_owned()),
+                category_override: None,
                 started_at_ms: local_timestamp(10, 0),
             })
             .expect("second session should open");
@@ -4064,6 +4489,7 @@ mod tests {
                     state: ActivityState::Active,
                     application_id: Some(app.id),
                     window_title: None,
+                    category_override: None,
                     started_at_ms: start,
                 })
                 .expect("session should open");
@@ -4128,6 +4554,7 @@ mod tests {
                 state: ActivityState::Idle,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("session should open");
@@ -4162,6 +4589,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("session should open");
@@ -4242,6 +4670,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("session should open");
@@ -4274,6 +4703,7 @@ mod tests {
                 state: ActivityState::Idle,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("session should open");
@@ -4293,6 +4723,7 @@ mod tests {
                 state: ActivityState::Active,
                 application_id: Some(app.id),
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .expect("session should open");
@@ -4311,6 +4742,7 @@ mod tests {
                 state: ActivityState::Idle,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .unwrap();
@@ -4341,6 +4773,7 @@ mod tests {
                 state: ActivityState::Idle,
                 application_id: None,
                 window_title: None,
+                category_override: None,
                 started_at_ms: 100,
             })
             .unwrap();

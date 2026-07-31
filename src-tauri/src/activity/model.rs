@@ -138,5 +138,6 @@ pub struct NewSession {
     pub state: ActivityState,
     pub application_id: Option<i64>,
     pub window_title: Option<String>,
+    pub category_override: Option<String>,
     pub started_at_ms: i64,
 }

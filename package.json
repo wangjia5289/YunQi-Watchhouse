@@ -8,7 +8,11 @@
     "build": "tsc && vite build",
     "test": "vitest run",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "bundle:mac": "APPLE_SIGNING_IDENTITY=- tauri build --bundles app,dmg",
+    "release:check": "node scripts/check-release-version.mjs",
+    "release:keypair": "node scripts/check-updater-keypair.mjs",
+    "release:config": "node scripts/write-release-config.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -33,3 +33,6 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri build -- --bundles app
 ```
+
+macOS signing, notarization, DMG packaging, version checks, and updater releases are documented in
+[`docs/releasing.md`](docs/releasing.md).

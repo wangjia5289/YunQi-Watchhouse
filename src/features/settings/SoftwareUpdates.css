@@ -1,0 +1,101 @@
+.software-updates-heading {
+  align-items: center;
+}
+
+.software-updates-heading > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.software-update-row {
+  margin-top: 14px;
+  padding-top: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.software-update-row > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.software-update-row strong {
+  font-size: 12px;
+}
+
+.software-update-row small,
+.software-update-row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.software-update-error > strong {
+  color: #a44843;
+  font-size: 10px;
+}
+
+.software-update-error details {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.software-update-error summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.software-update-error pre {
+  max-height: 96px;
+  margin: 6px 0 0;
+  overflow: auto;
+  font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.software-update-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.software-update-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+  font-size: 11px;
+}
+
+.software-update-actions button.install {
+  color: white;
+  border-color: var(--green-700);
+  background: var(--green-700);
+  font-weight: 650;
+}
+
+.software-update-actions button:disabled {
+  opacity: 0.45;
+}
+
+@media (max-width: 620px) {
+  .software-update-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .software-update-actions {
+    flex-wrap: wrap;
+  }
+}

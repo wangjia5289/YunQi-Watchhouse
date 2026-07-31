@@ -16,11 +16,13 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::{NotificationExt, PermissionState};
+#[cfg(not(debug_assertions))]
+use tauri_plugin_updater::UpdaterExt;
 
 pub struct TrackingTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusTrayMenuItem(pub MenuItem<tauri::Wry>);
@@ -28,6 +30,10 @@ pub struct FocusCountdownTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct ShowTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct QuitTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusTemplateTrayMenuItems(pub Vec<MenuItem<tauri::Wry>>);
+pub struct TodayActiveTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct CurrentApplicationTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct TodayFocusTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct UsageLimitTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct AppLocaleState(AtomicBool);
 pub struct ShortcutSettingsState(Mutex<database::ShortcutSettings>);
 
@@ -196,6 +202,166 @@ fn usage_limit_notification_copy(
     }
 }
 
+fn format_tray_duration(duration_ms: i64) -> String {
+    let total_minutes = duration_ms.max(0) / 60_000;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    match (hours, minutes) {
+        (0, minutes) => format!("{minutes}min"),
+        (hours, 0) => format!("{hours}h"),
+        (hours, minutes) => format!("{hours}h {minutes}min"),
+    }
+}
+
+pub(crate) fn update_tray_overview(app: &tauri::AppHandle) {
+    let chinese = app.state::<AppLocaleState>().is_chinese();
+    let statistics = app.state::<statistics::StatisticsService>();
+
+    let active_label = statistics
+        .today_summary()
+        .map(|summary| {
+            let duration = format_tray_duration(summary.active_duration_ms);
+            if chinese {
+                format!("今日活跃：{duration}")
+            } else {
+                format!("Today active: {duration}")
+            }
+        })
+        .unwrap_or_else(|_| {
+            if chinese {
+                "今日活跃：不可用".to_owned()
+            } else {
+                "Today active: unavailable".to_owned()
+            }
+        });
+    let _ = app
+        .state::<TodayActiveTrayMenuItem>()
+        .0
+        .set_text(active_label);
+
+    let current = if app.state::<activity::MonitorHandle>().is_paused() {
+        if chinese { "已暂停" } else { "Paused" }.to_owned()
+    } else {
+        match app.state::<activity::MonitorHandle>().current_status() {
+            activity::MonitorStatus::Running(sample) => sample
+                .foreground_application
+                .map(|application| application.name)
+                .unwrap_or_else(|| if chinese { "空闲" } else { "Idle" }.to_owned()),
+            activity::MonitorStatus::Starting => {
+                if chinese { "正在启动" } else { "Starting" }.to_owned()
+            }
+            activity::MonitorStatus::Paused => if chinese { "已暂停" } else { "Paused" }.to_owned(),
+            activity::MonitorStatus::Degraded { .. } => if chinese {
+                "暂不可用"
+            } else {
+                "Unavailable"
+            }
+            .to_owned(),
+            activity::MonitorStatus::Stopped => {
+                if chinese { "已停止" } else { "Stopped" }.to_owned()
+            }
+        }
+    };
+    let current_label = if chinese {
+        format!("当前：{current}")
+    } else {
+        format!("Current: {current}")
+    };
+    let _ = app
+        .state::<CurrentApplicationTrayMenuItem>()
+        .0
+        .set_text(current_label);
+
+    let focus_label = statistics
+        .today_focus_summary()
+        .map(|summary| {
+            let duration = format_tray_duration(summary.total_focus_duration_ms);
+            if chinese {
+                format!("今日专注：{duration}")
+            } else {
+                format!("Today focus: {duration}")
+            }
+        })
+        .unwrap_or_else(|_| {
+            if chinese {
+                "今日专注：不可用".to_owned()
+            } else {
+                "Today focus: unavailable".to_owned()
+            }
+        });
+    let _ = app
+        .state::<TodayFocusTrayMenuItem>()
+        .0
+        .set_text(focus_label);
+
+    let limit_label = statistics
+        .today_usage_limit_progress()
+        .ok()
+        .and_then(|progress| {
+            progress
+                .into_iter()
+                .filter(|item| item.enabled)
+                .max_by(|left, right| left.percentage.total_cmp(&right.percentage))
+        })
+        .map(|item| {
+            let target = item
+                .application_name
+                .as_deref()
+                .or(item.category.as_deref())
+                .unwrap_or("Watchhouse");
+            let percentage = item.percentage.round().max(0.0) as i64;
+            if chinese {
+                format!("最接近限额：{target} {percentage}%")
+            } else {
+                format!("Closest limit: {target} {percentage}%")
+            }
+        })
+        .unwrap_or_else(|| {
+            if chinese {
+                "最接近限额：未设置".to_owned()
+            } else {
+                "Closest limit: none".to_owned()
+            }
+        });
+    let _ = app
+        .state::<UsageLimitTrayMenuItem>()
+        .0
+        .set_text(limit_label);
+}
+
+#[cfg(not(debug_assertions))]
+fn spawn_automatic_update_check(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        let Ok(updater) = app.updater() else {
+            return;
+        };
+        match updater.check().await {
+            Ok(Some(update)) => {
+                let version = update.version;
+                let _ = app.emit("update-available", &version);
+                let chinese = app.state::<AppLocaleState>().is_chinese();
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(if chinese {
+                        "Watchhouse 有可用更新"
+                    } else {
+                        "Watchhouse update available"
+                    })
+                    .body(if chinese {
+                        format!("版本 {version} 已可安装，请在设置中查看。")
+                    } else {
+                        format!("Version {version} is ready. Open Settings to install it.")
+                    })
+                    .show();
+            }
+            Ok(None) => {}
+            Err(error) => log::warn!("automatic update check failed: {error}"),
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -218,6 +384,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -296,6 +463,8 @@ pub fn run() {
             ));
             app.manage(AppLocaleState::new());
             app.manage(ShortcutSettingsState::new(shortcut_settings.clone()));
+            #[cfg(not(debug_assertions))]
+            spawn_automatic_update_check(app.handle().clone());
 
             let reminder_repository = app.state::<database::ActivityRepository>().inner().clone();
             let reminder_state = app.state::<focus::FocusModeState>().inner().clone();
@@ -523,6 +692,38 @@ pub fn run() {
                 None::<&str>,
             )?;
             app.manage(FocusCountdownTrayMenuItem(countdown.clone()));
+            let today_active = MenuItem::with_id(
+                app,
+                "today-active-summary",
+                "Today active: 0min",
+                false,
+                None::<&str>,
+            )?;
+            app.manage(TodayActiveTrayMenuItem(today_active.clone()));
+            let current_application = MenuItem::with_id(
+                app,
+                "current-application-summary",
+                "Current: Starting",
+                false,
+                None::<&str>,
+            )?;
+            app.manage(CurrentApplicationTrayMenuItem(current_application.clone()));
+            let today_focus = MenuItem::with_id(
+                app,
+                "today-focus-summary",
+                "Today focus: 0min",
+                false,
+                None::<&str>,
+            )?;
+            app.manage(TodayFocusTrayMenuItem(today_focus.clone()));
+            let usage_limit = MenuItem::with_id(
+                app,
+                "usage-limit-summary",
+                "Closest limit: none",
+                false,
+                None::<&str>,
+            )?;
+            app.manage(UsageLimitTrayMenuItem(usage_limit.clone()));
             let templates = app
                 .state::<database::ActivityRepository>()
                 .focus_plan_templates()
@@ -546,13 +747,27 @@ pub fn run() {
             app.manage(FocusTemplateTrayMenuItems(template_items.clone()));
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             app.manage(QuitTrayMenuItem(quit.clone()));
-            let mut menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-                vec![&show, &pause, &focus, &countdown];
+            let overview_separator = PredefinedMenuItem::separator(app)?;
+            let focus_separator = PredefinedMenuItem::separator(app)?;
+            let quit_separator = PredefinedMenuItem::separator(app)?;
+            let mut menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![
+                &today_active,
+                &current_application,
+                &today_focus,
+                &usage_limit,
+                &overview_separator,
+                &show,
+                &pause,
+                &focus_separator,
+                &focus,
+                &countdown,
+            ];
             menu_items.extend(
                 template_items
                     .iter()
                     .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>),
             );
+            menu_items.push(&quit_separator);
             menu_items.push(&quit);
             let menu = Menu::with_items(app, &menu_items)?;
             TrayIconBuilder::with_id("watchhouse-tray")
@@ -666,6 +881,16 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+            update_tray_overview(app.handle());
+            let overview_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    update_tray_overview(&overview_app);
+                }
+            });
             for shortcut in [
                 parse_shortcut(&shortcut_settings.toggle_focus)?,
                 parse_shortcut(&shortcut_settings.pause_focus)?,
@@ -755,6 +980,11 @@ pub fn run() {
             commands::applications::get_application_icon,
             commands::applications::clear_application_icon_cache,
             commands::applications::update_application_preferences,
+            commands::category_rules::get_category_rules,
+            commands::category_rules::create_category_rule,
+            commands::category_rules::update_category_rule,
+            commands::category_rules::delete_category_rule,
+            commands::category_rules::reapply_category_rules,
             commands::statistics::get_today_summary,
             commands::statistics::get_today_focus_summary,
             commands::statistics::get_timeline,
@@ -817,6 +1047,8 @@ pub fn run() {
             commands::settings::create_automatic_backup_now,
             commands::settings::restore_database,
             commands::settings::optimize_database,
+            commands::updater::check_for_updates,
+            commands::updater::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -837,7 +1069,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod shortcut_tests {
-    use super::{parse_shortcut, usage_limit_notification_copy};
+    use super::{format_tray_duration, parse_shortcut, usage_limit_notification_copy};
 
     #[test]
     fn shortcut_parser_accepts_presets_and_disabled_actions() {
@@ -858,5 +1090,12 @@ mod shortcut_tests {
         let (title, body) = usage_limit_notification_copy("IDEA", 61 * 60_000, 60, 100, false);
         assert_eq!(title, "Usage limit reached");
         assert!(body.contains("61"));
+    }
+
+    #[test]
+    fn tray_duration_stays_compact_in_both_locales() {
+        assert_eq!(format_tray_duration(45 * 60_000), "45min");
+        assert_eq!(format_tray_duration(2 * 60 * 60_000), "2h");
+        assert_eq!(format_tray_duration(135 * 60_000), "2h 15min");
     }
 }
