@@ -5,6 +5,7 @@ import {
   FocusModeStatus,
   FocusPlanTemplate,
   TimelineEntry,
+  UsageLimitProgress,
   createFocusPlanTemplate,
   deleteFocusPlanTemplate,
   endFocusPlan,
@@ -19,6 +20,96 @@ import {
 } from "../../lib/ipc";
 import { useDashboard } from "./useDashboard";
 import { useLocale } from "../../lib/i18n";
+
+function UsageLimitSummary({ progress }: { progress: UsageLimitProgress[] }) {
+  const { locale, t } = useLocale();
+  const enabled = progress
+    .filter((item) => item.enabled)
+    .sort((left, right) => {
+      const thresholdRank = {
+        BELOW_80: 0,
+        REACHED_80: 1,
+        REACHED_100: 2,
+      };
+      return thresholdRank[right.thresholdState] - thresholdRank[left.thresholdState]
+        || right.percentage - left.percentage;
+    });
+
+  if (enabled.length === 0) return null;
+
+  return (
+    <section className="usage-limit-summary" aria-labelledby="usage-limit-heading">
+      <div className="usage-limit-heading">
+        <div>
+          <p className="section-kicker">{t("Limits")}</p>
+          <h2 id="usage-limit-heading">{t("Today's usage limits")}</h2>
+        </div>
+        {enabled.length > 3 && (
+          <span>{t("Showing the three closest limits")}</span>
+        )}
+      </div>
+      <div className="usage-limit-list">
+        {enabled.slice(0, 3).map((item) => {
+          const label = item.scopeType === "APPLICATION"
+            ? item.applicationName ?? t("Application")
+            : item.category ?? t("Category");
+          const limitDurationMs = item.limitMinutes * 60_000;
+          const remainingDurationMs = Math.max(0, limitDurationMs - item.usedDurationMs);
+          const percentage = Math.max(0, item.percentage);
+          const progressWidth = Math.min(100, percentage);
+          const stateClass = item.thresholdState === "REACHED_100"
+            ? " reached"
+            : item.thresholdState === "REACHED_80"
+              ? " approaching"
+              : "";
+
+          return (
+            <article className={`usage-limit-item${stateClass}`} key={item.id}>
+              <div className="usage-limit-title">
+                <strong title={label}>{label}</strong>
+                <span>
+                  {item.thresholdState === "REACHED_100"
+                    ? t("Limit reached")
+                    : item.thresholdState === "REACHED_80"
+                      ? t("Approaching limit")
+                      : `${Math.round(percentage)}%`}
+                </span>
+              </div>
+              <div
+                className="usage-limit-track"
+                role="progressbar"
+                aria-label={label}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(progressWidth)}
+              >
+                <i style={{ "--limit-progress": `${progressWidth}%` } as CSSProperties} />
+              </div>
+              <div className="usage-limit-metrics">
+                <span>
+                  {t("Used")}
+                  <strong>{formatDuration(item.usedDurationMs, locale)}</strong>
+                </span>
+                <span>
+                  {t("Limit")}
+                  <strong>{formatDuration(limitDurationMs, locale)}</strong>
+                </span>
+                <span>
+                  {t("Remaining")}
+                  <strong>
+                    {item.thresholdState === "REACHED_100"
+                      ? t("None")
+                      : formatDuration(remainingDurationMs, locale)}
+                  </strong>
+                </span>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
 
 function ActivityDistribution({
   timeline,
@@ -93,7 +184,16 @@ function ActivityDistribution({
 
 export function Dashboard() {
   const { locale, t } = useLocale();
-  const { summary, timeline, current, focus, loading, error, refresh } = useDashboard();
+  const {
+    summary,
+    timeline,
+    current,
+    focus,
+    usageLimits,
+    loading,
+    error,
+    refresh,
+  } = useDashboard();
   const [dismissedBlockStart, setDismissedBlockStart] = useState<number | null>(null);
   const [focusMode, setFocusModeStatus] = useState<FocusModeStatus | null>(null);
   const [focusPlanMinutes, setFocusPlanMinutes] = useState(50);
@@ -435,6 +535,8 @@ export function Dashboard() {
           </div>
         </section>
       )}
+
+      <UsageLimitSummary progress={usageLimits} />
 
       {summary && (
         <ActivityDistribution

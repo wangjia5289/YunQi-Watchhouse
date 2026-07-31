@@ -42,6 +42,7 @@ import { useLocale } from "../../lib/i18n";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { clearApplicationIconMemoryCache } from "../applications/ApplicationIcon";
 import { PrivacyNotice } from "../onboarding/PrivacyNotice";
+import { UsageLimits } from "./UsageLimits";
 
 function Toggle({
   checked,
@@ -357,6 +358,8 @@ export function Settings() {
           </span>
         </div>
       </section>
+
+      <UsageLimits />
 
       {shortcuts && (
         <section className="settings-card">

@@ -4,10 +4,12 @@ import {
   FocusSummary,
   TimelineEntry,
   TodaySummary,
+  UsageLimitProgress,
   errorMessage,
   getCurrentActivity,
   getTimeline,
   getTodayFocusSummary,
+  getTodayUsageLimitProgress,
   getTodaySummary,
 } from "../../lib/ipc";
 import { localIsoDate } from "../../lib/format";
@@ -18,6 +20,7 @@ interface DashboardState {
   timeline: TimelineEntry[];
   current: CurrentActivity | null;
   focus: FocusSummary | null;
+  usageLimits: UsageLimitProgress[];
   loading: boolean;
   error: string | null;
 }
@@ -27,6 +30,7 @@ const initialState: DashboardState = {
   timeline: [],
   current: null,
   focus: null,
+  usageLimits: [],
   loading: true,
   error: null,
 };
@@ -39,10 +43,11 @@ export function useDashboard(): DashboardState & { refresh: () => void } {
   const loadHistory = useCallback(async () => {
     const request = ++historyRequest.current;
     try {
-      const [summary, timeline, focus] = await Promise.all([
+      const [summary, timeline, focus, usageLimits] = await Promise.all([
         getTodaySummary(),
         getTimeline(localIsoDate()),
         getTodayFocusSummary(),
+        getTodayUsageLimitProgress(),
       ]);
       if (request !== historyRequest.current) return;
       setState((current) => ({
@@ -50,6 +55,7 @@ export function useDashboard(): DashboardState & { refresh: () => void } {
         summary,
         timeline,
         focus,
+        usageLimits,
         loading: false,
         error: null,
       }));

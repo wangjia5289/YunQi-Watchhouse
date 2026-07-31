@@ -1,0 +1,353 @@
+.usage-limits-heading {
+  align-items: center;
+}
+
+.usage-limit-add,
+.usage-limit-editor-heading button,
+.usage-limit-rule-actions button,
+.usage-limit-form-actions button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+  font-size: 11px;
+}
+
+.usage-limit-add {
+  color: var(--green-700);
+  font-weight: 650;
+}
+
+.usage-limit-add:disabled,
+.usage-limit-editor button:disabled,
+.usage-limit-rule button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.usage-limit-notice {
+  margin: 14px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--green-700);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.usage-limit-notice button {
+  min-height: 28px;
+  padding: 0 9px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+}
+
+.usage-limit-notice.error {
+  color: #a44843;
+}
+
+.usage-limit-editor {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-solid) 76%, transparent);
+}
+
+.usage-limit-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.usage-limit-editor-heading strong {
+  font-size: 13px;
+}
+
+.usage-limit-scope {
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 14px;
+  padding: 3px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(105px, 1fr));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.usage-limit-scope button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+}
+
+.usage-limit-scope button.active {
+  color: white;
+  background: var(--green-700);
+}
+
+.usage-limit-field {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.usage-limit-target {
+  margin-top: 14px;
+}
+
+.usage-limit-field select,
+.usage-limit-field input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+  font: inherit;
+  font-size: 12px;
+}
+
+.usage-limit-duration-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.usage-limit-number {
+  position: relative;
+  display: block;
+}
+
+.usage-limit-number input {
+  padding-right: 58px;
+}
+
+.usage-limit-number small {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.usage-limit-options {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+}
+
+.usage-limit-options > div,
+.usage-limit-rule-controls label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.usage-limit-form-actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.usage-limit-form-actions button {
+  color: white;
+  border-color: var(--green-700);
+  background: var(--green-700);
+  font-weight: 650;
+}
+
+.usage-limit-empty {
+  min-height: 86px;
+  margin: 16px 0 0;
+  padding: 18px;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.usage-limit-empty strong {
+  color: inherit;
+  font-size: 12px;
+}
+
+.usage-limit-rules-list {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.usage-limit-rule {
+  min-width: 0;
+  padding: 16px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-limit-rule:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.usage-limit-rule.disabled .usage-limit-rule-main {
+  opacity: 0.5;
+}
+
+.usage-limit-rule-main {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.usage-limit-rule-title {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.usage-limit-rule-title > span {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  background: var(--surface-solid);
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.usage-limit-rule-title strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-limit-rule-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 22px;
+}
+
+.usage-limit-rule-schedule > span {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.usage-limit-rule-schedule strong {
+  color: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-limit-rule-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 15px;
+}
+
+.usage-limit-rule-controls label {
+  gap: 7px;
+}
+
+.usage-limit-rule-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.usage-limit-rule-actions button.delete {
+  color: #a44843;
+  border-color: rgba(164, 72, 67, 0.2);
+  background: rgba(164, 72, 67, 0.06);
+}
+
+@media (max-width: 620px) {
+  .usage-limit-rule {
+    grid-template-columns: 1fr;
+    gap: 13px;
+  }
+
+  .usage-limit-rule-controls {
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 420px) {
+  .usage-limits-heading {
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .usage-limit-duration-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-limit-scope {
+    width: 100%;
+  }
+
+  .usage-limit-rule-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .usage-limit-rule-title strong {
+    max-width: 100%;
+  }
+
+  .usage-limit-rule-controls {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .usage-limit-rule-actions {
+    width: 100%;
+  }
+
+  .usage-limit-rule-actions button {
+    flex: 1;
+  }
+}

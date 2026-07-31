@@ -374,3 +374,35 @@ Validation:
 - Rust formatting and Clippy passed with warnings denied.
 - Chinese and English Search views were visually checked at desktop, 375 px, and 320 px widths.
 - Mobile layouts had no horizontal overflow.
+
+## Phase 17: Application And Category Usage Limits
+
+Status: Complete
+
+- [x] Add application and category usage-limit rules with separate weekday and weekend budgets.
+- [x] Allow rules and their native notifications to be enabled independently.
+- [x] Show today's used time, limit, remaining time, and progress on the Dashboard.
+- [x] Send native notifications at 80% and 100% of a rule's daily limit.
+- [x] Persist notification delivery so each rule, date, and threshold is announced only once.
+- [x] Add complete Chinese and English copy for rule management, progress, and notifications.
+
+Decisions:
+
+- Usage is calculated from local-day session intersections so open sessions and sessions crossing
+  midnight contribute only to the selected day.
+- Application rules follow stable application IDs; category rules follow the configured category
+  name and immediately reflect later activity categorization.
+- Dashboard progress prioritizes reached and approaching limits, then the highest percentage.
+- Threshold delivery is backend-driven and persisted because the interface may be hidden or closed.
+- Settings reads a compact application and category target list instead of aggregating the full
+  activity history just to populate a picker.
+
+Validation:
+
+- 18 frontend tests passed, including usage-limit input validation and Chinese duration formatting.
+- Frontend production build passed.
+- 89 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting and Clippy passed with warnings denied.
+- The macOS application bundle was generated and passed ad-hoc strict code-signature verification.
+- Interactive visual checks were blocked because the current execution environment denied local
+  port binding after the initial preview server stopped.

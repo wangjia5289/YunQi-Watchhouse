@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use chrono::{Duration, Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike};
+use chrono::{
+    Datelike, Duration, Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike, Weekday,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     activity::ActivityState,
-    database::{ActivityRecord, ActivityRepository, TimelineSearch},
+    database::{
+        ActivityRecord, ActivityRepository, TimelineSearch, UsageLimitRule, UsageLimitScopeType,
+    },
     error::{AppError, AppResult},
 };
 
@@ -138,6 +142,33 @@ pub struct TimelinePage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UsageLimitThresholdState {
+    Below80,
+    Reached80,
+    Reached100,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitProgress {
+    pub id: i64,
+    pub scope_type: UsageLimitScopeType,
+    pub application_id: Option<i64>,
+    pub application_name: Option<String>,
+    pub category: Option<String>,
+    pub weekday_limit_minutes: i64,
+    pub weekend_limit_minutes: i64,
+    pub notifications_enabled: bool,
+    pub enabled: bool,
+    pub local_date: String,
+    pub limit_minutes: i64,
+    pub used_duration_ms: i64,
+    pub percentage: f64,
+    pub threshold_state: UsageLimitThresholdState,
+}
+
 #[derive(Clone)]
 pub struct StatisticsService {
     repository: ActivityRepository,
@@ -150,6 +181,46 @@ impl StatisticsService {
 
     pub fn today_summary(&self) -> AppResult<TodaySummary> {
         self.summary_for_date(Local::now().date_naive())
+    }
+
+    pub fn today_usage_limit_progress(&self) -> AppResult<Vec<UsageLimitProgress>> {
+        self.usage_limit_progress_for_date(Local::now().date_naive())
+    }
+
+    pub fn today_notifiable_usage_limit_progress(&self) -> AppResult<Vec<UsageLimitProgress>> {
+        let date = Local::now().date_naive();
+        let rules = self
+            .repository
+            .usage_limit_rules()?
+            .into_iter()
+            .filter(|rule| rule.enabled && rule.notifications_enabled);
+        self.usage_limit_progress_for_rules(date, rules)
+    }
+
+    pub fn usage_limit_progress_for_date(
+        &self,
+        date: NaiveDate,
+    ) -> AppResult<Vec<UsageLimitProgress>> {
+        self.usage_limit_progress_for_rules(date, self.repository.usage_limit_rules()?)
+    }
+
+    fn usage_limit_progress_for_rules(
+        &self,
+        date: NaiveDate,
+        rules: impl IntoIterator<Item = UsageLimitRule>,
+    ) -> AppResult<Vec<UsageLimitProgress>> {
+        let range = local_day_range(date)?;
+        rules
+            .into_iter()
+            .map(|rule| {
+                let used_duration_ms = self.repository.active_usage_duration_for_rule(
+                    &rule,
+                    range.start_ms,
+                    range.end_ms,
+                )?;
+                Ok(usage_limit_progress(rule, date, used_duration_ms))
+            })
+            .collect()
     }
 
     pub fn today_focus_summary(&self) -> AppResult<FocusSummary> {
@@ -614,6 +685,43 @@ impl FocusBlockBuilder {
             application_switch_count: self.application_switch_count,
             is_open: self.is_open,
         }
+    }
+}
+
+fn usage_limit_progress(
+    rule: UsageLimitRule,
+    date: NaiveDate,
+    used_duration_ms: i64,
+) -> UsageLimitProgress {
+    let limit_minutes = if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
+        rule.weekend_limit_minutes
+    } else {
+        rule.weekday_limit_minutes
+    };
+    let limit_ms = limit_minutes.saturating_mul(60_000);
+    let used_duration_ms = used_duration_ms.max(0);
+    let threshold_state = if used_duration_ms.saturating_mul(100) >= limit_ms.saturating_mul(100) {
+        UsageLimitThresholdState::Reached100
+    } else if used_duration_ms.saturating_mul(100) >= limit_ms.saturating_mul(80) {
+        UsageLimitThresholdState::Reached80
+    } else {
+        UsageLimitThresholdState::Below80
+    };
+    UsageLimitProgress {
+        id: rule.id,
+        scope_type: rule.scope_type,
+        application_id: rule.application_id,
+        application_name: rule.application_name,
+        category: rule.category,
+        weekday_limit_minutes: rule.weekday_limit_minutes,
+        weekend_limit_minutes: rule.weekend_limit_minutes,
+        notifications_enabled: rule.notifications_enabled,
+        enabled: rule.enabled,
+        local_date: date.to_string(),
+        limit_minutes,
+        used_duration_ms,
+        percentage: used_duration_ms as f64 / limit_ms as f64 * 100.0,
+        threshold_state,
     }
 }
 
@@ -1082,6 +1190,53 @@ mod tests {
         assert_eq!(daily.len(), 1);
         assert_eq!(daily[0].active_duration_ms, 250);
         assert_eq!(daily[0].idle_duration_ms, 0);
+    }
+
+    #[test]
+    fn usage_limit_progress_uses_local_day_clipping_and_weekend_limits() {
+        let (service, repository, application_id) = setup();
+        repository
+            .create_usage_limit(
+                &crate::database::UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Application,
+                    application_id: Some(application_id),
+                    category: None,
+                    weekday_limit_minutes: 1,
+                    weekend_limit_minutes: 2,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                0,
+            )
+            .expect("rule should be created");
+        let monday = NaiveDate::from_ymd_opt(2025, 1, 13).expect("Monday should exist");
+        let monday_range = local_day_range(monday).expect("Monday range should resolve");
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            monday_range.start_ms - 12_000,
+            monday_range.start_ms + 48_000,
+        );
+        let weekday = service
+            .usage_limit_progress_for_date(monday)
+            .expect("weekday progress should load")
+            .pop()
+            .expect("rule should have progress");
+        assert_eq!(weekday.limit_minutes, 1);
+        assert_eq!(weekday.used_duration_ms, 48_000);
+        assert_eq!(weekday.percentage, 80.0);
+        assert_eq!(weekday.threshold_state, UsageLimitThresholdState::Reached80);
+
+        let saturday = NaiveDate::from_ymd_opt(2025, 1, 18).expect("Saturday should exist");
+        let weekend = service
+            .usage_limit_progress_for_date(saturday)
+            .expect("weekend progress should load")
+            .pop()
+            .expect("rule should have progress");
+        assert_eq!(weekend.limit_minutes, 2);
+        assert_eq!(weekend.used_duration_ms, 0);
+        assert_eq!(weekend.threshold_state, UsageLimitThresholdState::Below80);
     }
 
     #[test]

@@ -155,6 +155,43 @@ export interface CategoryUsage {
   applicationCount: number;
 }
 
+export type UsageLimitScopeType = "APPLICATION" | "CATEGORY";
+
+export interface UsageLimitRuleInput {
+  scopeType: UsageLimitScopeType;
+  applicationId: number | null;
+  category: string | null;
+  weekdayLimitMinutes: number;
+  weekendLimitMinutes: number;
+  notificationsEnabled: boolean;
+  enabled: boolean;
+}
+
+export interface UsageLimitRule extends UsageLimitRuleInput {
+  id: number;
+  applicationName: string | null;
+}
+
+export interface UsageLimitApplicationTarget {
+  applicationId: number;
+  applicationName: string;
+}
+
+export interface UsageLimitTargets {
+  applications: UsageLimitApplicationTarget[];
+  categories: string[];
+}
+
+export type UsageLimitThresholdState = "BELOW_80" | "REACHED_80" | "REACHED_100";
+
+export interface UsageLimitProgress extends UsageLimitRule {
+  localDate: string;
+  limitMinutes: number;
+  usedDurationMs: number;
+  percentage: number;
+  thresholdState: UsageLimitThresholdState;
+}
+
 export interface ApplicationIcon {
   mimeType: string;
   bytes: number[];
@@ -465,6 +502,35 @@ export function getCategoryUsage(
   rangeEndMs: number,
 ): Promise<CategoryUsage[]> {
   return invoke("get_category_usage", { rangeStartMs, rangeEndMs });
+}
+
+export function getUsageLimits(): Promise<UsageLimitRule[]> {
+  return invoke("get_usage_limits");
+}
+
+export function getUsageLimitTargets(): Promise<UsageLimitTargets> {
+  return invoke("get_usage_limit_targets");
+}
+
+export function createUsageLimit(
+  rule: UsageLimitRuleInput,
+): Promise<UsageLimitRule> {
+  return invoke("create_usage_limit", { rule });
+}
+
+export function updateUsageLimit(
+  ruleId: number,
+  rule: UsageLimitRuleInput,
+): Promise<UsageLimitRule> {
+  return invoke("update_usage_limit", { ruleId, rule });
+}
+
+export function deleteUsageLimit(ruleId: number): Promise<void> {
+  return invoke("delete_usage_limit", { ruleId });
+}
+
+export function getTodayUsageLimitProgress(): Promise<UsageLimitProgress[]> {
+  return invoke("get_today_usage_limit_progress");
 }
 
 export function getApplicationIcon(

@@ -81,6 +81,62 @@ pub struct TimelineSearch {
     pub time_to_minutes: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UsageLimitScopeType {
+    Application,
+    Category,
+}
+
+impl UsageLimitScopeType {
+    fn as_database_value(self) -> &'static str {
+        match self {
+            Self::Application => "APPLICATION",
+            Self::Category => "CATEGORY",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitRule {
+    pub id: i64,
+    pub scope_type: UsageLimitScopeType,
+    pub application_id: Option<i64>,
+    pub application_name: Option<String>,
+    pub category: Option<String>,
+    pub weekday_limit_minutes: i64,
+    pub weekend_limit_minutes: i64,
+    pub notifications_enabled: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitRuleInput {
+    pub scope_type: UsageLimitScopeType,
+    pub application_id: Option<i64>,
+    pub category: Option<String>,
+    pub weekday_limit_minutes: i64,
+    pub weekend_limit_minutes: i64,
+    pub notifications_enabled: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitApplicationTarget {
+    pub application_id: i64,
+    pub application_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageLimitTargets {
+    pub applications: Vec<UsageLimitApplicationTarget>,
+    pub categories: Vec<String>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRecord {
@@ -633,6 +689,239 @@ impl ActivityRepository {
         Ok(())
     }
 
+    pub fn usage_limit_rules(&self) -> AppResult<Vec<UsageLimitRule>> {
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT r.id, r.scope_type, r.application_id, a.name, r.category,
+                    r.weekday_limit_minutes, r.weekend_limit_minutes,
+                    r.notifications_enabled, r.enabled
+             FROM usage_limit_rules r
+             LEFT JOIN applications a ON a.id = r.application_id
+             ORDER BY r.scope_type, COALESCE(a.name, r.category) COLLATE NOCASE, r.id",
+        )?;
+        statement
+            .query_map([], map_usage_limit_rule)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn usage_limit_targets(&self) -> AppResult<UsageLimitTargets> {
+        let connection = self.database.lock()?;
+        let applications = {
+            let mut statement = connection.prepare(
+                "SELECT id, name FROM applications
+                 ORDER BY name COLLATE NOCASE, id",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok(UsageLimitApplicationTarget {
+                        application_id: row.get(0)?,
+                        application_name: row.get(1)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let categories = {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT category FROM applications
+                 WHERE length(trim(category)) > 0
+                 ORDER BY category COLLATE NOCASE",
+            )?;
+            statement
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(UsageLimitTargets {
+            applications,
+            categories,
+        })
+    }
+
+    pub fn create_usage_limit(
+        &self,
+        input: &UsageLimitRuleInput,
+        now_ms: i64,
+    ) -> AppResult<UsageLimitRule> {
+        let normalized = validate_usage_limit_input(input)?;
+        let connection = self.database.lock()?;
+        validate_usage_limit_target(&connection, &normalized, None)?;
+        connection.execute(
+            "INSERT INTO usage_limit_rules (
+                scope_type, application_id, category, weekday_limit_minutes,
+                weekend_limit_minutes, notifications_enabled, enabled,
+                created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+            params![
+                normalized.scope_type.as_database_value(),
+                normalized.application_id,
+                normalized.category,
+                normalized.weekday_limit_minutes,
+                normalized.weekend_limit_minutes,
+                normalized.notifications_enabled,
+                normalized.enabled,
+                now_ms,
+            ],
+        )?;
+        usage_limit_rule_by_id(&connection, connection.last_insert_rowid())?
+            .ok_or_else(|| AppError::InvalidTimeRange("usage limit was not created".to_owned()))
+    }
+
+    pub fn update_usage_limit(
+        &self,
+        id: i64,
+        input: &UsageLimitRuleInput,
+        now_ms: i64,
+    ) -> AppResult<UsageLimitRule> {
+        let normalized = validate_usage_limit_input(input)?;
+        let mut connection = self.database.lock()?;
+        let previous = usage_limit_rule_by_id(&connection, id)?.ok_or_else(|| {
+            AppError::InvalidTimeRange("usage limit rule was not found".to_owned())
+        })?;
+        validate_usage_limit_target(&connection, &normalized, Some(id))?;
+        let alert_basis_changed = previous.scope_type != normalized.scope_type
+            || previous.application_id != normalized.application_id
+            || !optional_text_eq_ignore_ascii_case(
+                previous.category.as_deref(),
+                normalized.category.as_deref(),
+            )
+            || previous.weekday_limit_minutes != normalized.weekday_limit_minutes
+            || previous.weekend_limit_minutes != normalized.weekend_limit_minutes;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE usage_limit_rules
+             SET scope_type = ?1, application_id = ?2, category = ?3,
+                 weekday_limit_minutes = ?4, weekend_limit_minutes = ?5,
+                 notifications_enabled = ?6, enabled = ?7, updated_at_ms = ?8
+             WHERE id = ?9",
+            params![
+                normalized.scope_type.as_database_value(),
+                normalized.application_id,
+                normalized.category,
+                normalized.weekday_limit_minutes,
+                normalized.weekend_limit_minutes,
+                normalized.notifications_enabled,
+                normalized.enabled,
+                now_ms,
+                id,
+            ],
+        )?;
+        if alert_basis_changed {
+            transaction.execute("DELETE FROM usage_limit_alerts WHERE rule_id = ?1", [id])?;
+        }
+        transaction.commit()?;
+        usage_limit_rule_by_id(&connection, id)?
+            .ok_or_else(|| AppError::InvalidTimeRange("usage limit was not found".to_owned()))
+    }
+
+    pub fn delete_usage_limit(&self, id: i64) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        if connection.execute("DELETE FROM usage_limit_rules WHERE id = ?1", [id])? == 0 {
+            return Err(AppError::InvalidTimeRange(
+                "usage limit rule was not found".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn active_usage_duration_for_rule(
+        &self,
+        rule: &UsageLimitRule,
+        range_start_ms: i64,
+        range_end_ms: i64,
+    ) -> AppResult<i64> {
+        if range_end_ms <= range_start_ms {
+            return Err(AppError::InvalidTimeRange(
+                "usage limit range end must be after its start".to_owned(),
+            ));
+        }
+        let connection = self.database.lock()?;
+        let (target_column, target): (&str, rusqlite::types::Value) = match rule.scope_type {
+            UsageLimitScopeType::Application => (
+                "s.application_id",
+                rule.application_id
+                    .ok_or_else(|| {
+                        AppError::InvalidTimeRange(
+                            "application usage limit has no application".to_owned(),
+                        )
+                    })?
+                    .into(),
+            ),
+            UsageLimitScopeType::Category => (
+                "a.category COLLATE NOCASE",
+                rule.category
+                    .clone()
+                    .ok_or_else(|| {
+                        AppError::InvalidTimeRange(
+                            "category usage limit has no category".to_owned(),
+                        )
+                    })?
+                    .into(),
+            ),
+        };
+        let sql = format!(
+            "SELECT COALESCE(SUM(
+                MIN(s.ended_at_ms, ?2) - MAX(s.started_at_ms, ?1)
+             ), 0)
+             FROM activity_sessions s
+             JOIN applications a ON a.id = s.application_id
+             WHERE s.state = 'ACTIVE'
+               AND s.started_at_ms < ?2
+               AND s.ended_at_ms > ?1
+               AND {target_column} = ?3"
+        );
+        connection
+            .query_row(&sql, params![range_start_ms, range_end_ms, target], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn delivered_usage_limit_thresholds(
+        &self,
+        rule_id: i64,
+        local_date: &str,
+    ) -> AppResult<Vec<i64>> {
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT threshold FROM usage_limit_alerts
+             WHERE rule_id = ?1 AND local_date = ?2
+             ORDER BY threshold",
+        )?;
+        statement
+            .query_map(params![rule_id, local_date], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn mark_usage_limit_alerts_delivered(
+        &self,
+        rule_id: i64,
+        local_date: &str,
+        thresholds: &[i64],
+        delivered_at_ms: i64,
+    ) -> AppResult<()> {
+        if thresholds
+            .iter()
+            .any(|threshold| !matches!(threshold, 80 | 100))
+        {
+            return Err(AppError::InvalidTimeRange(
+                "usage limit alert threshold must be 80 or 100".to_owned(),
+            ));
+        }
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        for threshold in thresholds {
+            transaction.execute(
+                "INSERT OR IGNORE INTO usage_limit_alerts (
+                    rule_id, local_date, threshold, delivered_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![rule_id, local_date, threshold, delivered_at_ms],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn data_health_summary(&self) -> AppResult<DataHealthSummary> {
         let connection = self.database.lock()?;
         let overlapping_session_count = connection.query_row(
@@ -896,7 +1185,14 @@ impl ActivityRepository {
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute("DELETE FROM activity_sessions", [])?;
-        transaction.execute("DELETE FROM applications", [])?;
+        transaction.execute(
+            "DELETE FROM applications
+             WHERE NOT EXISTS (
+                SELECT 1 FROM usage_limit_rules
+                WHERE application_id = applications.id
+             )",
+            [],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -945,6 +1241,9 @@ impl ActivityRepository {
                  WHERE is_ignored = 0 AND NOT EXISTS (
                     SELECT 1 FROM activity_sessions
                     WHERE application_id = applications.id
+                 ) AND NOT EXISTS (
+                    SELECT 1 FROM usage_limit_rules
+                    WHERE application_id = applications.id
                  )",
             )?;
             statement
@@ -955,6 +1254,9 @@ impl ActivityRepository {
             "DELETE FROM applications
              WHERE is_ignored = 0 AND NOT EXISTS (
                 SELECT 1 FROM activity_sessions
+                WHERE application_id = applications.id
+             ) AND NOT EXISTS (
+                SELECT 1 FROM usage_limit_rules
                 WHERE application_id = applications.id
              )",
             [],
@@ -2141,6 +2443,135 @@ fn validate_import_record(record: &ImportRecord) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_usage_limit_input(input: &UsageLimitRuleInput) -> AppResult<UsageLimitRuleInput> {
+    if !(1..=1_440).contains(&input.weekday_limit_minutes)
+        || !(1..=1_440).contains(&input.weekend_limit_minutes)
+    {
+        return Err(AppError::InvalidTimeRange(
+            "usage limits must be between 1 and 1440 minutes".to_owned(),
+        ));
+    }
+    let category = input.category.as_deref().map(str::trim).map(str::to_owned);
+    let target_is_valid = match input.scope_type {
+        UsageLimitScopeType::Application => input.application_id.is_some() && category.is_none(),
+        UsageLimitScopeType::Category => {
+            input.application_id.is_none()
+                && category
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty() && value.chars().count() <= 40)
+        }
+    };
+    if !target_is_valid {
+        return Err(AppError::InvalidTimeRange(
+            "usage limit must target exactly one application or category".to_owned(),
+        ));
+    }
+    Ok(UsageLimitRuleInput {
+        scope_type: input.scope_type,
+        application_id: input.application_id,
+        category,
+        weekday_limit_minutes: input.weekday_limit_minutes,
+        weekend_limit_minutes: input.weekend_limit_minutes,
+        notifications_enabled: input.notifications_enabled,
+        enabled: input.enabled,
+    })
+}
+
+fn optional_text_eq_ignore_ascii_case(left: Option<&str>, right: Option<&str>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.eq_ignore_ascii_case(right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn validate_usage_limit_target(
+    connection: &Connection,
+    input: &UsageLimitRuleInput,
+    excluding_id: Option<i64>,
+) -> AppResult<()> {
+    let duplicate = match input.scope_type {
+        UsageLimitScopeType::Application => {
+            let application_id = input.application_id.expect("validated application target");
+            let exists = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM applications WHERE id = ?1)",
+                [application_id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if !exists {
+                return Err(AppError::InvalidTimeRange(
+                    "usage limit application was not found".to_owned(),
+                ));
+            }
+            connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM usage_limit_rules
+                    WHERE scope_type = 'APPLICATION' AND application_id = ?1
+                      AND (?2 IS NULL OR id != ?2)
+                 )",
+                params![application_id, excluding_id],
+                |row| row.get::<_, bool>(0),
+            )?
+        }
+        UsageLimitScopeType::Category => connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM usage_limit_rules
+                WHERE scope_type = 'CATEGORY' AND category = ?1 COLLATE NOCASE
+                  AND (?2 IS NULL OR id != ?2)
+             )",
+            params![
+                input
+                    .category
+                    .as_deref()
+                    .expect("validated category target"),
+                excluding_id
+            ],
+            |row| row.get::<_, bool>(0),
+        )?,
+    };
+    if duplicate {
+        return Err(AppError::InvalidTimeRange(
+            "a usage limit already exists for this target".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn usage_limit_rule_by_id(connection: &Connection, id: i64) -> AppResult<Option<UsageLimitRule>> {
+    connection
+        .query_row(
+            "SELECT r.id, r.scope_type, r.application_id, a.name, r.category,
+                    r.weekday_limit_minutes, r.weekend_limit_minutes,
+                    r.notifications_enabled, r.enabled
+             FROM usage_limit_rules r
+             LEFT JOIN applications a ON a.id = r.application_id
+             WHERE r.id = ?1",
+            [id],
+            map_usage_limit_rule,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn map_usage_limit_rule(row: &Row<'_>) -> rusqlite::Result<UsageLimitRule> {
+    let scope_type = match row.get::<_, String>(1)?.as_str() {
+        "APPLICATION" => UsageLimitScopeType::Application,
+        "CATEGORY" => UsageLimitScopeType::Category,
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
+    Ok(UsageLimitRule {
+        id: row.get(0)?,
+        scope_type,
+        application_id: row.get(2)?,
+        application_name: row.get(3)?,
+        category: row.get(4)?,
+        weekday_limit_minutes: row.get(5)?,
+        weekend_limit_minutes: row.get(6)?,
+        notifications_enabled: row.get(7)?,
+        enabled: row.get(8)?,
+    })
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2437,6 +2868,211 @@ mod tests {
     }
 
     #[test]
+    fn usage_limits_validate_targets_and_enforce_uniqueness() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let application_rule = repository
+            .create_usage_limit(
+                &UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Application,
+                    application_id: Some(app.id),
+                    category: None,
+                    weekday_limit_minutes: 120,
+                    weekend_limit_minutes: 180,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                1_000,
+            )
+            .expect("application rule should be created");
+        assert_eq!(
+            application_rule.application_name.as_deref(),
+            Some("IntelliJ IDEA")
+        );
+        assert!(
+            repository
+                .create_usage_limit(
+                    &UsageLimitRuleInput {
+                        scope_type: UsageLimitScopeType::Application,
+                        application_id: Some(app.id),
+                        category: None,
+                        weekday_limit_minutes: 60,
+                        weekend_limit_minutes: 60,
+                        notifications_enabled: false,
+                        enabled: true,
+                    },
+                    1_001,
+                )
+                .is_err()
+        );
+
+        let category_rule = repository
+            .create_usage_limit(
+                &UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Category,
+                    application_id: None,
+                    category: Some("  Work  ".to_owned()),
+                    weekday_limit_minutes: 240,
+                    weekend_limit_minutes: 60,
+                    notifications_enabled: true,
+                    enabled: false,
+                },
+                1_002,
+            )
+            .expect("category rule should be created");
+        assert_eq!(category_rule.category.as_deref(), Some("Work"));
+        assert!(
+            repository
+                .create_usage_limit(
+                    &UsageLimitRuleInput {
+                        scope_type: UsageLimitScopeType::Category,
+                        application_id: None,
+                        category: Some("work".to_owned()),
+                        weekday_limit_minutes: 60,
+                        weekend_limit_minutes: 60,
+                        notifications_enabled: true,
+                        enabled: true,
+                    },
+                    1_003,
+                )
+                .is_err()
+        );
+        assert!(
+            repository
+                .create_usage_limit(
+                    &UsageLimitRuleInput {
+                        scope_type: UsageLimitScopeType::Category,
+                        application_id: Some(app.id),
+                        category: Some("Work".to_owned()),
+                        weekday_limit_minutes: 60,
+                        weekend_limit_minutes: 60,
+                        notifications_enabled: true,
+                        enabled: true,
+                    },
+                    1_004,
+                )
+                .is_err()
+        );
+        assert!(
+            repository
+                .update_usage_limit(
+                    category_rule.id,
+                    &UsageLimitRuleInput {
+                        scope_type: UsageLimitScopeType::Category,
+                        application_id: None,
+                        category: Some("Work".to_owned()),
+                        weekday_limit_minutes: 0,
+                        weekend_limit_minutes: 60,
+                        notifications_enabled: true,
+                        enabled: true,
+                    },
+                    1_005,
+                )
+                .is_err()
+        );
+
+        repository
+            .delete_usage_limit(application_rule.id)
+            .expect("application rule should be deleted");
+        assert_eq!(repository.usage_limit_rules().unwrap(), vec![category_rule]);
+    }
+
+    #[test]
+    fn usage_limit_targets_do_not_scan_activity_sessions() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        repository
+            .update_application_preferences(app.id, "Deep Work", false, false)
+            .expect("category should update");
+
+        let targets = repository
+            .usage_limit_targets()
+            .expect("targets should load");
+        assert_eq!(
+            targets.applications,
+            vec![UsageLimitApplicationTarget {
+                application_id: app.id,
+                application_name: "IntelliJ IDEA".to_owned(),
+            }]
+        );
+        assert_eq!(targets.categories, vec!["Deep Work"]);
+    }
+
+    #[test]
+    fn usage_limit_duration_clips_active_time_and_alerts_are_deduplicated() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        repository
+            .update_application_preferences(app.id, "Work", false, false)
+            .expect("category should update");
+        let rule = repository
+            .create_usage_limit(
+                &UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Category,
+                    application_id: None,
+                    category: Some("work".to_owned()),
+                    weekday_limit_minutes: 60,
+                    weekend_limit_minutes: 60,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                1_000,
+            )
+            .expect("rule should be created");
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: None,
+                started_at_ms: 50,
+            })
+            .expect("session should open");
+        repository
+            .close_session(session.id, 250, ClosedReason::AppChanged)
+            .expect("session should close");
+
+        assert_eq!(
+            repository
+                .active_usage_duration_for_rule(&rule, 100, 200)
+                .expect("usage should load"),
+            100
+        );
+        repository
+            .mark_usage_limit_alerts_delivered(rule.id, "2026-07-31", &[80, 100], 500)
+            .expect("alerts should be recorded");
+        repository
+            .mark_usage_limit_alerts_delivered(rule.id, "2026-07-31", &[80], 600)
+            .expect("duplicate alert should be ignored");
+        assert_eq!(
+            repository
+                .delivered_usage_limit_thresholds(rule.id, "2026-07-31")
+                .expect("alerts should load"),
+            vec![80, 100]
+        );
+        repository
+            .update_usage_limit(
+                rule.id,
+                &UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Category,
+                    application_id: None,
+                    category: Some("Work".to_owned()),
+                    weekday_limit_minutes: 120,
+                    weekend_limit_minutes: 60,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                700,
+            )
+            .expect("changed limit should update");
+        assert!(
+            repository
+                .delivered_usage_limit_thresholds(rule.id, "2026-07-31")
+                .expect("alerts should load")
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn data_health_repair_trims_overlaps_and_removes_zero_duration_sessions() {
         let repository = repository();
         {
@@ -2597,6 +3233,20 @@ mod tests {
     fn maintenance_deletes_only_expired_closed_sessions_and_preserves_ignore_rules() {
         let repository = repository();
         let app = application(&repository, 100);
+        repository
+            .create_usage_limit(
+                &UsageLimitRuleInput {
+                    scope_type: UsageLimitScopeType::Application,
+                    application_id: Some(app.id),
+                    category: None,
+                    weekday_limit_minutes: 60,
+                    weekend_limit_minutes: 90,
+                    notifications_enabled: true,
+                    enabled: true,
+                },
+                100,
+            )
+            .expect("usage limit should be stored");
         let old = repository
             .create_session(&NewSession {
                 state: ActivityState::Active,
@@ -2652,6 +3302,13 @@ mod tests {
             .run_maintenance(100 * 24 * 60 * 60 * 1_000, 30)
             .expect("expired maintenance should succeed");
         assert_eq!(result.deleted_session_count, 2);
+        assert!(!result.deleted_application_ids.contains(&app.id));
+        assert!(
+            repository
+                .application(app.id)
+                .expect("limited application should load")
+                .is_some()
+        );
         assert!(
             repository
                 .application(ignored.id)

@@ -4,6 +4,7 @@ pub(crate) mod focus;
 pub(crate) mod settings;
 pub(crate) mod statistics;
 pub(crate) mod timeline;
+pub(crate) mod usage_limits;
 
 pub use activity::{get_current_activity, set_tracking_paused};
 pub use applications::{
@@ -24,6 +25,10 @@ pub use timeline::{
     delete_timeline_session, delete_timeline_sessions, import_activity, merge_timeline_sessions,
     preview_activity_import, undo_timeline_edit, update_timeline_session,
     update_timeline_session_categories, update_timeline_session_notes,
+};
+pub use usage_limits::{
+    create_usage_limit, delete_usage_limit, get_today_usage_limit_progress,
+    get_usage_limit_targets, get_usage_limits, update_usage_limit,
 };
 
 use serde::Serialize;

@@ -898,6 +898,119 @@ button {
   background: var(--surface);
 }
 
+.usage-limit-summary {
+  margin: 16px 0;
+  padding: 20px 22px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.usage-limit-heading {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.usage-limit-heading h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 640;
+}
+
+.usage-limit-heading > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.usage-limit-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.usage-limit-item {
+  min-width: 0;
+}
+
+.usage-limit-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.usage-limit-title strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-limit-title > span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.usage-limit-item.approaching .usage-limit-title > span {
+  color: #9b6b36;
+}
+
+.usage-limit-item.reached .usage-limit-title > span {
+  color: #a34848;
+}
+
+.usage-limit-track {
+  height: 6px;
+  margin: 10px 0;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--green-100);
+}
+
+.usage-limit-track i {
+  width: var(--limit-progress);
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--green-700);
+}
+
+.usage-limit-item.approaching .usage-limit-track i {
+  background: #b58149;
+}
+
+.usage-limit-item.reached .usage-limit-track i {
+  background: #b15454;
+}
+
+.usage-limit-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.usage-limit-metrics span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.usage-limit-metrics strong {
+  overflow: hidden;
+  color: var(--green-900);
+  font-size: 11px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .reports-page {
   width: 100%;
   max-width: 1080px;
@@ -2969,6 +3082,10 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .usage-limit-list {
+    grid-template-columns: 1fr;
+  }
+
   .application-detail {
     display: none;
   }
@@ -3373,6 +3490,16 @@ button {
 
   .focus-plan-controls > .focus-template-editor {
     grid-template-columns: 1fr;
+  }
+
+  .usage-limit-summary {
+    padding: 17px 16px;
+  }
+
+  .usage-limit-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
   }
 
   .report-custom-range {

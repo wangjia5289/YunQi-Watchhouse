@@ -7,5 +7,6 @@ pub use repository::{
     ActivityRecord, ActivityRepository, DataHealthRepairResult, DataHealthSummary,
     DataHealthUndoStatus, FocusPlanHistoryEntry, FocusPlanTemplate, ImportRecord,
     MaintenancePreview, MaintenanceResult, PersistedFocusMode, RecoveryOutcome, Settings,
-    ShortcutSettings, TimelineMutationResult, TimelineSearch, TimelineUndoEntry,
+    ShortcutSettings, TimelineMutationResult, TimelineSearch, TimelineUndoEntry, UsageLimitRule,
+    UsageLimitRuleInput, UsageLimitScopeType, UsageLimitTargets,
 };

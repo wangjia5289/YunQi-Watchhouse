@@ -20,7 +20,7 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_notification::{NotificationExt, PermissionState};
 
 pub struct TrackingTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusTrayMenuItem(pub MenuItem<tauri::Wry>);
@@ -80,6 +80,106 @@ pub fn parse_shortcut(value: &Option<String>) -> Result<Option<Shortcut>, String
         .map(Shortcut::from_str)
         .transpose()
         .map_err(|error| error.to_string())
+}
+
+fn send_usage_limit_notifications(
+    app: &tauri::AppHandle,
+    repository: &database::ActivityRepository,
+    now_ms: i64,
+) {
+    match app.notification().permission_state() {
+        Ok(PermissionState::Granted) => {}
+        Ok(_) => return,
+        Err(error) => {
+            log::warn!("could not read notification permission for usage limits: {error}");
+            return;
+        }
+    }
+    let progress = match statistics::StatisticsService::new(repository.clone())
+        .today_notifiable_usage_limit_progress()
+    {
+        Ok(progress) => progress,
+        Err(error) => {
+            log::warn!("could not calculate usage limit progress: {error}");
+            return;
+        }
+    };
+    for item in progress {
+        let threshold = match item.threshold_state {
+            statistics::UsageLimitThresholdState::Below80 => continue,
+            statistics::UsageLimitThresholdState::Reached80 => 80,
+            statistics::UsageLimitThresholdState::Reached100 => 100,
+        };
+        let delivered = match repository.delivered_usage_limit_thresholds(item.id, &item.local_date)
+        {
+            Ok(delivered) => delivered,
+            Err(error) => {
+                log::warn!("could not read usage limit alert history: {error}");
+                continue;
+            }
+        };
+        if delivered.contains(&threshold) {
+            continue;
+        }
+        let target = item
+            .application_name
+            .as_deref()
+            .or(item.category.as_deref())
+            .unwrap_or("Watchhouse");
+        let chinese = app.state::<AppLocaleState>().is_chinese();
+        let (title, body) = usage_limit_notification_copy(
+            target,
+            item.used_duration_ms,
+            item.limit_minutes,
+            threshold,
+            chinese,
+        );
+        if let Err(error) = app.notification().builder().title(title).body(body).show() {
+            log::warn!("could not show usage limit notification: {error}");
+            continue;
+        }
+        let reached_thresholds: &[i64] = if threshold == 100 { &[80, 100] } else { &[80] };
+        if let Err(error) = repository.mark_usage_limit_alerts_delivered(
+            item.id,
+            &item.local_date,
+            reached_thresholds,
+            now_ms,
+        ) {
+            log::warn!("could not persist usage limit alert delivery: {error}");
+        }
+    }
+}
+
+fn usage_limit_notification_copy(
+    target: &str,
+    used_duration_ms: i64,
+    limit_minutes: i64,
+    threshold: i64,
+    chinese: bool,
+) -> (&'static str, String) {
+    let used_minutes = used_duration_ms.saturating_add(59_999) / 60_000;
+    match (chinese, threshold) {
+        (true, 100) => (
+            "已达到使用限额",
+            format!("{target} 今日已使用 {used_minutes} 分钟，达到每日限额 {limit_minutes} 分钟。"),
+        ),
+        (true, _) => (
+            "接近使用限额",
+            format!("{target} 今日已使用 {used_minutes} 分钟，接近每日限额 {limit_minutes} 分钟。"),
+        ),
+        (false, 100) => (
+            "Usage limit reached",
+            format!(
+                "{target} has been used for {used_minutes} minutes today, reaching the daily limit of {limit_minutes} minutes."
+            ),
+        ),
+        (false, _) => (
+            "Usage limit almost reached",
+            format!(
+                "{target} has been used for {used_minutes} minutes today, approaching the daily limit of {limit_minutes} minutes."
+            ),
+        ),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -188,6 +288,7 @@ pub fn run() {
             let reminder_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.tick().await;
                 loop {
                     interval.tick().await;
                     let Ok(settings) = reminder_repository.settings() else {
@@ -197,6 +298,7 @@ pub fn run() {
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|duration| duration.as_millis() as i64)
                         .unwrap_or_default();
+                    send_usage_limit_notifications(&reminder_app, &reminder_repository, now_ms);
                     if reminder_state.is_due(now_ms) {
                         let current = reminder_state.snapshot();
                         if let Some(started_at_ms) = current.started_at_ms {
@@ -650,6 +752,12 @@ pub fn run() {
             commands::statistics::get_productivity_report,
             commands::statistics::export_productivity_report_csv,
             commands::statistics::get_application_daily_usage,
+            commands::usage_limits::get_usage_limits,
+            commands::usage_limits::get_usage_limit_targets,
+            commands::usage_limits::create_usage_limit,
+            commands::usage_limits::update_usage_limit,
+            commands::usage_limits::delete_usage_limit,
+            commands::usage_limits::get_today_usage_limit_progress,
             commands::timeline::delete_timeline_session,
             commands::timeline::delete_timeline_sessions,
             commands::timeline::merge_timeline_sessions,
@@ -710,7 +818,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod shortcut_tests {
-    use super::parse_shortcut;
+    use super::{parse_shortcut, usage_limit_notification_copy};
 
     #[test]
     fn shortcut_parser_accepts_presets_and_disabled_actions() {
@@ -721,5 +829,15 @@ mod shortcut_tests {
         );
         assert!(parse_shortcut(&None).unwrap().is_none());
         assert!(parse_shortcut(&Some("not a shortcut".to_owned())).is_err());
+    }
+
+    #[test]
+    fn usage_limit_notification_copy_tracks_locale_and_threshold() {
+        let (title, body) = usage_limit_notification_copy("IDEA", 48 * 60_000, 60, 80, true);
+        assert_eq!(title, "接近使用限额");
+        assert!(body.contains("48"));
+        let (title, body) = usage_limit_notification_copy("IDEA", 61 * 60_000, 60, 100, false);
+        assert_eq!(title, "Usage limit reached");
+        assert!(body.contains("61"));
     }
 }
