@@ -16,6 +16,7 @@ import { completeOnboarding, setTrackingPaused } from "./lib/ipc";
 import { PrivacyNotice } from "./features/onboarding/PrivacyNotice";
 import { listen } from "@tauri-apps/api/event";
 import { notifyActivityDataChanged } from "./lib/events";
+import { useLocale } from "./lib/i18n";
 
 const navigation = [
   { label: "Today", icon: "today", page: "today", enabled: true },
@@ -57,6 +58,7 @@ function NavIcon({ name }: { name: string }) {
 }
 
 function App() {
+  const { locale, setLocale } = useLocale();
   const [page, setPage] = useState<Page>("today");
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
@@ -123,6 +125,24 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <div className="language-switch" role="group" aria-label="Interface language">
+            <button
+              type="button"
+              className={locale === "zh-CN" ? "active" : ""}
+              aria-pressed={locale === "zh-CN"}
+              onClick={() => setLocale("zh-CN")}
+            >
+              中文
+            </button>
+            <button
+              type="button"
+              className={locale === "en" ? "active" : ""}
+              aria-pressed={locale === "en"}
+              onClick={() => setLocale("en")}
+            >
+              EN
+            </button>
+          </div>
           <button
             className={`global-tracking${tracking?.paused ? " paused" : ""}`}
             type="button"

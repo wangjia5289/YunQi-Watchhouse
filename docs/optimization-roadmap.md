@@ -245,3 +245,20 @@ Decisions:
   are exact.
 - The performance baseline creates 35,040 deterministic sessions and measures day pagination and
   full-year totals independently.
+
+## Phase 12: Chinese And English Interface
+
+Status: Complete
+
+- [x] Detect Chinese and English from the operating system on first launch.
+- [x] Add an always-available language switch in the application sidebar.
+- [x] Persist the selected interface language locally.
+- [x] Translate primary pages, dialogs, empty states, controls, and accessibility labels.
+- [x] Keep English source text as the fallback for newly introduced copy.
+
+Decisions:
+
+- The locale preference is device-specific UI state and is stored in local browser storage rather
+  than the activity database or exported settings.
+- Existing screens use a compatibility translator while new screens can migrate incrementally to
+  explicit translation keys without changing the persisted locale contract.

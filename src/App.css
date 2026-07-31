@@ -143,6 +143,30 @@ button {
   margin-top: auto;
 }
 
+.language-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+}
+
+.language-switch button {
+  min-height: 28px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.language-switch button.active {
+  color: var(--green-900);
+  background: var(--surface-solid);
+  box-shadow: 0 1px 3px rgba(27, 48, 40, 0.1);
+}
+
 .global-tracking {
   width: 100%;
   min-height: 54px;
