@@ -285,12 +285,22 @@ export interface TimelinePage {
   hasMore: boolean;
 }
 
+export interface TimelineFilters {
+  query?: string | null;
+  state?: ActivityState | null;
+  minimumDurationMs?: number | null;
+  maximumDurationMs?: number | null;
+  timeFromMinutes?: number | null;
+  timeToMinutes?: number | null;
+}
+
 export function getTimelinePage(
   date: string,
   offset: number,
   limit = 200,
+  filters: TimelineFilters = {},
 ): Promise<TimelinePage> {
-  return invoke("get_timeline_page", { date, offset, limit });
+  return invoke("get_timeline_page", { date, offset, limit, filters });
 }
 
 export interface TimelineMutationResult {

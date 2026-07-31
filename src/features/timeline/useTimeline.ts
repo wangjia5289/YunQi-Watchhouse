@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { TimelineEntry, errorMessage, getTimelinePage } from "../../lib/ipc";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  TimelineEntry,
+  TimelineFilters,
+  errorMessage,
+  getTimelinePage,
+} from "../../lib/ipc";
 import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
 
 interface TimelineState {
@@ -12,7 +17,7 @@ interface TimelineState {
   hasMore: boolean;
 }
 
-export function useTimeline(date: string): TimelineState & {
+export function useTimeline(date: string, filters: TimelineFilters = {}): TimelineState & {
   refresh: () => void;
   loadMore: () => void;
   loadAll: () => void;
@@ -27,12 +32,27 @@ export function useTimeline(date: string): TimelineState & {
     hasMore: false,
   });
   const requestRevision = useRef(0);
+  const requestFilters = useMemo<TimelineFilters>(() => ({
+    query: filters.query ?? null,
+    state: filters.state ?? null,
+    minimumDurationMs: filters.minimumDurationMs ?? null,
+    maximumDurationMs: filters.maximumDurationMs ?? null,
+    timeFromMinutes: filters.timeFromMinutes ?? null,
+    timeToMinutes: filters.timeToMinutes ?? null,
+  }), [
+    filters.maximumDurationMs,
+    filters.minimumDurationMs,
+    filters.query,
+    filters.state,
+    filters.timeFromMinutes,
+    filters.timeToMinutes,
+  ]);
 
   const load = useCallback(async () => {
     const revision = ++requestRevision.current;
     setState((current) => ({ ...current, loading: true }));
     try {
-      const page = await getTimelinePage(date, 0);
+      const page = await getTimelinePage(date, 0, 200, requestFilters);
       if (revision !== requestRevision.current) return;
       setState({
         entries: page.entries,
@@ -51,14 +71,14 @@ export function useTimeline(date: string): TimelineState & {
         error: errorMessage(error),
       }));
     }
-  }, [date]);
+  }, [date, requestFilters]);
 
   const loadMore = useCallback(async () => {
     if (state.loading || !state.hasMore) return;
     const revision = requestRevision.current;
     setState((current) => ({ ...current, loading: true }));
     try {
-      const page = await getTimelinePage(date, state.entries.length);
+      const page = await getTimelinePage(date, state.entries.length, 200, requestFilters);
       if (revision !== requestRevision.current) return;
       setState((current) => ({
         ...current,
@@ -70,14 +90,14 @@ export function useTimeline(date: string): TimelineState & {
     } catch (error) {
       setState((current) => ({ ...current, loading: false, error: errorMessage(error) }));
     }
-  }, [date, state.entries.length, state.hasMore, state.loading]);
+  }, [date, requestFilters, state.entries.length, state.hasMore, state.loading]);
 
   const loadAll = useCallback(async () => {
     if (state.loading || !state.hasMore) return;
     const revision = requestRevision.current;
     setState((current) => ({ ...current, loading: true }));
     try {
-      const remaining = await getTimelinePage(date, state.entries.length, 1_000);
+      const remaining = await getTimelinePage(date, state.entries.length, 1_000, requestFilters);
       if (revision !== requestRevision.current) return;
       setState((current) => ({
         ...current,
@@ -89,7 +109,7 @@ export function useTimeline(date: string): TimelineState & {
     } catch (error) {
       setState((current) => ({ ...current, loading: false, error: errorMessage(error) }));
     }
-  }, [date, state.entries.length, state.hasMore, state.loading]);
+  }, [date, requestFilters, state.entries.length, state.hasMore, state.loading]);
 
   useEffect(() => {
     void load();

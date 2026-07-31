@@ -9,6 +9,7 @@ import {
 import {
   ActivityState,
   TimelineEntry,
+  TimelineFilters,
   deleteTimelineSession,
   deleteTimelineSessions,
   errorMessage,
@@ -54,15 +55,6 @@ function DayButton({
   );
 }
 
-function stateTotal(
-  entries: { state: ActivityState; durationMs: number }[],
-  state: ActivityState,
-): number {
-  return entries
-    .filter((entry) => entry.state === state)
-    .reduce((total, entry) => total + entry.durationMs, 0);
-}
-
 interface HourApplication {
   id: number;
   name: string;
@@ -82,6 +74,20 @@ type TimelineActionDialog = {
   sessionIds: number[];
   label: string;
 };
+
+function optionalDurationMilliseconds(value: string): number | null {
+  if (!value) return null;
+  const minutes = Number(value);
+  return Number.isFinite(minutes) && minutes >= 0 ? minutes * 60_000 : null;
+}
+
+function optionalClockMinutes(value: string): number | null {
+  if (!value) return null;
+  const [hours, minutes] = value.split(":").map(Number);
+  return Number.isInteger(hours) && Number.isInteger(minutes)
+    ? hours * 60 + minutes
+    : null;
+}
 
 function summarizeByHour(entries: TimelineEntry[]): HourSummary[] {
   const groups = new Map<number, {
@@ -143,6 +149,29 @@ export function Timeline() {
   const today = localIsoDate();
   const [date, setDate] = useState(today);
   const [view, setView] = useState<"overview" | "details">("overview");
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<"ALL" | ActivityState>("ALL");
+  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
+  const [minimumMinutes, setMinimumMinutes] = useState("");
+  const [maximumMinutes, setMaximumMinutes] = useState("");
+  const [timeFrom, setTimeFrom] = useState("");
+  const [timeTo, setTimeTo] = useState("");
+  const timelineFilters = useMemo<TimelineFilters>(() => ({
+    query: debouncedQuery.trim() || null,
+    state: stateFilter === "ALL" ? null : stateFilter,
+    minimumDurationMs: optionalDurationMilliseconds(minimumMinutes),
+    maximumDurationMs: optionalDurationMilliseconds(maximumMinutes),
+    timeFromMinutes: optionalClockMinutes(timeFrom),
+    timeToMinutes: optionalClockMinutes(timeTo),
+  }), [
+    debouncedQuery,
+    maximumMinutes,
+    minimumMinutes,
+    stateFilter,
+    timeFrom,
+    timeTo,
+  ]);
   const {
     entries,
     loading,
@@ -154,14 +183,7 @@ export function Timeline() {
     totalCount,
     activeDurationMs,
     idleDurationMs,
-  } = useTimeline(date);
-  const [query, setQuery] = useState("");
-  const [stateFilter, setStateFilter] = useState<"ALL" | ActivityState>("ALL");
-  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
-  const [minimumMinutes, setMinimumMinutes] = useState("");
-  const [maximumMinutes, setMaximumMinutes] = useState("");
-  const [timeFrom, setTimeFrom] = useState("");
-  const [timeTo, setTimeTo] = useState("");
+  } = useTimeline(date, timelineFilters);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [splittingId, setSplittingId] = useState<number | null>(null);
   const [splitAt, setSplitAt] = useState("");
@@ -179,44 +201,20 @@ export function Timeline() {
   const [importFormat, setImportFormat] = useState<"json" | "csv">("json");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [conflictPolicy, setConflictPolicy] = useState<"skip" | "merge">("skip");
-  const filteredEntries = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase();
-    const minimumMs = Number(minimumMinutes || 0) * 60_000;
-    const maximumMs = maximumMinutes ? Number(maximumMinutes) * 60_000 : Infinity;
-    return entries.filter((entry) => {
-      if (stateFilter !== "ALL" && entry.state !== stateFilter) return false;
-      if (entry.durationMs < minimumMs || entry.durationMs > maximumMs) return false;
-      const clockMinutes = new Date(entry.startedAtMs).getHours() * 60
-        + new Date(entry.startedAtMs).getMinutes();
-      const parseClock = (value: string) => {
-        const [hours, minutes] = value.split(":").map(Number);
-        return hours * 60 + minutes;
-      };
-      if (timeFrom && clockMinutes < parseClock(timeFrom)) return false;
-      if (timeTo && clockMinutes > parseClock(timeTo)) return false;
-      if (!normalized) return true;
-      return [
-        entry.applicationName,
-        entry.bundleIdentifier,
-        entry.category,
-        entry.windowTitle,
-        entry.note,
-      ]
-        .filter(Boolean)
-        .some((value) => value!.toLocaleLowerCase().includes(normalized));
-    });
-  }, [entries, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo]);
+  const filteredEntries = entries;
   const hours = useMemo(() => summarizeByHour(filteredEntries), [filteredEntries]);
   const visibleEntries = filteredEntries;
 
   useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedQuery(query), 180);
+    return () => window.clearTimeout(timeout);
+  }, [query]);
+  useEffect(() => {
     setSelectedIds(new Set());
   }, [date, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo]);
   useEffect(() => {
-    const filtering = query || stateFilter !== "ALL" || minimumMinutes
-      || maximumMinutes || timeFrom || timeTo;
-    if ((view === "overview" || filtering) && hasMore && !loading) loadAll();
-  }, [hasMore, loadAll, loading, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo, view]);
+    if (view === "overview" && hasMore && !loading) loadAll();
+  }, [hasMore, loadAll, loading, view]);
   useEffect(() => {
     void getTimelineUndoHistory().then(setUndoHistory).catch(() => {});
   }, []);
@@ -267,14 +265,10 @@ export function Timeline() {
   const dateValue = dateFromLocalIso(date);
   const isToday = date === today;
   const hasFilters = Boolean(
-    query || stateFilter !== "ALL" || minimumMinutes || maximumMinutes || timeFrom || timeTo,
+    query.trim() || stateFilter !== "ALL" || minimumMinutes || maximumMinutes || timeFrom || timeTo,
   );
-  const activeTotal = hasFilters
-    ? stateTotal(filteredEntries, "ACTIVE")
-    : activeDurationMs;
-  const idleTotal = hasFilters
-    ? stateTotal(filteredEntries, "IDLE")
-    : idleDurationMs;
+  const activeTotal = activeDurationMs;
+  const idleTotal = idleDurationMs;
   const dateTitle = isToday
     ? t("Today")
     : new Intl.DateTimeFormat(locale, {
@@ -334,7 +328,7 @@ export function Timeline() {
         <div>
           <span className="summary-swatch sessions" />
           <p>{t("Sessions")}</p>
-          <strong>{hasFilters ? filteredEntries.length : totalCount}</strong>
+          <strong>{totalCount}</strong>
         </div>
       </section>
 
@@ -343,7 +337,7 @@ export function Timeline() {
           <p className="section-kicker">{t("Day structure")}</p>
           <strong>{view === "overview"
             ? t(`${hours.length} active time blocks`)
-            : t(`${filteredEntries.length} matching sessions`)}</strong>
+            : t(`${totalCount} matching sessions`)}</strong>
         </div>
         <div className="range-tabs" role="group" aria-label={t("Timeline view")}>
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>
@@ -461,6 +455,7 @@ export function Timeline() {
           <input
             type="search"
             value={query}
+            maxLength={200}
             placeholder={t("App, title, note, bundle, or category")}
             onChange={(event) => setQuery(event.currentTarget.value)}
           />
@@ -549,8 +544,8 @@ export function Timeline() {
           )}
           {!loading && hours.length === 0 && !error && (
             <div className="empty-timeline">
-              <h2>{t(entries.length ? "No matching activity" : "No activity recorded")}</h2>
-              <p>{t(entries.length
+              <h2>{t(hasFilters ? "No matching activity" : "No activity recorded")}</h2>
+              <p>{t(hasFilters
                 ? "Adjust or clear the filters to see other sessions."
                 : "Watchhouse did not record any computer activity on this day.")}</p>
             </div>
@@ -656,8 +651,8 @@ export function Timeline() {
                 <path d="M12 7v5l3 2" />
               </svg>
             </span>
-            <h2>{t(entries.length ? "No matching activity" : "No activity recorded")}</h2>
-            <p>{t(entries.length
+            <h2>{t(hasFilters ? "No matching activity" : "No activity recorded")}</h2>
+            <p>{t(hasFilters
               ? "Adjust or clear the filters to see other sessions."
               : "Watchhouse did not record any computer activity on this day.")}</p>
           </div>
@@ -766,7 +761,7 @@ export function Timeline() {
           );
         })}
 
-        {hasMore && !query && stateFilter === "ALL" && (
+        {hasMore && (
           <button
             type="button"
             className="timeline-load-more"

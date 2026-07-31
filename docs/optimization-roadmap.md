@@ -313,3 +313,29 @@ Validation:
 - Rust formatting and Clippy passed with warnings denied.
 - Chinese and English switching was visually checked at desktop and 375 px widths.
 - The macOS application bundle was generated successfully.
+
+## Phase 15: Backend Timeline Search
+
+Status: Complete
+
+- [x] Move Timeline text, state, duration, and local-time filtering into SQLite.
+- [x] Return exact filtered session counts and active or idle duration totals.
+- [x] Preserve paginated loading in the detail view while completing overview data on demand.
+- [x] Debounce text search and enforce the shared 200-character query limit.
+- [x] Treat SQLite `LIKE` wildcard characters as literal search input.
+- [x] Add repository and statistics tests for filtering, totals, and pagination.
+
+Decisions:
+
+- Timeline search matches application names, bundle identifiers, categories, redacted window
+  titles, and user notes without loading the full selected day into the frontend.
+- Duration totals and filters use session bounds clipped to the selected local calendar day.
+- The hourly overview completes filtered pagination because it needs every matching session to
+  construct accurate time blocks; the detail view remains incrementally paginated.
+
+Validation:
+
+- 9 frontend tests passed.
+- Frontend production build passed.
+- 76 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting and Clippy passed with warnings denied.

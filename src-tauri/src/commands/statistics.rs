@@ -4,7 +4,7 @@ use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::{
-    database::ActivityRepository,
+    database::{ActivityRepository, TimelineSearch},
     error::AppError,
     statistics::{
         AppUsage, CategoryUsage, DailyUsage, FocusSummary, ProductivityReport, StatisticsService,
@@ -45,11 +45,14 @@ pub async fn get_timeline_page(
     date: String,
     offset: usize,
     limit: usize,
+    filters: Option<TimelineSearch>,
     statistics: State<'_, StatisticsService>,
 ) -> IpcResult<TimelinePage> {
     let date = parse_date(&date)?;
+    let filters = filters.unwrap_or_default();
     let statistics = statistics.inner().clone();
-    run_blocking(move || statistics.timeline_page_for_date(date, offset, limit)).await
+    run_blocking(move || statistics.timeline_page_for_date_filtered(date, offset, limit, &filters))
+        .await
 }
 
 #[tauri::command]

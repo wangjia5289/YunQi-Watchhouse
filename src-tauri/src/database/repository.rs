@@ -70,6 +70,17 @@ pub struct ActivityRecord {
     pub application: Option<Application>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineSearch {
+    pub query: Option<String>,
+    pub state: Option<ActivityState>,
+    pub minimum_duration_ms: Option<i64>,
+    pub maximum_duration_ms: Option<i64>,
+    pub time_from_minutes: Option<i64>,
+    pub time_to_minutes: Option<i64>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRecord {
@@ -1796,13 +1807,31 @@ impl ActivityRepository {
         offset: usize,
         limit: usize,
     ) -> AppResult<Vec<ActivityRecord>> {
+        self.records_overlapping_page_filtered(
+            range_start_ms,
+            range_end_ms,
+            offset,
+            limit,
+            &TimelineSearch::default(),
+        )
+    }
+
+    pub fn records_overlapping_page_filtered(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+        offset: usize,
+        limit: usize,
+        search: &TimelineSearch,
+    ) -> AppResult<Vec<ActivityRecord>> {
         if range_end_ms <= range_start_ms || !(1..=1_000).contains(&limit) {
             return Err(AppError::InvalidTimeRange(
                 "invalid timeline page range or limit".to_owned(),
             ));
         }
+        let parameters = TimelineSearchParameters::new(search)?;
         let connection = self.database.lock()?;
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare(&format!(
             "SELECT
                 s.id, s.state, s.application_id, s.window_title,
                 s.started_at_ms, s.ended_at_ms, s.duration_ms, s.is_open,
@@ -1812,13 +1841,24 @@ impl ActivityRepository {
                 a.first_seen_at_ms, a.last_seen_at_ms
              FROM activity_sessions s
              LEFT JOIN applications a ON a.id = s.application_id
-             WHERE s.started_at_ms < ?2 AND s.ended_at_ms > ?1
+             WHERE {TIMELINE_SEARCH_WHERE}
              ORDER BY s.started_at_ms, s.id
-             LIMIT ?3 OFFSET ?4",
-        )?;
+             LIMIT ?9 OFFSET ?10"
+        ))?;
         Ok(statement
             .query_map(
-                params![range_start_ms, range_end_ms, limit as i64, offset as i64],
+                params![
+                    range_start_ms,
+                    range_end_ms,
+                    parameters.state,
+                    parameters.minimum_duration_ms,
+                    parameters.maximum_duration_ms,
+                    parameters.time_from_minutes,
+                    parameters.time_to_minutes,
+                    parameters.query_pattern,
+                    limit as i64,
+                    offset as i64,
+                ],
                 map_activity_record,
             )?
             .collect::<Result<Vec<_>, _>>()?)
@@ -1829,17 +1869,44 @@ impl ActivityRepository {
         range_start_ms: i64,
         range_end_ms: i64,
     ) -> AppResult<(usize, i64, i64)> {
+        self.timeline_page_totals_filtered(range_start_ms, range_end_ms, &TimelineSearch::default())
+    }
+
+    pub fn timeline_page_totals_filtered(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+        search: &TimelineSearch,
+    ) -> AppResult<(usize, i64, i64)> {
+        if range_end_ms <= range_start_ms {
+            return Err(AppError::InvalidTimeRange(
+                "timeline range end must be after its start".to_owned(),
+            ));
+        }
+        let parameters = TimelineSearchParameters::new(search)?;
         let connection = self.database.lock()?;
         connection
             .query_row(
-                "SELECT COUNT(*),
-                   COALESCE(SUM(CASE WHEN state = 'ACTIVE'
-                     THEN MIN(ended_at_ms, ?2) - MAX(started_at_ms, ?1) ELSE 0 END), 0),
-                   COALESCE(SUM(CASE WHEN state = 'IDLE'
-                     THEN MIN(ended_at_ms, ?2) - MAX(started_at_ms, ?1) ELSE 0 END), 0)
-                 FROM activity_sessions
-                 WHERE started_at_ms < ?2 AND ended_at_ms > ?1",
-                params![range_start_ms, range_end_ms],
+                &format!(
+                    "SELECT COUNT(*),
+                   COALESCE(SUM(CASE WHEN s.state = 'ACTIVE'
+                     THEN MIN(s.ended_at_ms, ?2) - MAX(s.started_at_ms, ?1) ELSE 0 END), 0),
+                   COALESCE(SUM(CASE WHEN s.state = 'IDLE'
+                     THEN MIN(s.ended_at_ms, ?2) - MAX(s.started_at_ms, ?1) ELSE 0 END), 0)
+                 FROM activity_sessions s
+                 LEFT JOIN applications a ON a.id = s.application_id
+                 WHERE {TIMELINE_SEARCH_WHERE}"
+                ),
+                params![
+                    range_start_ms,
+                    range_end_ms,
+                    parameters.state,
+                    parameters.minimum_duration_ms,
+                    parameters.maximum_duration_ms,
+                    parameters.time_from_minutes,
+                    parameters.time_to_minutes,
+                    parameters.query_pattern,
+                ],
                 |row| Ok((row.get::<_, i64>(0)? as usize, row.get(1)?, row.get(2)?)),
             )
             .map_err(Into::into)
@@ -1859,6 +1926,118 @@ impl ActivityRepository {
             ended_at_ms: session.ended_at_ms,
         })
     }
+}
+
+const TIMELINE_SEARCH_WHERE: &str = r#"
+    s.started_at_ms < ?2 AND s.ended_at_ms > ?1
+    AND (?3 IS NULL OR s.state = ?3)
+    AND (
+      ?4 IS NULL
+      OR MIN(s.ended_at_ms, ?2) - MAX(s.started_at_ms, ?1) >= ?4
+    )
+    AND (
+      ?5 IS NULL
+      OR MIN(s.ended_at_ms, ?2) - MAX(s.started_at_ms, ?1) <= ?5
+    )
+    AND (
+      ?6 IS NULL
+      OR (
+        CAST(strftime(
+          '%H', MAX(s.started_at_ms, ?1) / 1000, 'unixepoch', 'localtime'
+        ) AS INTEGER) * 60
+        + CAST(strftime(
+          '%M', MAX(s.started_at_ms, ?1) / 1000, 'unixepoch', 'localtime'
+        ) AS INTEGER)
+      ) >= ?6
+    )
+    AND (
+      ?7 IS NULL
+      OR (
+        CAST(strftime(
+          '%H', MAX(s.started_at_ms, ?1) / 1000, 'unixepoch', 'localtime'
+        ) AS INTEGER) * 60
+        + CAST(strftime(
+          '%M', MAX(s.started_at_ms, ?1) / 1000, 'unixepoch', 'localtime'
+        ) AS INTEGER)
+      ) <= ?7
+    )
+    AND (
+      ?8 IS NULL
+      OR COALESCE(a.name, '') LIKE ?8 ESCAPE '\'
+      OR COALESCE(a.bundle_id, '') LIKE ?8 ESCAPE '\'
+      OR COALESCE(a.category, '') LIKE ?8 ESCAPE '\'
+      OR COALESCE(s.window_title, '') LIKE ?8 ESCAPE '\'
+      OR COALESCE(s.note, '') LIKE ?8 ESCAPE '\'
+    )
+"#;
+
+struct TimelineSearchParameters {
+    state: Option<&'static str>,
+    minimum_duration_ms: Option<i64>,
+    maximum_duration_ms: Option<i64>,
+    time_from_minutes: Option<i64>,
+    time_to_minutes: Option<i64>,
+    query_pattern: Option<String>,
+}
+
+impl TimelineSearchParameters {
+    fn new(search: &TimelineSearch) -> AppResult<Self> {
+        if search
+            .query
+            .as_deref()
+            .is_some_and(|query| query.chars().count() > 200)
+        {
+            return Err(AppError::InvalidTimeRange(
+                "timeline search query cannot exceed 200 characters".to_owned(),
+            ));
+        }
+        if [search.minimum_duration_ms, search.maximum_duration_ms]
+            .into_iter()
+            .flatten()
+            .any(|duration| duration < 0)
+        {
+            return Err(AppError::InvalidTimeRange(
+                "timeline duration filters cannot be negative".to_owned(),
+            ));
+        }
+        if [search.time_from_minutes, search.time_to_minutes]
+            .into_iter()
+            .flatten()
+            .any(|minutes| !(0..24 * 60).contains(&minutes))
+        {
+            return Err(AppError::InvalidTimeRange(
+                "timeline time filters must be valid local clock minutes".to_owned(),
+            ));
+        }
+
+        let query_pattern = search
+            .query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(escape_like_pattern);
+        Ok(Self {
+            state: search.state.map(ActivityState::as_db_str),
+            minimum_duration_ms: search.minimum_duration_ms,
+            maximum_duration_ms: search.maximum_duration_ms,
+            time_from_minutes: search.time_from_minutes,
+            time_to_minutes: search.time_to_minutes,
+            query_pattern,
+        })
+    }
+}
+
+fn escape_like_pattern(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('%');
+    for character in value.chars() {
+        if matches!(character, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped.push('%');
+    escaped
 }
 
 const SESSION_SELECT: &str = "SELECT
@@ -2014,6 +2193,8 @@ fn map_activity_record(row: &Row<'_>) -> rusqlite::Result<ActivityRecord> {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{Local, TimeZone};
+
     use super::*;
 
     fn repository() -> ActivityRepository {
@@ -2479,6 +2660,135 @@ mod tests {
         assert_eq!(first_page.len(), 2);
         assert_eq!(second_page.len(), 1);
         assert!(first_page[1].session.id < second_page[0].session.id);
+    }
+
+    #[test]
+    fn timeline_search_filters_and_totals_are_applied_in_sql() {
+        let repository = repository();
+        let idea = application(&repository, 0);
+        repository
+            .update_application_preferences(idea.id, "Work", false, false)
+            .expect("application category should update");
+        let terminal = repository
+            .upsert_application(&NewApplication {
+                name: "Terminal".to_owned(),
+                bundle_id: Some("example.terminal".to_owned()),
+                executable_path: None,
+                seen_at_ms: 0,
+            })
+            .expect("second application should be stored");
+        let local_timestamp = |hour: u32, minute: u32| {
+            Local
+                .with_ymd_and_hms(2025, 1, 15, hour, minute, 0)
+                .single()
+                .expect("test date should resolve locally")
+                .timestamp_millis()
+        };
+        let range_start = local_timestamp(0, 0);
+        let range_end = Local
+            .with_ymd_and_hms(2025, 1, 16, 0, 0, 0)
+            .single()
+            .expect("next test date should resolve locally")
+            .timestamp_millis();
+
+        let first = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(idea.id),
+                window_title: Some("Project Alpha".to_owned()),
+                started_at_ms: local_timestamp(9, 0),
+            })
+            .expect("first session should open");
+        repository
+            .close_session(first.id, local_timestamp(9, 30), ClosedReason::AppChanged)
+            .expect("first session should close");
+        repository
+            .update_session_notes(&[first.id], Some("Sprint 100% review"))
+            .expect("session note should update");
+
+        let idle = repository
+            .create_session(&NewSession {
+                state: ActivityState::Idle,
+                application_id: None,
+                window_title: None,
+                started_at_ms: local_timestamp(9, 30),
+            })
+            .expect("idle session should open");
+        repository
+            .close_session(idle.id, local_timestamp(9, 40), ClosedReason::BecameActive)
+            .expect("idle session should close");
+
+        let second = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(terminal.id),
+                window_title: Some("Shell".to_owned()),
+                started_at_ms: local_timestamp(10, 0),
+            })
+            .expect("second session should open");
+        repository
+            .close_session(second.id, local_timestamp(11, 20), ClosedReason::AppChanged)
+            .expect("second session should close");
+
+        for query in ["alpha", "INTELLIJ", "work", "%"] {
+            let search = TimelineSearch {
+                query: Some(query.to_owned()),
+                ..TimelineSearch::default()
+            };
+            assert_eq!(
+                repository
+                    .timeline_page_totals_filtered(range_start, range_end, &search)
+                    .expect("search totals should succeed"),
+                (1, 30 * 60_000, 0),
+                "query {query:?} should match only the first session",
+            );
+        }
+
+        let idle_only = TimelineSearch {
+            state: Some(ActivityState::Idle),
+            ..TimelineSearch::default()
+        };
+        assert_eq!(
+            repository
+                .timeline_page_totals_filtered(range_start, range_end, &idle_only)
+                .expect("state totals should succeed"),
+            (1, 0, 10 * 60_000),
+        );
+
+        let long_sessions = TimelineSearch {
+            minimum_duration_ms: Some(45 * 60_000),
+            ..TimelineSearch::default()
+        };
+        assert_eq!(
+            repository
+                .records_overlapping_page_filtered(range_start, range_end, 0, 10, &long_sessions,)
+                .expect("duration search should succeed")[0]
+                .session
+                .id,
+            second.id,
+        );
+
+        let morning_end = TimelineSearch {
+            time_to_minutes: Some(9 * 60 + 30),
+            ..TimelineSearch::default()
+        };
+        assert_eq!(
+            repository
+                .timeline_page_totals_filtered(range_start, range_end, &morning_end)
+                .expect("end time totals should succeed")
+                .0,
+            2,
+        );
+        let from_ten = TimelineSearch {
+            time_from_minutes: Some(10 * 60),
+            ..TimelineSearch::default()
+        };
+        assert_eq!(
+            repository
+                .timeline_page_totals_filtered(range_start, range_end, &from_ten)
+                .expect("start time totals should succeed"),
+            (1, 80 * 60_000, 0),
+        );
     }
 
     #[test]

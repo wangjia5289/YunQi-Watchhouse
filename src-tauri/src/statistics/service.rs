@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     activity::ActivityState,
-    database::{ActivityRecord, ActivityRepository},
+    database::{ActivityRecord, ActivityRepository, TimelineSearch},
     error::{AppError, AppResult},
 };
 
@@ -295,15 +295,26 @@ impl StatisticsService {
         offset: usize,
         limit: usize,
     ) -> AppResult<TimelinePage> {
+        self.timeline_page_for_date_filtered(date, offset, limit, &TimelineSearch::default())
+    }
+
+    pub fn timeline_page_for_date_filtered(
+        &self,
+        date: NaiveDate,
+        offset: usize,
+        limit: usize,
+        search: &TimelineSearch,
+    ) -> AppResult<TimelinePage> {
         let range = local_day_range(date)?;
         let (total_count, active_duration_ms, idle_duration_ms) = self
             .repository
-            .timeline_page_totals(range.start_ms, range.end_ms)?;
-        let records = self.repository.records_overlapping_page(
+            .timeline_page_totals_filtered(range.start_ms, range.end_ms, search)?;
+        let records = self.repository.records_overlapping_page_filtered(
             range.start_ms,
             range.end_ms,
             offset,
             limit,
+            search,
         )?;
         let entries = timeline_entries(records, range);
         Ok(TimelinePage {
@@ -704,6 +715,54 @@ mod tests {
             ),
             (100, 200, 100)
         );
+    }
+
+    #[test]
+    fn filtered_timeline_page_reports_exact_totals_and_pagination() {
+        let (service, repository, application_id) = setup();
+        let date = NaiveDate::from_ymd_opt(2025, 1, 15).expect("date should be valid");
+        let range = local_day_range(date).expect("local day should resolve");
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            range.start_ms + 60 * 60_000,
+            range.start_ms + 70 * 60_000,
+        );
+        store_session(
+            &repository,
+            ActivityState::Idle,
+            None,
+            range.start_ms + 70 * 60_000,
+            range.start_ms + 75 * 60_000,
+        );
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            range.start_ms + 80 * 60_000,
+            range.start_ms + 95 * 60_000,
+        );
+        let search = TimelineSearch {
+            query: Some("idea".to_owned()),
+            ..TimelineSearch::default()
+        };
+
+        let first = service
+            .timeline_page_for_date_filtered(date, 0, 1, &search)
+            .expect("first filtered page should load");
+        assert_eq!(first.total_count, 2);
+        assert_eq!(first.entries.len(), 1);
+        assert_eq!(first.active_duration_ms, 25 * 60_000);
+        assert_eq!(first.idle_duration_ms, 0);
+        assert!(first.has_more);
+
+        let second = service
+            .timeline_page_for_date_filtered(date, 1, 1, &search)
+            .expect("second filtered page should load");
+        assert_eq!(second.total_count, 2);
+        assert_eq!(second.entries.len(), 1);
+        assert!(!second.has_more);
     }
 
     #[test]
