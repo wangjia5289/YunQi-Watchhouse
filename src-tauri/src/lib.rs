@@ -8,6 +8,7 @@ pub mod platform;
 pub mod statistics;
 
 use tauri::{Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
@@ -37,6 +38,7 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             log::info!(
@@ -60,6 +62,7 @@ pub fn run() {
             let reminder_repository =
                 app.state::<database::ActivityRepository>().inner().clone();
             let reminder_state = app.state::<focus::FocusModeState>().inner().clone();
+            let reminder_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
                 loop {
@@ -85,11 +88,14 @@ pub fn run() {
                     if reminder_state.should_send_break_reminder(
                         now_ms,
                         settings.break_reminder_minutes,
-                    ) {
-                        #[cfg(target_os = "macos")]
-                        if let Err(error) = platform::show_break_notification() {
-                            log::warn!("could not show break notification: {error}");
-                        }
+                    ) && let Err(error) = reminder_app
+                            .notification()
+                            .builder()
+                            .title("Time for a short break")
+                            .body("Step away for a moment before your next focus block.")
+                            .show()
+                    {
+                        log::warn!("could not show break notification: {error}");
                     }
                 }
             });

@@ -112,8 +112,8 @@ Decisions:
 
 - Native reminders are driven by the backend so they do not depend on the dashboard being open.
 - Focus Mode is persisted in the local settings database and changed atomically before UI events.
-- The existing macOS notification API is wrapped in one platform function because downloading the
-  official Tauri notification plugin was blocked by the Codex approval service.
+- Native notifications use the official Tauri notification plugin and the current macOS
+  notification framework.
 
 Validation:
 
@@ -121,6 +121,7 @@ Validation:
 - 63 Rust tests passed.
 - Clippy passed for all targets with warnings denied.
 - The macOS application bundle was generated successfully.
+- Timeline layouts were visually checked at desktop and 375 px widths with no horizontal overflow.
 
 ## Known Environment Blocker
 

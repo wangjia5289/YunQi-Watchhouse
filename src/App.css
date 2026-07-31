@@ -2691,3 +2691,161 @@ button {
   color: #25322e;
   background: var(--surface);
 }
+
+@media (max-width: 720px) {
+  body {
+    min-width: 0;
+    min-height: 100vh;
+  }
+
+  .app-shell {
+    display: block;
+  }
+
+  .sidebar {
+    position: static;
+    min-height: auto;
+    padding: 12px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .brand {
+    height: auto;
+    margin: 0;
+    font-size: 12px;
+  }
+
+  .brand-mark {
+    width: 25px;
+    height: 25px;
+    border-radius: 7px;
+  }
+
+  .nav-label,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .sidebar nav {
+    min-width: 0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 2px;
+  }
+
+  .nav-item {
+    width: 36px;
+    height: 36px;
+    margin: 0;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .nav-item span {
+    display: none;
+  }
+
+  .nav-item svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .main-content {
+    padding: 22px 14px 24px;
+    overflow: visible;
+  }
+
+  .timeline-header,
+  .timeline-view-bar,
+  .timeline-selection-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .timeline-header {
+    gap: 16px;
+  }
+
+  .timeline-header h1 {
+    font-size: 28px;
+  }
+
+  .date-controls {
+    width: 100%;
+  }
+
+  .date-picker {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .timeline-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    padding: 12px 8px;
+  }
+
+  .timeline-summary > div {
+    min-width: 0;
+    padding: 13px 11px;
+  }
+
+  .timeline-view-bar > div:nth-child(2) {
+    align-self: flex-start;
+  }
+
+  .timeline-import-button {
+    align-self: flex-start;
+  }
+
+  .timeline-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-list {
+    padding: 18px 10px 26px;
+  }
+
+  .timeline-row {
+    grid-template-columns: 42px 16px minmax(0, 1fr);
+  }
+
+  .timeline-row > time,
+  .timeline-end > time {
+    font-size: 9px;
+  }
+
+  .session-card {
+    margin-left: 5px;
+    padding-right: 10px;
+    gap: 9px;
+  }
+
+  .session-duration {
+    display: none;
+  }
+
+  .timeline-selection-bar > div,
+  .import-preview {
+    flex-wrap: wrap;
+  }
+
+  .import-preview select {
+    margin-left: 0;
+  }
+
+  .timeline-dialog-backdrop {
+    padding: 14px;
+  }
+
+  .timeline-dialog {
+    max-height: calc(100vh - 28px);
+    padding: 18px;
+    overflow-y: auto;
+  }
+}

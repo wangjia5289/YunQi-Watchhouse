@@ -10,8 +10,6 @@ use objc2::{AnyThread, rc::autoreleasepool};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use objc2_foundation::{NSDictionary, NSString};
-#[allow(deprecated)]
-use objc2_foundation::{NSUserNotification, NSUserNotificationCenter};
 
 use crate::{
     error::{AppError, AppResult},
@@ -55,20 +53,6 @@ const UTF8_ENCODING: u32 = 0x0800_0100;
 /// This call queries elapsed time only and does not install an event tap.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MacOsActivityProvider;
-
-#[allow(deprecated)]
-pub fn show_break_notification() -> AppResult<()> {
-    autoreleasepool(|_| {
-        let notification = NSUserNotification::new();
-        let title = NSString::from_str("Time for a short break");
-        let body = NSString::from_str("Step away for a moment before your next focus block.");
-        notification.setTitle(Some(&title));
-        notification.setInformativeText(Some(&body));
-        NSUserNotificationCenter::defaultUserNotificationCenter()
-            .deliverNotification(&notification);
-    });
-    Ok(())
-}
 
 pub fn application_icon_png(executable_path: &str) -> AppResult<Vec<u8>> {
     let icon_path = application_bundle_path(Path::new(executable_path))
