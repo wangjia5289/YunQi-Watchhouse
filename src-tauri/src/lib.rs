@@ -7,6 +7,7 @@ pub mod maintenance;
 pub mod platform;
 pub mod statistics;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -18,6 +19,30 @@ use tauri_plugin_notification::NotificationExt;
 pub struct TrackingTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusCountdownTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct ShowTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct QuitTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct FocusTemplateTrayMenuItems(pub Vec<MenuItem<tauri::Wry>>);
+pub struct AppLocaleState(AtomicBool);
+
+impl Default for AppLocaleState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AppLocaleState {
+    pub fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    pub fn is_chinese(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub fn set_chinese(&self, chinese: bool) {
+        self.0.store(chinese, Ordering::Relaxed);
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -118,6 +143,7 @@ pub fn run() {
                 persisted_focus.total_paused_ms,
                 persisted_focus.template_id,
             ));
+            app.manage(AppLocaleState::new());
 
             let reminder_repository = app.state::<database::ActivityRepository>().inner().clone();
             let reminder_state = app.state::<focus::FocusModeState>().inner().clone();
@@ -163,13 +189,27 @@ pub fn run() {
                             let next = reminder_state.end();
                             let _ = reminder_app.emit("focus-mode-changed", &next);
                             if let Some(item) = reminder_app.try_state::<FocusTrayMenuItem>() {
-                                let _ = item.0.set_text("Start Focus Mode");
+                                let chinese = reminder_app.state::<AppLocaleState>().is_chinese();
+                                let _ = item.0.set_text(if chinese {
+                                    "开始专注模式"
+                                } else {
+                                    "Start Focus Mode"
+                                });
                             }
+                            let chinese = reminder_app.state::<AppLocaleState>().is_chinese();
                             let _ = reminder_app
                                 .notification()
                                 .builder()
-                                .title("Focus plan complete")
-                                .body("Your planned focus session is complete.")
+                                .title(if chinese {
+                                    "专注计划已完成"
+                                } else {
+                                    "Focus plan complete"
+                                })
+                                .body(if chinese {
+                                    "你的专注计划已经完成。"
+                                } else {
+                                    "Your planned focus session is complete."
+                                })
                                 .show();
                         }
                         continue;
@@ -187,14 +227,25 @@ pub fn run() {
                     }
                     if reminder_state
                         .should_send_break_reminder(now_ms, settings.break_reminder_minutes)
-                        && let Err(error) = reminder_app
+                    {
+                        let chinese = reminder_app.state::<AppLocaleState>().is_chinese();
+                        if let Err(error) = reminder_app
                             .notification()
                             .builder()
-                            .title("Time for a short break")
-                            .body("Step away for a moment before your next focus block.")
+                            .title(if chinese {
+                                "该休息一下了"
+                            } else {
+                                "Time for a short break"
+                            })
+                            .body(if chinese {
+                                "在下一个专注块开始前，暂时离开电脑休息一下。"
+                            } else {
+                                "Step away for a moment before your next focus block."
+                            })
                             .show()
-                    {
-                        log::warn!("could not show break notification: {error}");
+                        {
+                            log::warn!("could not show break notification: {error}");
+                        }
                     }
                 }
             });
@@ -285,6 +336,7 @@ pub fn run() {
             }
 
             let show = MenuItem::with_id(app, "show", "Show Watchhouse", true, None::<&str>)?;
+            app.manage(ShowTrayMenuItem(show.clone()));
             let pause = MenuItem::with_id(
                 app,
                 "pause",
@@ -337,7 +389,9 @@ pub fn run() {
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            app.manage(FocusTemplateTrayMenuItems(template_items.clone()));
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            app.manage(QuitTrayMenuItem(quit.clone()));
             let mut menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
                 vec![&show, &pause, &focus, &countdown];
             menu_items.extend(
@@ -372,8 +426,13 @@ pub fn run() {
                         } else {
                             monitor.set_paused(false);
                         }
-                        let label = if paused {
+                        let chinese = app.state::<AppLocaleState>().is_chinese();
+                        let label = if paused && chinese {
+                            "继续追踪"
+                        } else if paused {
                             "Resume Tracking"
+                        } else if chinese {
+                            "暂停追踪"
                         } else {
                             "Pause Tracking"
                         };
@@ -422,11 +481,19 @@ pub fn run() {
                         } else {
                             state.end()
                         };
-                        let _ = app.state::<FocusTrayMenuItem>().0.set_text(if active {
-                            "End Focus Mode"
-                        } else {
-                            "Start Focus Mode"
-                        });
+                        let chinese = app.state::<AppLocaleState>().is_chinese();
+                        let _ = app
+                            .state::<FocusTrayMenuItem>()
+                            .0
+                            .set_text(if active && chinese {
+                                "结束专注模式"
+                            } else if active {
+                                "End Focus Mode"
+                            } else if chinese {
+                                "开始专注模式"
+                            } else {
+                                "Start Focus Mode"
+                            });
                         let _ = app.emit("focus-mode-changed", status);
                     }
                     id if id.starts_with("focus-template-") => {
@@ -460,8 +527,13 @@ pub fn run() {
                 loop {
                     interval.tick().await;
                     let status = countdown_app.state::<focus::FocusModeState>().snapshot();
-                    let label = if !status.active {
+                    let chinese = countdown_app.state::<AppLocaleState>().is_chinese();
+                    let label = if !status.active && chinese {
+                        "没有进行中的专注计划".to_owned()
+                    } else if !status.active {
                         "No active focus plan".to_owned()
+                    } else if status.paused && chinese {
+                        "专注已暂停".to_owned()
                     } else if status.paused {
                         "Focus paused".to_owned()
                     } else if let Some(end_at) = status.planned_end_at_ms {
@@ -470,11 +542,21 @@ pub fn run() {
                             .map(|duration| duration.as_millis() as i64)
                             .unwrap_or_default();
                         let remaining = end_at.saturating_sub(now_ms);
-                        format!(
-                            "Focus remaining: {:02}:{:02}",
-                            remaining / 60_000,
-                            (remaining / 1_000) % 60
-                        )
+                        if chinese {
+                            format!(
+                                "专注剩余：{:02}:{:02}",
+                                remaining / 60_000,
+                                (remaining / 1_000) % 60
+                            )
+                        } else {
+                            format!(
+                                "Focus remaining: {:02}:{:02}",
+                                remaining / 60_000,
+                                (remaining / 1_000) % 60
+                            )
+                        }
+                    } else if chinese {
+                        "专注进行中".to_owned()
                     } else {
                         "Focus active".to_owned()
                     };
@@ -539,6 +621,7 @@ pub fn run() {
             commands::timeline::preview_activity_import,
             commands::timeline::import_activity,
             commands::settings::get_settings,
+            commands::settings::set_app_locale,
             commands::settings::get_data_health_summary,
             commands::settings::repair_data_health,
             commands::settings::get_data_health_undo_status,

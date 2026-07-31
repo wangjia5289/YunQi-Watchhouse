@@ -254,6 +254,8 @@ Status: Complete
 - [x] Add an always-available language switch in the application sidebar.
 - [x] Persist the selected interface language locally.
 - [x] Translate primary pages, dialogs, empty states, controls, and accessibility labels.
+- [x] Localize tray actions, Focus countdowns, and native notification copy.
+- [x] Localize native confirmations and dynamic maintenance or editing results.
 - [x] Keep English source text as the fallback for newly introduced copy.
 
 Decisions:
@@ -262,3 +264,5 @@ Decisions:
   than the activity database or exported settings.
 - Existing screens use a compatibility translator while new screens can migrate incrementally to
   explicit translation keys without changing the persisted locale contract.
+- Locale changes are synchronized to the Rust runtime so native tray state and notifications stay
+  consistent with the visible interface.

@@ -10,7 +10,6 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::TrackingTrayMenuItem;
 use crate::activity::{MonitorHandle, SessionManagerHandle};
 use crate::database::{ActivityRepository, Settings};
 use crate::database::{
@@ -18,6 +17,10 @@ use crate::database::{
     MaintenanceResult,
 };
 use crate::maintenance::{MaintenanceStatus, MaintenanceStatusState};
+use crate::{
+    AppLocaleState, FocusCountdownTrayMenuItem, FocusTemplateTrayMenuItems, FocusTrayMenuItem,
+    QuitTrayMenuItem, ShowTrayMenuItem, TrackingTrayMenuItem,
+};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +48,81 @@ pub struct DiagnosticsSummary {
 #[tauri::command]
 pub fn get_settings(repository: State<'_, ActivityRepository>) -> Result<Settings, String> {
     repository.settings().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_app_locale(locale: String, app: AppHandle) -> Result<(), String> {
+    if !matches!(locale.as_str(), "en" | "zh-CN") {
+        return Err("locale must be en or zh-CN".to_owned());
+    }
+    let chinese = locale == "zh-CN";
+    app.state::<AppLocaleState>().set_chinese(chinese);
+    let paused = app.state::<MonitorHandle>().is_paused();
+    let focus = app.state::<crate::focus::FocusModeState>().snapshot();
+    app.state::<ShowTrayMenuItem>()
+        .0
+        .set_text(if chinese {
+            "显示 Watchhouse"
+        } else {
+            "Show Watchhouse"
+        })
+        .map_err(|error| error.to_string())?;
+    app.state::<TrackingTrayMenuItem>()
+        .0
+        .set_text(match (chinese, paused) {
+            (true, true) => "继续追踪",
+            (true, false) => "暂停追踪",
+            (false, true) => "Resume Tracking",
+            (false, false) => "Pause Tracking",
+        })
+        .map_err(|error| error.to_string())?;
+    app.state::<FocusTrayMenuItem>()
+        .0
+        .set_text(match (chinese, focus.active) {
+            (true, true) => "结束专注模式",
+            (true, false) => "开始专注模式",
+            (false, true) => "End Focus Mode",
+            (false, false) => "Start Focus Mode",
+        })
+        .map_err(|error| error.to_string())?;
+    if !focus.active {
+        app.state::<FocusCountdownTrayMenuItem>()
+            .0
+            .set_text(if chinese {
+                "没有进行中的专注计划"
+            } else {
+                "No active focus plan"
+            })
+            .map_err(|error| error.to_string())?;
+    }
+    app.state::<QuitTrayMenuItem>()
+        .0
+        .set_text(if chinese { "退出" } else { "Quit" })
+        .map_err(|error| error.to_string())?;
+    let templates = app
+        .state::<ActivityRepository>()
+        .focus_plan_templates()
+        .map_err(|error| error.to_string())?;
+    for (item, template) in app
+        .state::<FocusTemplateTrayMenuItems>()
+        .0
+        .iter()
+        .zip(templates.iter())
+    {
+        item.set_text(if chinese {
+            format!(
+                "开始：{}（{} 分钟）",
+                template.name, template.duration_minutes
+            )
+        } else {
+            format!(
+                "Start: {} ({} min)",
+                template.name, template.duration_minutes
+            )
+        })
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -595,10 +673,13 @@ pub async fn restore_database(app: AppHandle) -> Result<bool, String> {
             restored_settings.idle_threshold_seconds as u64,
         ))
         .map_err(|error| error.to_string())?;
-    let _ = app
-        .state::<TrackingTrayMenuItem>()
-        .0
-        .set_text("Resume Tracking");
+    let _ = app.state::<TrackingTrayMenuItem>().0.set_text(
+        if app.state::<AppLocaleState>().is_chinese() {
+            "继续追踪"
+        } else {
+            "Resume Tracking"
+        },
+    );
     log::info!("database restore completed; tracking remains paused");
     Ok(true)
 }
@@ -620,10 +701,13 @@ pub async fn optimize_database(app: AppHandle) -> Result<(), String> {
 
     if !was_paused {
         app.state::<MonitorHandle>().set_paused(false);
-        let _ = app
-            .state::<TrackingTrayMenuItem>()
-            .0
-            .set_text("Pause Tracking");
+        let _ = app.state::<TrackingTrayMenuItem>().0.set_text(
+            if app.state::<AppLocaleState>().is_chinese() {
+                "暂停追踪"
+            } else {
+                "Pause Tracking"
+            },
+        );
     }
     result?;
     log::info!("database optimization completed");

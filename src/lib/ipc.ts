@@ -523,6 +523,10 @@ export function getSettings(): Promise<Settings> {
   return invoke("get_settings");
 }
 
+export function setAppLocale(locale: "en" | "zh-CN"): Promise<void> {
+  return invoke("set_app_locale", { locale });
+}
+
 export function getDataHealthSummary(): Promise<DataHealthSummary> {
   return invoke("get_data_health_summary");
 }

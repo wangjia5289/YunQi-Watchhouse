@@ -4,7 +4,7 @@ use chrono::{Local, TimeZone};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
-    FocusTrayMenuItem,
+    AppLocaleState, FocusTrayMenuItem,
     database::{ActivityRepository, FocusPlanTemplate, PersistedFocusMode},
     focus::{FocusModeState, FocusModeStatus},
 };
@@ -300,11 +300,16 @@ fn unix_timestamp_ms() -> Result<i64, String> {
 }
 
 fn publish_status(app: &AppHandle, status: &FocusModeStatus) {
+    let chinese = app.state::<AppLocaleState>().is_chinese();
     let _ = app
         .state::<FocusTrayMenuItem>()
         .0
-        .set_text(if status.active {
+        .set_text(if status.active && chinese {
+            "结束专注模式"
+        } else if status.active {
             "End Focus Mode"
+        } else if chinese {
+            "开始专注模式"
         } else {
             "Start Focus Mode"
         });

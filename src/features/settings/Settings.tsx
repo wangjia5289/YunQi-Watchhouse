@@ -35,6 +35,7 @@ import {
   sendTestNotification,
   updateSettings,
 } from "../../lib/ipc";
+import { localize, useLocale } from "../../lib/i18n";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { clearApplicationIconMemoryCache } from "../applications/ApplicationIcon";
 import { PrivacyNotice } from "../onboarding/PrivacyNotice";
@@ -63,6 +64,8 @@ function Toggle({
 }
 
 export function Settings() {
+  const { locale } = useLocale();
+  const tr = (value: string) => localize(locale, value);
   const [settings, setSettings] = useState<SettingsModel | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [showPrivacy, setShowPrivacy] = useState(false);
@@ -362,7 +365,7 @@ export function Settings() {
           <button onClick={() => void exportActivity("csv").then((path) => path && setMessage(`Exported to ${path}`))}>Export CSV</button>
         </div>
         <button className="secondary-action" onClick={() => {
-          if (window.confirm("Restore a Watchhouse database backup? Current activity data will be replaced and tracking will pause.")) {
+          if (window.confirm(tr("Restore a Watchhouse database backup? Current activity data will be replaced and tracking will pause."))) {
             void restoreDatabase().then((restored) => {
               if (restored) {
                 setMessage("Database restored. Review the data, then resume tracking.");
@@ -462,11 +465,11 @@ export function Settings() {
               .catch((error) => setMessage(errorMessage(error)))}>Back Up Now</button>
             <button onClick={() => {
               const count = maintenancePreview?.expiredSessionCount ?? 0;
-              if (window.confirm(
+              if (window.confirm(tr(
                 count
                   ? `Delete ${count} expired sessions and unused application data?`
                   : "Clean unused application data and optimize retention metadata?",
-              )) {
+              ))) {
                 void runDataMaintenance().then((result) => {
                   setMessage(
                     `Maintenance complete: ${result.deletedSessionCount} sessions and ${result.deletedApplicationIds.length} unused applications removed.`,
@@ -492,7 +495,7 @@ export function Settings() {
               type="button"
               disabled={!dataHealth || dataHealth.overlappingSessionCount + dataHealth.zeroDurationSessionCount === 0}
               onClick={() => {
-                if (!window.confirm("Repair overlapping and zero-duration closed sessions? Back up first if you may need the original timestamps.")) return;
+                if (!window.confirm(tr("Repair overlapping and zero-duration closed sessions? Back up first if you may need the original timestamps."))) return;
                 void repairDataHealth()
                   .then((result) => {
                     setMessage(`Data repaired: ${result.trimmedSessionCount} trimmed and ${result.deletedSessionCount} removed.`);
@@ -534,7 +537,7 @@ export function Settings() {
           )}
         </div>
         <button className="danger-button" onClick={() => {
-          if (window.confirm("Delete all recorded activity? This cannot be undone.")) {
+          if (window.confirm(tr("Delete all recorded activity? This cannot be undone."))) {
             void deleteAllActivity().then(() => {
               setMessage("All activity data was deleted.");
               notifyActivityDataChanged();

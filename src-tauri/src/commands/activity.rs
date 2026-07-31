@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::{
-    TrackingTrayMenuItem,
+    AppLocaleState, TrackingTrayMenuItem,
     activity::{MonitorHandle, MonitorStatus, SessionManagerHandle, SessionManagerStatus},
 };
 
@@ -32,6 +32,7 @@ pub async fn set_tracking_paused(
     monitor: State<'_, MonitorHandle>,
     session_manager: State<'_, SessionManagerHandle>,
     tray_item: State<'_, TrackingTrayMenuItem>,
+    locale: State<'_, AppLocaleState>,
 ) -> Result<bool, String> {
     let acknowledgement = if paused {
         monitor.set_paused(true);
@@ -41,8 +42,13 @@ pub async fn set_tracking_paused(
         None
     };
     let is_paused = monitor.is_paused();
-    let _ = tray_item.0.set_text(if is_paused {
+    let chinese = locale.is_chinese();
+    let _ = tray_item.0.set_text(if is_paused && chinese {
+        "继续追踪"
+    } else if is_paused {
         "Resume Tracking"
+    } else if chinese {
+        "暂停追踪"
     } else {
         "Pause Tracking"
     });

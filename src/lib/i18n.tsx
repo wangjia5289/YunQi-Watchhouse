@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { setAppLocale } from "./ipc";
 
 export type Locale = "en" | "zh-CN";
 
@@ -112,6 +113,18 @@ const zh: Record<string, string> = {
     "Watchhouse 记录到活跃应用后会显示在这里。",
   Application: "应用",
   "No bundle identifier": "没有 Bundle 标识符",
+  "Ignore future activity": "忽略后续活动",
+  "Existing history is preserved.": "已有历史记录会保留。",
+  "Record window titles": "记录窗口标题",
+  "Used only when the global privacy setting is enabled.": "仅在全局隐私设置启用时生效。",
+  Work: "工作",
+  Communication: "沟通",
+  Learning: "学习",
+  Creative: "创作",
+  Entertainment: "娱乐",
+  Uncategorized: "未分类",
+  "7 Days": "7 天",
+  "30 Days": "30 天",
   "Share of time": "时长占比",
   "Daily average": "日均时长",
   "Daily trend": "每日趋势",
@@ -159,6 +172,10 @@ const zh: Record<string, string> = {
   "Resume tracking": "继续追踪",
   "Pause tracking": "暂停追踪",
   "Time for a short break": "该休息一下了",
+  Dismiss: "忽略",
+  "Recorded locally on this Mac": "仅记录在这台 Mac 上",
+  "Activity stays private and is stored only on this Mac.":
+    "活动数据保持私密，仅存储在这台 Mac 上。",
   "Today summary": "今日汇总",
   "First activity": "首次活动",
   "Started today": "今天开始",
@@ -174,6 +191,11 @@ const zh: Record<string, string> = {
   "Open-ended focus mode": "不限时专注模式",
   Resume: "继续",
   Pause: "暂停",
+  End: "结束",
+  Up: "上移",
+  Down: "下移",
+  Remove: "移除",
+  "Start focus plan": "开始专注计划",
   "Focus plan templates": "专注计划模板",
   "Close template editor": "关闭模板编辑器",
   "New template": "新建模板",
@@ -216,8 +238,87 @@ const zh: Record<string, string> = {
   "Break Reminders": "休息提醒",
   "Show a local reminder after continuous focus.": "持续专注后显示本地提醒。",
   "Notification Permission": "通知权限",
+  "Allowed. Use a test notification to verify macOS delivery settings.":
+    "已允许。可发送测试通知以确认 macOS 投递设置。",
+  "Denied. Allow Watchhouse notifications in macOS System Settings.":
+    "已拒绝。请在 macOS 系统设置中允许 Watchhouse 通知。",
+  "Permission has not been requested.": "尚未请求权限。",
+  "Checking notification permission...": "正在检查通知权限…",
+  Allowed: "已允许",
+  Denied: "已拒绝",
+  "Not requested": "未请求",
+  Checking: "检查中",
+  Allow: "允许",
+  "Check Again": "再次检查",
+  "Send Test": "发送测试",
+  "Notification permission granted.": "通知权限已授予。",
+  "Notification permission was not granted.": "通知权限未授予。",
+  "Test notification sent.": "测试通知已发送。",
+  "Reminder Interval": "提醒间隔",
+  "Reminders reset when a new focus block starts.": "新的专注块开始时会重置提醒。",
+  "Quiet Hours": "免打扰时段",
+  "Break reminders stay silent during this period.": "此时间段内不会发送休息提醒。",
+  to: "至",
   Privacy: "隐私",
   Data: "数据",
+  "Local storage": "本地存储",
+  "Loading database location…": "正在加载数据库位置…",
+  "Show in Finder": "在 Finder 中显示",
+  "Back Up Database": "备份数据库",
+  "Optimize Database": "优化数据库",
+  "Export JSON": "导出 JSON",
+  "Restore Database Backup": "恢复数据库备份",
+  "Restore a Watchhouse database backup? Current activity data will be replaced and tracking will pause.":
+    "要恢复 Watchhouse 数据库备份吗？当前活动数据将被替换，追踪也会暂停。",
+  "Database restored. Review the data, then resume tracking.":
+    "数据库已恢复。请检查数据，然后继续追踪。",
+  "Database optimized.": "数据库已优化。",
+  "Application icons will be reloaded automatically.": "应用图标将自动重新加载。",
+  "Refresh Application Icons": "刷新应用图标",
+  Maintenance: "维护",
+  "Retention and backups": "保留与备份",
+  "Keep Activity": "活动保留期限",
+  Forever: "永久",
+  "1 year": "1 年",
+  "Automatic Backups": "自动备份",
+  "Create local SQLite backups on schedule.": "按计划创建本地 SQLite 备份。",
+  "Backup Schedule": "备份计划",
+  "Old automatic backups are rotated.": "旧的自动备份会轮换删除。",
+  Daily: "每天",
+  Weekly: "每周",
+  "Automatic backups to keep": "自动备份保留数量",
+  "Default application data / backups": "默认应用数据/备份目录",
+  "Choose Backup Folder": "选择备份文件夹",
+  "Show Backup Folder": "显示备份文件夹",
+  "Back Up Now": "立即备份",
+  "Clean Up Now": "立即清理",
+  "Clean unused application data and optimize retention metadata?":
+    "要清理未使用的应用数据并优化保留元数据吗？",
+  "Data Health": "数据健康",
+  "No sessions currently need cleanup.": "当前没有需要清理的会话。",
+  "No repairable session problems found.": "未发现可修复的会话问题。",
+  "Repair Problems": "修复问题",
+  "Repair overlapping and zero-duration closed sessions? Back up first if you may need the original timestamps.":
+    "要修复重叠和零时长的已结束会话吗？如果可能需要原始时间戳，请先备份。",
+  "Undo Last Repair": "撤销上次修复",
+  "Automatic maintenance is running.": "自动维护正在运行。",
+  "Delete All Activity Data": "删除全部活动数据",
+  "Delete all recorded activity? This cannot be undone.": "要删除所有活动记录吗？此操作无法撤销。",
+  "All activity data was deleted.": "所有活动数据已删除。",
+  "Local-first protection": "本地优先保护",
+  "Review what Watchhouse records and what it deliberately avoids collecting.":
+    "查看 Watchhouse 会记录什么，以及明确不会收集什么。",
+  "View Privacy Notice": "查看隐私说明",
+  "Show Diagnostic Logs": "显示诊断日志",
+  About: "关于",
+  Version: "版本",
+  "Version…": "版本…",
+  Database: "数据库",
+  WAL: "预写日志",
+  Icons: "图标",
+  Logs: "日志",
+  Backups: "备份",
+  "Private, local-first computer activity timeline.": "私密、本地优先的电脑活动时间线。",
   "Settings saved.": "设置已保存。",
   "Loading settings…": "正在加载设置…",
   "Private by design": "隐私优先设计",
@@ -237,6 +338,35 @@ const zh: Record<string, string> = {
   "Activity remains in the Watchhouse SQLite database. Diagnostics contain only technical lifecycle and error information.":
     "活动数据保存在本机 Watchhouse SQLite 数据库中，诊断信息仅包含技术生命周期和错误信息。",
   "Accept and Continue": "接受并继续",
+  "Selected day summary": "所选日期汇总",
+  "Timeline view": "时间线视图",
+  "Close undo history": "关闭撤销历史",
+  "Import conflict policy": "导入冲突处理方式",
+  "Dismiss message": "关闭消息",
+  "Edit session time": "编辑会话时间",
+  "Delete session": "删除会话",
+  "Choose a valid split time.": "请选择有效的拆分时间。",
+  "Session end must be after its start.": "会话结束时间必须晚于开始时间。",
+  "Enter an application category.": "请输入应用分类。",
+  "Leave empty to clear existing notes": "留空可清除已有备注",
+  "Work, Communication, Learning…": "工作、沟通、学习…",
+  "Split session into two parts.": "已将会话拆分为两部分。",
+  "These sessions will be removed from the timeline. You can undo this operation afterward.":
+    "这些会话将从时间线中删除，之后可以撤销此操作。",
+  "Split at": "拆分时间",
+  "Application usage summary": "应用使用汇总",
+  "Applications ranked by usage": "应用使用时长排名",
+  "Focus plan duration": "专注计划时长",
+  "Template duration in minutes": "模板时长（分钟）",
+  "This week": "本周",
+  "This month": "本月",
+  Day: "日",
+  Until: "截至",
+  "← Previous": "← 上一期",
+  "Next →": "下一期 →",
+  "Report saved to": "报告已保存到",
+  "Try again": "重试",
+  Start: "开始",
 };
 
 const replacements: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
@@ -246,6 +376,54 @@ const replacements: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   [/^Last (\d+) active days$/, (m) => `最近 ${m[1]} 个活跃日`],
   [/^(\d+)d$/, (m) => `${m[1]} 天`],
   [/^(\d+) min$/, (m) => `${m[1]} 分钟`],
+  [/^(\d+) minutes?$/, (m) => `${m[1]} 分钟`],
+  [/^(\d+)m$/, (m) => `${m[1]} 分钟`],
+  [/^(\d+) hours?$/, (m) => `${m[1]} 小时`],
+  [/^(\d+) days?$/, (m) => `${m[1]} 天`],
+  [/^Keep (\d+)$/, (m) => `保留 ${m[1]} 个`],
+  [/^Version (.+)$/, (m) => `版本 ${m[1]}`],
+  [/^Backup saved to (.+)$/, (m) => `备份已保存到 ${m[1]}`],
+  [/^Exported to (.+)$/, (m) => `已导出到 ${m[1]}`],
+  [/^(\d+) old sessions are eligible for cleanup\.$/, (m) => `${m[1]} 个旧会话可以清理。`],
+  [/^Safety backup: (.+)$/, (m) => `安全备份：${m[1]}`],
+  [/^Last cleanup: (.+) · Last backup: (.+)$/, (m) => `上次清理：${m[1]} · 上次备份：${m[2]}`],
+  [/^Automatic maintenance failed: (.+)$/, (m) => `自动维护失败：${m[1]}`],
+  [/^(\d+) overlapping and (\d+) zero-duration sessions found\.$/, (m) =>
+    `发现 ${m[1]} 个重叠会话和 ${m[2]} 个零时长会话。`],
+  [/^Data repaired: (\d+) trimmed and (\d+) removed\.$/, (m) =>
+    `数据修复完成：调整 ${m[1]} 个，删除 ${m[2]} 个。`],
+  [/^Restored (\d+) sessions from the last health repair\.$/, (m) =>
+    `已从上次健康修复中恢复 ${m[1]} 个会话。`],
+  [/^Maintenance complete: (\d+) sessions and (\d+) unused applications removed\.$/, (m) =>
+    `维护完成：删除 ${m[1]} 个会话和 ${m[2]} 个未使用应用。`],
+  [/^Delete (\d+) expired sessions and unused application data\?$/, (m) =>
+    `要删除 ${m[1]} 个过期会话和未使用的应用数据吗？`],
+  [/^You have focused for (.+)\.$/, (m) => `你已专注 ${m[1]}。`],
+  [/^(.+) remaining$/, (m) => `剩余 ${m[1]}`],
+  [/^Focused (.+)$/, (m) => `已专注 ${m[1]}`],
+  [/^Planned until (.+)$/, (m) => `计划至 ${m[1]}`],
+  [/^Edit (.+) template$/, (m) => `编辑“${m[1]}”模板`],
+  [/^Move (.+) template up$/, (m) => `上移“${m[1]}”模板`],
+  [/^Move (.+) template down$/, (m) => `下移“${m[1]}”模板`],
+  [/^Remove (.+) template$/, (m) => `移除“${m[1]}”模板`],
+  [/^(.+): (\d+) starts · (\d+)% complete$/, (m) =>
+    `${m[1]}：启动 ${m[2]} 次 · 完成率 ${m[3]}%`],
+  [/^Updated notes on (\d+) sessions\.$/, (m) => `已更新 ${m[1]} 个会话的备注。`],
+  [/^Updated (\d+) application categories\.$/, (m) => `已更新 ${m[1]} 个应用分类。`],
+  [/^Deleted (\d+) sessions\.$/, (m) => `已删除 ${m[1]} 个会话。`],
+  [/^Restored (\d+) sessions\.(.*)$/, (m) => `已恢复 ${m[1]} 个会话。${m[2]}`],
+  [/^(\d+) undo steps remain\.$/, (m) => `还剩 ${m[1]} 个撤销步骤。`],
+  [/^(\d+) recorded days$/, (m) => `记录了 ${m[1]} 天`],
+  [/^(\d+) valid sessions$/, (m) => `${m[1]} 个有效会话`],
+  [/^(\d+) conflicts$/, (m) => `${m[1]} 个冲突`],
+  [/^(\d+) invalid$/, (m) => `${m[1]} 个无效项`],
+  [/^Imported (\d+); merged (\d+); skipped (\d+)\.$/, (m) =>
+    `已导入 ${m[1]} 个，合并 ${m[2]} 个，跳过 ${m[3]} 个。`],
+  [/^Merged (\d+) sessions\.$/, (m) => `已合并 ${m[1]} 个会话。`],
+  [/^([+-]?\d+)% vs previous$/, (m) => `较上一周期 ${m[1]}%`],
+  [/^Report saved to (.+)$/, (m) => `报告已保存到 ${m[1]}`],
+  [/^(\d+)m planned · (.+) focused$/, (m) => `计划 ${m[1]} 分钟 · 专注 ${m[2]}`],
+  [/^(\d+)-minute focus plan started\.$/, (m) => `已开始 ${m[1]} 分钟专注计划。`],
 ];
 
 export function translateText(value: string): string {
@@ -263,6 +441,10 @@ export function translateText(value: string): string {
   return translated
     ? value.replace(trimmed, translated)
     : value;
+}
+
+export function localize(locale: Locale, value: string): string {
+  return locale === "zh-CN" ? translateText(value) : value;
 }
 
 interface LocaleContextValue {
@@ -290,6 +472,9 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     document.documentElement.lang = locale;
+    void setAppLocale(locale).catch(() => {
+      // Browser preview does not expose Tauri IPC.
+    });
     const visit = (root: Node) => {
       const nodes = root.nodeType === Node.TEXT_NODE
         ? [root]
