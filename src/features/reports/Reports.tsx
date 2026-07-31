@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { formatDuration } from "../../lib/format";
 import {
   ProductivityReport,
+  FocusPlanHistorySummary,
   errorMessage,
+  getFocusPlanHistory,
   getProductivityReport,
+  startFocusPlan,
 } from "../../lib/ipc";
 
 type ReportPeriod = "week" | "month";
@@ -32,6 +35,8 @@ function comparison(current: number, previous: number): string {
 export function Reports() {
   const [period, setPeriod] = useState<ReportPeriod>("week");
   const [report, setReport] = useState<ProductivityReport | null>(null);
+  const [focusHistory, setFocusHistory] = useState<FocusPlanHistorySummary | null>(null);
+  const [focusMessage, setFocusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const range = useMemo(() => reportRange(period), [period]);
 
@@ -39,6 +44,9 @@ export function Reports() {
     setError(null);
     void getProductivityReport(range.startMs, range.endMs)
       .then(setReport)
+      .catch((reason) => setError(errorMessage(reason)));
+    void getFocusPlanHistory(range.startMs, range.endMs)
+      .then(setFocusHistory)
       .catch((reason) => setError(errorMessage(reason)));
   }, [range.endMs, range.startMs]);
 
@@ -54,6 +62,11 @@ export function Reports() {
     (sum, category) => sum + category.durationMs,
     0,
   ) ?? 0;
+  const focusPlanCount = (focusHistory?.completedCount ?? 0)
+    + (focusHistory?.cancelledCount ?? 0);
+  const focusCompletionRate = focusPlanCount
+    ? Math.round((focusHistory?.completedCount ?? 0) / focusPlanCount * 100)
+    : 0;
 
   return (
     <div className="reports-page">
@@ -90,6 +103,61 @@ export function Reports() {
           <strong>{formatDuration((report?.activeDurationMs ?? 0) / Math.max(1, report?.dailyUsage.length ?? 1))}</strong>
           <small>{report?.dailyUsage.length ?? 0} recorded days</small>
         </article>
+      </section>
+
+      <section className="report-section focus-history" aria-labelledby="focus-history-title">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">Focus plans</p>
+            <h2 id="focus-history-title">Plan history</h2>
+          </div>
+        </div>
+        <div className="focus-history-metrics">
+          <div><span>Completion rate</span><strong>{focusCompletionRate}%</strong></div>
+          <div><span>Completed</span><strong>{focusHistory?.completedCount ?? 0}</strong></div>
+          <div><span>Cancelled</span><strong>{focusHistory?.cancelledCount ?? 0}</strong></div>
+          <div><span>Focused time</span><strong>{formatDuration(focusHistory?.totalActualDurationMs ?? 0)}</strong></div>
+        </div>
+        {focusMessage && <p className="focus-history-message" role="status">{focusMessage}</p>}
+        {focusHistory?.recentPlans.length ? (
+          <div className="focus-history-list">
+            {focusHistory.recentPlans.slice(0, 8).map((plan) => {
+              const plannedMinutes = plan.plannedEndAtMs === null
+                ? null
+                : Math.round((plan.plannedEndAtMs - plan.startedAtMs) / 60_000);
+              const actualDuration = Math.max(
+                0,
+                plan.endedAtMs - plan.startedAtMs - plan.pausedDurationMs,
+              );
+              return (
+                <div key={plan.id}>
+                  <span className={`focus-outcome ${plan.outcome.toLowerCase()}`}>
+                    {plan.outcome === "COMPLETED" ? "Completed" : "Ended early"}
+                  </span>
+                  <span>
+                    <strong>{new Date(plan.startedAtMs).toLocaleString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}</strong>
+                    <small>{plannedMinutes ? `${plannedMinutes}m planned · ` : ""}{formatDuration(actualDuration)} focused</small>
+                  </span>
+                  {plannedMinutes !== null && plannedMinutes >= 5 && plannedMinutes <= 240 && (
+                    <button type="button" onClick={() => {
+                      setFocusMessage(null);
+                      void startFocusPlan(plannedMinutes)
+                        .then(() => setFocusMessage(`${plannedMinutes}-minute focus plan started.`))
+                        .catch((reason) => setFocusMessage(errorMessage(reason)));
+                    }}>Repeat</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="report-empty">No focus plans ended in this period.</p>
+        )}
       </section>
 
       <section className="report-section" aria-labelledby="daily-report-title">

@@ -14,15 +14,19 @@ import {
   getSettings,
   getAccessibilityPermission,
   AccessibilityPermission,
+  NotificationPermission,
   getDiagnosticsSummary,
   getMaintenancePreview,
   getMaintenanceStatus,
+  getNotificationPermission,
   openDataDirectory,
   openBackupDirectory,
   openLogDirectory,
   optimizeDatabase,
   restoreDatabase,
   runDataMaintenance,
+  requestNotificationPermission,
+  sendTestNotification,
   updateSettings,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
@@ -63,6 +67,9 @@ export function Settings() {
   const [maintenanceStatus, setMaintenanceStatus] = useState<MaintenanceStatus | null>(null);
   const [accessibilityPermission, setAccessibilityPermission] =
     useState<AccessibilityPermission>("UNSUPPORTED");
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermission | null>(null);
+  const [checkingNotification, setCheckingNotification] = useState(false);
 
   useEffect(() => {
     void getSettings()
@@ -72,6 +79,9 @@ export function Settings() {
     void getMaintenancePreview().then(setMaintenancePreview);
     void getMaintenanceStatus().then(setMaintenanceStatus);
     void getAccessibilityPermission().then(setAccessibilityPermission);
+    void getNotificationPermission()
+      .then(setNotificationPermission)
+      .catch((error) => setMessage(errorMessage(error)));
   }, []);
 
   useEffect(() => {
@@ -215,6 +225,83 @@ export function Settings() {
             disabled={saving}
             onChange={(value) => void save({ ...settings, breakRemindersEnabled: value })}
           />
+        </div>
+        <div className="setting-row notification-permission-row">
+          <div>
+            <strong>Notification Permission</strong>
+            <small>
+              {notificationPermission === "GRANTED"
+                ? "Allowed. Use a test notification to verify macOS delivery settings."
+                : notificationPermission === "DENIED"
+                  ? "Denied. Allow Watchhouse notifications in macOS System Settings."
+                  : notificationPermission === "PROMPT"
+                    ? "Permission has not been requested."
+                    : "Checking notification permission..."}
+            </small>
+          </div>
+          <div className="notification-actions">
+            <span
+              className={`notification-status ${notificationPermission?.toLowerCase() ?? "checking"}`}
+            >
+              {notificationPermission === "GRANTED"
+                ? "Allowed"
+                : notificationPermission === "DENIED"
+                  ? "Denied"
+                  : notificationPermission === "PROMPT"
+                    ? "Not requested"
+                    : "Checking"}
+            </span>
+            {notificationPermission === "PROMPT" && (
+              <button
+                type="button"
+                disabled={checkingNotification}
+                onClick={() => {
+                  setCheckingNotification(true);
+                  void requestNotificationPermission()
+                    .then((permission) => {
+                      setNotificationPermission(permission);
+                      setMessage(
+                        permission === "GRANTED"
+                          ? "Notification permission granted."
+                          : "Notification permission was not granted.",
+                      );
+                    })
+                    .catch((error) => setMessage(errorMessage(error)))
+                    .finally(() => setCheckingNotification(false));
+                }}
+              >
+                Allow
+              </button>
+            )}
+            {notificationPermission === "DENIED" && (
+              <button
+                type="button"
+                disabled={checkingNotification}
+                onClick={() => {
+                  setCheckingNotification(true);
+                  void getNotificationPermission()
+                    .then(setNotificationPermission)
+                    .catch((error) => setMessage(errorMessage(error)))
+                    .finally(() => setCheckingNotification(false));
+                }}
+              >
+                Check Again
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={checkingNotification || notificationPermission !== "GRANTED"}
+              onClick={() => {
+                setCheckingNotification(true);
+                void sendTestNotification()
+                  .then(() => setMessage("Test notification sent."))
+                  .catch((error) => setMessage(errorMessage(error)))
+                  .finally(() => setCheckingNotification(false));
+              }}
+            >
+              Send Test
+            </button>
+          </div>
         </div>
         <label className="setting-row">
           <div><strong>Reminder Interval</strong><small>Reminders reset when a new focus block starts.</small></div>

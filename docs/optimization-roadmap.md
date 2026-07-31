@@ -150,8 +150,27 @@ Validation:
 - Reports layouts were visually checked at desktop and 375 px widths with no horizontal overflow.
 - The macOS application bundle was generated successfully.
 
-## Known Environment Blocker
+## Phase 7: History And Notification Controls
 
-Codex can modify workspace files but the current sandbox may reject writes to `.git`.
-If commit or push approval fails, preserve the verified working tree and report the exact
-commit message and commands needed. Never bypass the sandbox or use force push.
+Status: Complete
+
+- [x] Add persistent undo history with timestamps, affected session counts, and expiration hints.
+- [x] Add weekly and monthly Focus Plan completion statistics and recent plan history.
+- [x] Allow a completed or cancelled timed Focus Plan to be repeated from Reports.
+- [x] Report native notification permission state in Settings.
+- [x] Allow notification permission requests and test notifications.
+- [x] Add repository-level coverage for Focus Plan history range filtering and ordering.
+
+Decisions:
+
+- Undo metadata is derived from existing snapshots, so no database migration is required.
+- Undo snapshots remain available for 24 hours and can be selected individually.
+- Focus Plan statistics use the plan end time to assign plans to the selected report period.
+- Notification state and test delivery use the official Tauri notification plugin.
+
+Validation:
+
+- Frontend production build passed.
+- 67 Rust tests passed.
+- Clippy passed for all targets with warnings denied.
+- Reports and Timeline were visually checked in the browser at desktop width.

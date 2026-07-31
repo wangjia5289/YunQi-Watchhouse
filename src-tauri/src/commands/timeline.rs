@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::{
     activity::ActivityState,
-    database::{ActivityRepository, ImportRecord, TimelineMutationResult},
+    database::{ActivityRepository, ImportRecord, TimelineMutationResult, TimelineUndoEntry},
 };
 
 #[derive(Debug, serde::Serialize)]
@@ -102,6 +102,15 @@ pub fn get_timeline_undo_tokens(
 ) -> Result<Vec<String>, String> {
     repository
         .timeline_undo_tokens()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_timeline_undo_history(
+    repository: State<'_, ActivityRepository>,
+) -> Result<Vec<TimelineUndoEntry>, String> {
+    repository
+        .timeline_undo_history()
         .map_err(|error| error.to_string())
 }
 

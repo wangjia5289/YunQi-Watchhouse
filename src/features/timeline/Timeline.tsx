@@ -12,9 +12,10 @@ import {
   deleteTimelineSession,
   deleteTimelineSessions,
   errorMessage,
-  getTimelineUndoTokens,
+  getTimelineUndoHistory,
   importActivity,
   ImportPreview,
+  TimelineUndoEntry,
   mergeTimelineSessions,
   previewActivityImport,
   splitTimelineSession,
@@ -150,7 +151,8 @@ export function Timeline() {
   const [editError, setEditError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(200);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const [undoHistory, setUndoHistory] = useState<TimelineUndoEntry[]>([]);
+  const [undoHistoryOpen, setUndoHistoryOpen] = useState(false);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [actionDialog, setActionDialog] = useState<TimelineActionDialog | null>(null);
   const [dialogValue, setDialogValue] = useState("");
@@ -177,13 +179,15 @@ export function Timeline() {
     setSelectedIds(new Set());
   }, [date, query, stateFilter]);
   useEffect(() => {
-    void getTimelineUndoTokens().then(setUndoStack).catch(() => {});
+    void getTimelineUndoHistory().then(setUndoHistory).catch(() => {});
   }, []);
   const selected = [...selectedIds];
 
   const completeMutation = (message: string, token?: string | null) => {
     setSelectedIds(new Set());
-    if (token) setUndoStack((current) => [...current, token]);
+    if (token) {
+      void getTimelineUndoHistory().then(setUndoHistory).catch(() => {});
+    }
     setOperationMessage(message);
     notifyActivityDataChanged();
     refresh();
@@ -304,7 +308,52 @@ export function Timeline() {
         <button className="timeline-import-button" type="button" onClick={() => setImportOpen((open) => !open)}>
           Import
         </button>
+        <button
+          className="timeline-import-button"
+          type="button"
+          aria-expanded={undoHistoryOpen}
+          onClick={() => setUndoHistoryOpen((open) => !open)}
+        >
+          Undo history{undoHistory.length > 0 ? ` (${undoHistory.length})` : ""}
+        </button>
       </div>
+
+      {undoHistoryOpen && (
+        <section className="timeline-undo-history" aria-label="Undo history">
+          <div className="timeline-undo-heading">
+            <div>
+              <strong>Recent timeline edits</strong>
+              <span>Undo snapshots expire after 24 hours.</span>
+            </div>
+            <button type="button" aria-label="Close undo history" onClick={() => setUndoHistoryOpen(false)}>
+              Close
+            </button>
+          </div>
+          {undoHistory.length === 0 ? (
+            <p className="timeline-undo-empty">No timeline edits can be undone.</p>
+          ) : (
+            <div className="timeline-undo-list">
+              {[...undoHistory].reverse().map((entry) => {
+                const expiresAt = entry.createdAtMs + 24 * 60 * 60 * 1_000;
+                const hoursRemaining = Math.max(1, Math.ceil((expiresAt - Date.now()) / (60 * 60 * 1_000)));
+                return (
+                  <div key={entry.token}>
+                    <span>
+                      <strong>{entry.sessionCount} {entry.sessionCount === 1 ? "session" : "sessions"}</strong>
+                      <small>{new Date(entry.createdAtMs).toLocaleString()} · {hoursRemaining}h remaining</small>
+                    </span>
+                    <button type="button" onClick={() => void runOperation(async () => {
+                      const restored = await undoTimelineEdit(entry.token);
+                      setUndoHistory((current) => current.filter((item) => item.token !== entry.token));
+                      completeMutation(`Restored ${restored} sessions.`);
+                    })}>Undo</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
 
       {importOpen && (
         <section className="timeline-import" aria-label="Import activity">
@@ -386,12 +435,12 @@ export function Timeline() {
       {operationMessage && (
         <div className="timeline-operation-message" role="status">
           <span>{operationMessage}</span>
-          {undoStack.length > 0 && <button type="button" onClick={() => void runOperation(async () => {
-            const undoToken = undoStack[undoStack.length - 1];
-            const restored = await undoTimelineEdit(undoToken);
-            setUndoStack((current) => current.slice(0, -1));
-            completeMutation(`Restored ${restored} sessions. ${undoStack.length - 1} undo steps remain.`);
-          })}>Undo ({undoStack.length})</button>}
+          {undoHistory.length > 0 && <button type="button" onClick={() => void runOperation(async () => {
+            const entry = undoHistory[undoHistory.length - 1];
+            const restored = await undoTimelineEdit(entry.token);
+            setUndoHistory((current) => current.slice(0, -1));
+            completeMutation(`Restored ${restored} sessions. ${undoHistory.length - 1} undo steps remain.`);
+          })}>Undo ({undoHistory.length})</button>}
           <button type="button" aria-label="Dismiss message" onClick={() => {
             setOperationMessage(null);
           }}>Close</button>

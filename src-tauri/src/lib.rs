@@ -8,11 +8,11 @@ pub mod platform;
 pub mod statistics;
 
 use tauri::{Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
+use tauri_plugin_notification::NotificationExt;
 
 pub struct TrackingTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusTrayMenuItem(pub MenuItem<tauri::Wry>);
@@ -63,8 +63,7 @@ pub fn run() {
                 persisted_focus.total_paused_ms,
             ));
 
-            let reminder_repository =
-                app.state::<database::ActivityRepository>().inner().clone();
+            let reminder_repository = app.state::<database::ActivityRepository>().inner().clone();
             let reminder_state = app.state::<focus::FocusModeState>().inner().clone();
             let reminder_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -128,10 +127,9 @@ pub fn run() {
                     ) {
                         continue;
                     }
-                    if reminder_state.should_send_break_reminder(
-                        now_ms,
-                        settings.break_reminder_minutes,
-                    ) && let Err(error) = reminder_app
+                    if reminder_state
+                        .should_send_break_reminder(now_ms, settings.break_reminder_minutes)
+                        && let Err(error) = reminder_app
                             .notification()
                             .builder()
                             .title("Time for a short break")
@@ -312,9 +310,7 @@ pub fn run() {
                             log::error!("could not persist focus mode state: {error}");
                             return;
                         }
-                        if !active
-                            && let Some(started_at_ms) = current.started_at_ms
-                        {
+                        if !active && let Some(started_at_ms) = current.started_at_ms {
                             let _ = app
                                 .state::<database::ActivityRepository>()
                                 .record_focus_plan_outcome(
@@ -357,6 +353,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::focus::get_focus_mode,
+            commands::focus::get_focus_plan_history,
             commands::focus::set_focus_mode,
             commands::focus::start_focus_plan,
             commands::focus::set_focus_plan_paused,
@@ -382,11 +379,15 @@ pub fn run() {
             commands::timeline::update_timeline_session_categories,
             commands::timeline::undo_timeline_edit,
             commands::timeline::get_timeline_undo_tokens,
+            commands::timeline::get_timeline_undo_history,
             commands::timeline::update_timeline_session,
             commands::timeline::preview_activity_import,
             commands::timeline::import_activity,
             commands::settings::get_settings,
             commands::settings::get_accessibility_permission,
+            commands::settings::get_notification_permission,
+            commands::settings::request_notification_permission,
+            commands::settings::send_test_notification,
             commands::settings::complete_onboarding,
             commands::settings::update_settings,
             commands::settings::delete_all_activity,

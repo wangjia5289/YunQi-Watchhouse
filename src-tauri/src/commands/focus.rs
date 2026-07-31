@@ -8,9 +8,70 @@ use crate::{
     focus::{FocusModeState, FocusModeStatus},
 };
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusPlanHistorySummary {
+    completed_count: usize,
+    cancelled_count: usize,
+    total_planned_duration_ms: i64,
+    total_actual_duration_ms: i64,
+    total_paused_duration_ms: i64,
+    recent_plans: Vec<crate::database::FocusPlanHistoryEntry>,
+}
+
 #[tauri::command]
 pub fn get_focus_mode(status: State<'_, FocusModeState>) -> FocusModeStatus {
     status.snapshot()
+}
+
+#[tauri::command]
+pub fn get_focus_plan_history(
+    range_start_ms: i64,
+    range_end_ms: i64,
+    repository: State<'_, ActivityRepository>,
+) -> Result<FocusPlanHistorySummary, String> {
+    if range_end_ms <= range_start_ms {
+        return Err("focus history range end must be after its start".to_owned());
+    }
+    let mut recent_plans = repository
+        .focus_plan_history(range_start_ms, range_end_ms)
+        .map_err(|error| error.to_string())?;
+    let completed_count = recent_plans
+        .iter()
+        .filter(|entry| entry.outcome == "COMPLETED")
+        .count();
+    let cancelled_count = recent_plans.len().saturating_sub(completed_count);
+    let total_planned_duration_ms = recent_plans
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .planned_end_at_ms
+                .map(|end| end.saturating_sub(entry.started_at_ms).max(0))
+        })
+        .sum();
+    let total_actual_duration_ms = recent_plans
+        .iter()
+        .map(|entry| {
+            entry
+                .ended_at_ms
+                .saturating_sub(entry.started_at_ms)
+                .saturating_sub(entry.paused_duration_ms)
+                .max(0)
+        })
+        .sum();
+    let total_paused_duration_ms = recent_plans
+        .iter()
+        .map(|entry| entry.paused_duration_ms.max(0))
+        .sum();
+    recent_plans.truncate(30);
+    Ok(FocusPlanHistorySummary {
+        completed_count,
+        cancelled_count,
+        total_planned_duration_ms,
+        total_actual_duration_ms,
+        total_paused_duration_ms,
+        recent_plans,
+    })
 }
 
 #[tauri::command]
@@ -99,14 +160,17 @@ pub fn end_focus_plan(
             .map_err(|error| error.to_string())?;
     }
     repository
-        .update_focus_mode(&PersistedFocusMode {
-            active: false,
-            started_at_ms: None,
-            planned_end_at_ms: None,
-            paused: false,
-            paused_at_ms: None,
-            total_paused_ms: 0,
-        }, now_ms)
+        .update_focus_mode(
+            &PersistedFocusMode {
+                active: false,
+                started_at_ms: None,
+                planned_end_at_ms: None,
+                paused: false,
+                paused_at_ms: None,
+                total_paused_ms: 0,
+            },
+            now_ms,
+        )
         .map_err(|error| error.to_string())?;
     let next = status.end();
     publish_status(&app, &next);
@@ -121,11 +185,14 @@ fn unix_timestamp_ms() -> Result<i64, String> {
 }
 
 fn publish_status(app: &AppHandle, status: &FocusModeStatus) {
-    let _ = app.state::<FocusTrayMenuItem>().0.set_text(if status.active {
-        "End Focus Mode"
-    } else {
-        "Start Focus Mode"
-    });
+    let _ = app
+        .state::<FocusTrayMenuItem>()
+        .0
+        .set_text(if status.active {
+            "End Focus Mode"
+        } else {
+            "Start Focus Mode"
+        });
     let _ = app.emit("focus-mode-changed", status);
 }
 

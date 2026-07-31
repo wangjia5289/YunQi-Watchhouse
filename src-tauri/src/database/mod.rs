@@ -4,6 +4,7 @@ mod repository;
 
 pub use connection::Database;
 pub use repository::{
-    ActivityRecord, ActivityRepository, ImportRecord, MaintenancePreview, MaintenanceResult,
-    PersistedFocusMode, RecoveryOutcome, Settings, TimelineMutationResult,
+    ActivityRecord, ActivityRepository, FocusPlanHistoryEntry, ImportRecord, MaintenancePreview,
+    MaintenanceResult, PersistedFocusMode, RecoveryOutcome, Settings, TimelineMutationResult,
+    TimelineUndoEntry,
 };

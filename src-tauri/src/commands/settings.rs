@@ -7,6 +7,7 @@ use tauri::Manager;
 use tauri::{AppHandle, State};
 use tauri_plugin_autostart::{AutoLaunchManager, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::TrackingTrayMenuItem;
@@ -46,6 +47,57 @@ pub fn get_settings(repository: State<'_, ActivityRepository>) -> Result<Setting
 #[tauri::command]
 pub fn get_accessibility_permission() -> crate::platform::AccessibilityPermission {
     crate::platform::accessibility_permission()
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NotificationPermission {
+    Granted,
+    Denied,
+    Prompt,
+}
+
+impl From<PermissionState> for NotificationPermission {
+    fn from(value: PermissionState) -> Self {
+        match value {
+            PermissionState::Granted => Self::Granted,
+            PermissionState::Denied => Self::Denied,
+            PermissionState::Prompt | PermissionState::PromptWithRationale => Self::Prompt,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_notification_permission(app: AppHandle) -> Result<NotificationPermission, String> {
+    app.notification()
+        .permission_state()
+        .map(NotificationPermission::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn request_notification_permission(app: AppHandle) -> Result<NotificationPermission, String> {
+    app.notification()
+        .request_permission()
+        .map(NotificationPermission::from)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn send_test_notification(app: AppHandle) -> Result<(), String> {
+    let permission = app
+        .notification()
+        .permission_state()
+        .map_err(|error| error.to_string())?;
+    if permission != PermissionState::Granted {
+        return Err("notification permission has not been granted".to_owned());
+    }
+    app.notification()
+        .builder()
+        .title("Watchhouse notifications are ready")
+        .body("Break reminders and focus plan alerts can appear on this Mac.")
+        .show()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

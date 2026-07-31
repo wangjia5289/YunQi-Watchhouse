@@ -447,11 +447,12 @@ impl StatisticsService {
                     active_duration_ms += entry.duration_ms;
                     let mut cursor = entry.started_at_ms;
                     while cursor < entry.ended_at_ms {
-                        let local = Local.timestamp_millis_opt(cursor).single().ok_or_else(|| {
-                            AppError::InvalidTimeRange(
-                                "timestamp cannot be represented locally".to_owned(),
-                            )
-                        })?;
+                        let local =
+                            Local.timestamp_millis_opt(cursor).single().ok_or_else(|| {
+                                AppError::InvalidTimeRange(
+                                    "timestamp cannot be represented locally".to_owned(),
+                                )
+                            })?;
                         let hour = local.hour() as usize;
                         let next_hour = local
                             .with_minute(0)

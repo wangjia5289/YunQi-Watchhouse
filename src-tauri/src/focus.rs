@@ -106,9 +106,7 @@ impl FocusModeState {
 
     pub fn is_due(&self, now_ms: i64) -> bool {
         let status = self.snapshot();
-        status.active
-            && !status.paused
-            && status.planned_end_at_ms.is_some_and(|end| now_ms >= end)
+        status.active && !status.paused && status.planned_end_at_ms.is_some_and(|end| now_ms >= end)
     }
 
     pub fn should_send_break_reminder(&self, now_ms: i64, interval_minutes: i64) -> bool {

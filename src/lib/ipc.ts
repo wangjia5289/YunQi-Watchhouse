@@ -77,6 +77,24 @@ export interface FocusModeStatus {
   totalPausedMs: number;
 }
 
+export interface FocusPlanHistoryEntry {
+  id: number;
+  startedAtMs: number;
+  plannedEndAtMs: number | null;
+  endedAtMs: number;
+  pausedDurationMs: number;
+  outcome: "COMPLETED" | "CANCELLED";
+}
+
+export interface FocusPlanHistorySummary {
+  completedCount: number;
+  cancelledCount: number;
+  totalPlannedDurationMs: number;
+  totalActualDurationMs: number;
+  totalPausedDurationMs: number;
+  recentPlans: FocusPlanHistoryEntry[];
+}
+
 export interface TimelineEntry {
   sessionId: number;
   applicationId: number | null;
@@ -283,6 +301,23 @@ export function getTimelineUndoTokens(): Promise<string[]> {
   return invoke("get_timeline_undo_tokens");
 }
 
+export function getFocusPlanHistory(
+  rangeStartMs: number,
+  rangeEndMs: number,
+): Promise<FocusPlanHistorySummary> {
+  return invoke("get_focus_plan_history", { rangeStartMs, rangeEndMs });
+}
+
+export interface TimelineUndoEntry {
+  token: string;
+  createdAtMs: number;
+  sessionCount: number;
+}
+
+export function getTimelineUndoHistory(): Promise<TimelineUndoEntry[]> {
+  return invoke("get_timeline_undo_history");
+}
+
 export function previewActivityImport(
   contents: string,
   format: "json" | "csv",
@@ -355,6 +390,20 @@ export type AccessibilityPermission = "GRANTED" | "DENIED" | "UNSUPPORTED";
 
 export function getAccessibilityPermission(): Promise<AccessibilityPermission> {
   return invoke("get_accessibility_permission");
+}
+
+export type NotificationPermission = "GRANTED" | "DENIED" | "PROMPT";
+
+export function getNotificationPermission(): Promise<NotificationPermission> {
+  return invoke("get_notification_permission");
+}
+
+export function requestNotificationPermission(): Promise<NotificationPermission> {
+  return invoke("request_notification_permission");
+}
+
+export function sendTestNotification(): Promise<void> {
+  return invoke("send_test_notification");
 }
 
 export function getDailyUsage(

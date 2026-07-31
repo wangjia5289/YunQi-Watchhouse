@@ -81,6 +81,25 @@ pub struct TimelineMutationResult {
     pub undo_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineUndoEntry {
+    pub token: String,
+    pub created_at_ms: i64,
+    pub session_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusPlanHistoryEntry {
+    pub id: i64,
+    pub started_at_ms: i64,
+    pub planned_end_at_ms: Option<i64>,
+    pub ended_at_ms: i64,
+    pub paused_duration_ms: i64,
+    pub outcome: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedFocusMode {
     pub active: bool,
@@ -342,6 +361,34 @@ impl ActivityRepository {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn focus_plan_history(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+    ) -> AppResult<Vec<FocusPlanHistoryEntry>> {
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, started_at_ms, planned_end_at_ms, ended_at_ms,
+                    paused_duration_ms, outcome
+             FROM focus_plan_history
+             WHERE ended_at_ms >= ?1 AND ended_at_ms < ?2
+             ORDER BY ended_at_ms DESC, id DESC",
+        )?;
+        let entries = statement
+            .query_map(params![range_start_ms, range_end_ms], |row| {
+                Ok(FocusPlanHistoryEntry {
+                    id: row.get(0)?,
+                    started_at_ms: row.get(1)?,
+                    planned_end_at_ms: row.get(2)?,
+                    ended_at_ms: row.get(3)?,
+                    paused_duration_ms: row.get(4)?,
+                    outcome: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(entries)
     }
 
     pub fn update_settings(&self, settings: &Settings, updated_at_ms: i64) -> AppResult<Settings> {
@@ -725,8 +772,8 @@ impl ActivityRepository {
     ) -> AppResult<TimelineMutationResult> {
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
-        let original = find_session(&transaction, session_id)?
-            .ok_or(AppError::SessionNotFound(session_id))?;
+        let original =
+            find_session(&transaction, session_id)?.ok_or(AppError::SessionNotFound(session_id))?;
         if original.is_open {
             return Err(AppError::InvalidSession(
                 "open sessions cannot be split".to_owned(),
@@ -850,15 +897,16 @@ impl ActivityRepository {
             )
             .optional()?
             .ok_or_else(|| AppError::InvalidSession("undo is no longer available".to_owned()))?;
-        let snapshot: TimelineUndoSnapshot = serde_json::from_str(&snapshot_json).or_else(|_| {
-            serde_json::from_str::<Vec<ActivitySession>>(&snapshot_json).map(|sessions| {
-                TimelineUndoSnapshot {
-                    delete_session_ids: sessions.iter().map(|session| session.id).collect(),
-                    sessions,
-                }
+        let snapshot: TimelineUndoSnapshot = serde_json::from_str(&snapshot_json)
+            .or_else(|_| {
+                serde_json::from_str::<Vec<ActivitySession>>(&snapshot_json).map(|sessions| {
+                    TimelineUndoSnapshot {
+                        delete_session_ids: sessions.iter().map(|session| session.id).collect(),
+                        sessions,
+                    }
+                })
             })
-        })
-        .map_err(|error| AppError::InvalidSession(format!("invalid undo snapshot: {error}")))?;
+            .map_err(|error| AppError::InvalidSession(format!("invalid undo snapshot: {error}")))?;
         for session_id in &snapshot.delete_session_ids {
             transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session_id])?;
         }
@@ -890,19 +938,54 @@ impl ActivityRepository {
     }
 
     pub fn timeline_undo_tokens(&self) -> AppResult<Vec<String>> {
+        Ok(self
+            .timeline_undo_history()?
+            .into_iter()
+            .map(|entry| entry.token)
+            .collect())
+    }
+
+    pub fn timeline_undo_history(&self) -> AppResult<Vec<TimelineUndoEntry>> {
         let connection = self.database.lock()?;
         let mut statement = connection.prepare(
-            "SELECT token FROM timeline_undo
+            "SELECT token, snapshot_json, created_at_ms FROM timeline_undo
              WHERE created_at_ms >= ?1
              ORDER BY created_at_ms, token",
         )?;
-        let tokens = statement
-            .query_map(
-                [now_millis().saturating_sub(24 * 60 * 60 * 1_000)],
-                |row| row.get(0),
-            )?
-            .collect::<Result<Vec<String>, _>>()?;
-        Ok(tokens)
+        let snapshots = statement
+            .query_map([now_millis().saturating_sub(24 * 60 * 60 * 1_000)], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        snapshots
+            .into_iter()
+            .map(|(token, snapshot_json, created_at_ms)| {
+                let snapshot = serde_json::from_str::<TimelineUndoSnapshot>(&snapshot_json)
+                    .or_else(|_| {
+                        serde_json::from_str::<Vec<ActivitySession>>(&snapshot_json).map(
+                            |sessions| TimelineUndoSnapshot {
+                                delete_session_ids: sessions
+                                    .iter()
+                                    .map(|session| session.id)
+                                    .collect(),
+                                sessions,
+                            },
+                        )
+                    })
+                    .map_err(|error| {
+                        AppError::InvalidSession(format!("invalid undo snapshot: {error}"))
+                    })?;
+                Ok(TimelineUndoEntry {
+                    token,
+                    created_at_ms,
+                    session_count: snapshot.sessions.len(),
+                })
+            })
+            .collect()
     }
 
     pub fn import_conflict_count(&self, records: &[ImportRecord]) -> AppResult<usize> {
@@ -1521,7 +1604,9 @@ mod tests {
                 1_234,
             )
             .expect("focus mode should start");
-        let active = repository.focus_mode_status().expect("status should reload");
+        let active = repository
+            .focus_mode_status()
+            .expect("status should reload");
         assert!(active.active);
         assert_eq!(active.started_at_ms, Some(1_234));
         assert_eq!(active.planned_end_at_ms, Some(61_234));
@@ -1539,10 +1624,37 @@ mod tests {
                 2_345,
             )
             .expect("focus mode should end");
-        assert!(!repository
-            .focus_mode_status()
-            .expect("status should reload")
-            .active);
+        assert!(
+            !repository
+                .focus_mode_status()
+                .expect("status should reload")
+                .active
+        );
+    }
+
+    #[test]
+    fn focus_plan_history_filters_range_and_orders_recent_first() {
+        let repository = repository();
+        repository
+            .record_focus_plan_outcome(1_000, Some(61_000), 51_000, 5_000, true)
+            .expect("completed plan should be stored");
+        repository
+            .record_focus_plan_outcome(70_000, Some(130_000), 90_000, 0, false)
+            .expect("cancelled plan should be stored");
+
+        let entries = repository
+            .focus_plan_history(50_000, 100_000)
+            .expect("history should load");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].outcome, "CANCELLED");
+        assert_eq!(entries[1].outcome, "COMPLETED");
+        assert_eq!(
+            repository
+                .focus_plan_history(80_000, 100_000)
+                .expect("filtered history should load")
+                .len(),
+            1
+        );
     }
 
     #[test]
