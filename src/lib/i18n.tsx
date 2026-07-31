@@ -231,6 +231,17 @@ const zh: Record<string, string> = {
   Dark: "深色",
   Focus: "专注",
   "Goals and breaks": "目标与休息",
+  Keyboard: "键盘",
+  "Global shortcuts": "全局快捷键",
+  "Shortcuts work while Watchhouse is hidden. Disabled actions remain available from the app and tray.":
+    "Watchhouse 隐藏时快捷键仍然有效；禁用后仍可从应用或菜单栏执行相应操作。",
+  "Start or end focus": "开始或结束专注",
+  "Pause or resume focus": "暂停或继续专注",
+  "Start first template": "启动首个模板",
+  Disabled: "已禁用",
+  "Save shortcuts": "保存快捷键",
+  "Global shortcuts saved.": "全局快捷键已保存。",
+  "each enabled action must use a different shortcut": "每个已启用操作必须使用不同的快捷键。",
   "Daily Focus Goal": "每日专注目标",
   "Progress appears on Today.": "进度会显示在“今天”页面。",
   "Focus Block Gap": "专注块间隔",
@@ -424,6 +435,7 @@ const replacements: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   [/^Report saved to (.+)$/, (m) => `报告已保存到 ${m[1]}`],
   [/^(\d+)m planned · (.+) focused$/, (m) => `计划 ${m[1]} 分钟 · 专注 ${m[2]}`],
   [/^(\d+)-minute focus plan started\.$/, (m) => `已开始 ${m[1]} 分钟专注计划。`],
+  [/^shortcut is unavailable: (.+)$/, (m) => `快捷键不可用：${m[1]}`],
 ];
 
 export function translateText(value: string): string {
@@ -450,6 +462,7 @@ export function localize(locale: Locale, value: string): string {
 interface LocaleContextValue {
   locale: Locale;
   setLocale: (locale: Locale) => void;
+  t: (value: string) => string;
 }
 
 const LocaleContext = createContext<LocaleContextValue | null>(null);
@@ -464,6 +477,9 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(initialLocale);
   const value = useMemo(() => ({
     locale,
+    t(value: string) {
+      return localize(locale, value);
+    },
     setLocale(next: Locale) {
       window.localStorage.setItem(STORAGE_KEY, next);
       setLocaleState(next);

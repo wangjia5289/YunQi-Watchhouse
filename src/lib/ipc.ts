@@ -201,6 +201,12 @@ export interface Settings {
   quietHoursEnd: string;
 }
 
+export interface ShortcutSettings {
+  toggleFocus: string | null;
+  pauseFocus: string | null;
+  startTemplate: string | null;
+}
+
 export interface MaintenancePreview {
   cutoffAtMs: number | null;
   expiredSessionCount: number;
@@ -521,6 +527,16 @@ export function getApplicationDailyUsage(
 
 export function getSettings(): Promise<Settings> {
   return invoke("get_settings");
+}
+
+export function getShortcutSettings(): Promise<ShortcutSettings> {
+  return invoke("get_shortcut_settings");
+}
+
+export function updateShortcutSettings(
+  settings: ShortcutSettings,
+): Promise<ShortcutSettings> {
+  return invoke("update_shortcut_settings", { settings });
 }
 
 export function setAppLocale(locale: "en" | "zh-CN"): Promise<void> {

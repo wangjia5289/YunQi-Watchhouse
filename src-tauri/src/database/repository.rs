@@ -36,6 +36,14 @@ pub struct Settings {
     pub quiet_hours_end: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutSettings {
+    pub toggle_focus: Option<String>,
+    pub pause_focus: Option<String>,
+    pub start_template: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaintenancePreview {
@@ -326,6 +334,45 @@ impl ActivityRepository {
                 },
             )
             .map_err(Into::into)
+    }
+
+    pub fn shortcut_settings(&self) -> AppResult<ShortcutSettings> {
+        let connection = self.database.lock()?;
+        connection
+            .query_row(
+                "SELECT toggle_focus, pause_focus, start_template
+                 FROM shortcut_settings WHERE singleton_id = 1",
+                [],
+                |row| {
+                    Ok(ShortcutSettings {
+                        toggle_focus: row.get(0)?,
+                        pause_focus: row.get(1)?,
+                        start_template: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn update_shortcut_settings(
+        &self,
+        settings: &ShortcutSettings,
+        updated_at_ms: i64,
+    ) -> AppResult<ShortcutSettings> {
+        let connection = self.database.lock()?;
+        connection.execute(
+            "UPDATE shortcut_settings
+             SET toggle_focus = ?1, pause_focus = ?2, start_template = ?3, updated_at_ms = ?4
+             WHERE singleton_id = 1",
+            params![
+                settings.toggle_focus,
+                settings.pause_focus,
+                settings.start_template,
+                updated_at_ms
+            ],
+        )?;
+        drop(connection);
+        self.shortcut_settings()
     }
 
     pub fn focus_mode_status(&self) -> AppResult<PersistedFocusMode> {
@@ -2014,6 +2061,31 @@ mod tests {
                 .settings()
                 .expect("settings should reload")
                 .onboarding_completed
+        );
+    }
+
+    #[test]
+    fn shortcut_settings_are_persisted_and_can_be_disabled() {
+        let repository = repository();
+        let defaults = repository.shortcut_settings().unwrap();
+        assert_eq!(
+            defaults.toggle_focus.as_deref(),
+            Some("CommandOrControl+Shift+F")
+        );
+        let updated = repository
+            .update_shortcut_settings(
+                &ShortcutSettings {
+                    toggle_focus: Some("CommandOrControl+Shift+2".to_owned()),
+                    pause_focus: None,
+                    start_template: Some("CommandOrControl+Shift+3".to_owned()),
+                },
+                123,
+            )
+            .unwrap();
+        assert_eq!(updated.pause_focus, None);
+        assert_eq!(
+            repository.shortcut_settings().unwrap().toggle_focus,
+            Some("CommandOrControl+Shift+2".to_owned())
         );
     }
 

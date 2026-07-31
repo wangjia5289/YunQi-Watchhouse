@@ -7,11 +7,12 @@ use tauri::Manager;
 use tauri::{AppHandle, State};
 use tauri_plugin_autostart::{AutoLaunchManager, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::activity::{MonitorHandle, SessionManagerHandle};
-use crate::database::{ActivityRepository, Settings};
+use crate::database::{ActivityRepository, Settings, ShortcutSettings};
 use crate::database::{
     DataHealthRepairResult, DataHealthSummary, DataHealthUndoStatus, MaintenancePreview,
     MaintenanceResult,
@@ -19,7 +20,8 @@ use crate::database::{
 use crate::maintenance::{MaintenanceStatus, MaintenanceStatusState};
 use crate::{
     AppLocaleState, FocusCountdownTrayMenuItem, FocusTemplateTrayMenuItems, FocusTrayMenuItem,
-    QuitTrayMenuItem, ShowTrayMenuItem, TrackingTrayMenuItem,
+    QuitTrayMenuItem, ShortcutSettingsState, ShowTrayMenuItem, TrackingTrayMenuItem,
+    parse_shortcut,
 };
 
 #[derive(serde::Serialize)]
@@ -48,6 +50,77 @@ pub struct DiagnosticsSummary {
 #[tauri::command]
 pub fn get_settings(repository: State<'_, ActivityRepository>) -> Result<Settings, String> {
     repository.settings().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_shortcut_settings(
+    repository: State<'_, ActivityRepository>,
+) -> Result<ShortcutSettings, String> {
+    repository
+        .shortcut_settings()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn update_shortcut_settings(
+    settings: ShortcutSettings,
+    app: AppHandle,
+    repository: State<'_, ActivityRepository>,
+) -> Result<ShortcutSettings, String> {
+    let shortcuts = [
+        parse_shortcut(&settings.toggle_focus)?,
+        parse_shortcut(&settings.pause_focus)?,
+        parse_shortcut(&settings.start_template)?,
+    ];
+    let ids = shortcuts
+        .iter()
+        .flatten()
+        .map(|shortcut| shortcut.id())
+        .collect::<std::collections::HashSet<_>>();
+    if ids.len() != shortcuts.iter().flatten().count() {
+        return Err("each enabled action must use a different shortcut".to_owned());
+    }
+
+    let previous = app.state::<ShortcutSettingsState>().snapshot();
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| error.to_string())?;
+    for shortcut in shortcuts.into_iter().flatten() {
+        if let Err(error) = app.global_shortcut().register(shortcut) {
+            let _ = app.global_shortcut().unregister_all();
+            for old in [
+                parse_shortcut(&previous.toggle_focus)?,
+                parse_shortcut(&previous.pause_focus)?,
+                parse_shortcut(&previous.start_template)?,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let _ = app.global_shortcut().register(old);
+            }
+            return Err(format!("shortcut is unavailable: {error}"));
+        }
+    }
+    match repository.update_shortcut_settings(&settings, now_ms()?) {
+        Ok(saved) => {
+            app.state::<ShortcutSettingsState>().replace(saved.clone());
+            Ok(saved)
+        }
+        Err(error) => {
+            let _ = app.global_shortcut().unregister_all();
+            for old in [
+                parse_shortcut(&previous.toggle_focus)?,
+                parse_shortcut(&previous.pause_focus)?,
+                parse_shortcut(&previous.start_template)?,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let _ = app.global_shortcut().register(old);
+            }
+            Err(error.to_string())
+        }
+    }
 }
 
 #[tauri::command]

@@ -7,13 +7,19 @@ pub mod maintenance;
 pub mod platform;
 pub mod statistics;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    str::FromStr,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tauri::{Emitter, Manager};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
 pub struct TrackingTrayMenuItem(pub MenuItem<tauri::Wry>);
@@ -23,6 +29,7 @@ pub struct ShowTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct QuitTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusTemplateTrayMenuItems(pub Vec<MenuItem<tauri::Wry>>);
 pub struct AppLocaleState(AtomicBool);
+pub struct ShortcutSettingsState(Mutex<database::ShortcutSettings>);
 
 impl Default for AppLocaleState {
     fn default() -> Self {
@@ -42,6 +49,37 @@ impl AppLocaleState {
     pub fn set_chinese(&self, chinese: bool) {
         self.0.store(chinese, Ordering::Relaxed);
     }
+}
+
+impl ShortcutSettingsState {
+    pub fn new(settings: database::ShortcutSettings) -> Self {
+        Self(Mutex::new(settings))
+    }
+
+    pub fn snapshot(&self) -> database::ShortcutSettings {
+        self.0
+            .lock()
+            .map(|settings| settings.clone())
+            .unwrap_or(database::ShortcutSettings {
+                toggle_focus: None,
+                pause_focus: None,
+                start_template: None,
+            })
+    }
+
+    pub fn replace(&self, settings: database::ShortcutSettings) {
+        if let Ok(mut current) = self.0.lock() {
+            *current = settings;
+        }
+    }
+}
+
+pub fn parse_shortcut(value: &Option<String>) -> Result<Option<Shortcut>, String> {
+    value
+        .as_deref()
+        .map(Shortcut::from_str)
+        .transpose()
+        .map_err(|error| error.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -72,28 +110,26 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    let toggle =
-                        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyF);
-                    let pause =
-                        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyP);
-                    let template =
-                        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit1);
+                    let configured = app.state::<ShortcutSettingsState>().snapshot();
+                    let toggle = parse_shortcut(&configured.toggle_focus).ok().flatten();
+                    let pause = parse_shortcut(&configured.pause_focus).ok().flatten();
+                    let template = parse_shortcut(&configured.start_template).ok().flatten();
                     let current = app.state::<focus::FocusModeState>().snapshot();
-                    let result = if shortcut == &toggle {
+                    let result = if toggle.as_ref() == Some(shortcut) {
                         commands::focus::set_focus_mode(
                             !current.active,
                             app.clone(),
                             app.state(),
                             app.state(),
                         )
-                    } else if shortcut == &pause && current.active {
+                    } else if pause.as_ref() == Some(shortcut) && current.active {
                         commands::focus::set_focus_plan_paused(
                             !current.paused,
                             app.clone(),
                             app.state(),
                             app.state(),
                         )
-                    } else if shortcut == &template && !current.active {
+                    } else if template.as_ref() == Some(shortcut) && !current.active {
                         app.state::<database::ActivityRepository>()
                             .focus_plan_templates()
                             .map_err(|error| error.to_string())
@@ -131,6 +167,7 @@ pub fn run() {
             let repository = database::ActivityRepository::new(database);
             repository.recover_open_session()?;
             let settings = repository.settings()?;
+            let shortcut_settings = repository.shortcut_settings()?;
             let persisted_focus = repository.focus_mode_status()?;
             app.manage(statistics::StatisticsService::new(repository.clone()));
             app.manage(repository);
@@ -144,6 +181,7 @@ pub fn run() {
                 persisted_focus.template_id,
             ));
             app.manage(AppLocaleState::new());
+            app.manage(ShortcutSettingsState::new(shortcut_settings.clone()));
 
             let reminder_repository = app.state::<database::ActivityRepository>().inner().clone();
             let reminder_state = app.state::<focus::FocusModeState>().inner().clone();
@@ -513,10 +551,13 @@ pub fn run() {
                 })
                 .build(app)?;
             for shortcut in [
-                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyF),
-                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyP),
-                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit1),
-            ] {
+                parse_shortcut(&shortcut_settings.toggle_focus)?,
+                parse_shortcut(&shortcut_settings.pause_focus)?,
+                parse_shortcut(&shortcut_settings.start_template)?,
+            ]
+            .into_iter()
+            .flatten()
+            {
                 if let Err(error) = app.global_shortcut().register(shortcut) {
                     log::warn!("could not register global shortcut: {error}");
                 }
@@ -622,6 +663,8 @@ pub fn run() {
             commands::timeline::import_activity,
             commands::settings::get_settings,
             commands::settings::set_app_locale,
+            commands::settings::get_shortcut_settings,
+            commands::settings::update_shortcut_settings,
             commands::settings::get_data_health_summary,
             commands::settings::repair_data_health,
             commands::settings::get_data_health_undo_status,
@@ -662,4 +705,20 @@ pub fn run() {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::parse_shortcut;
+
+    #[test]
+    fn shortcut_parser_accepts_presets_and_disabled_actions() {
+        assert!(
+            parse_shortcut(&Some("CommandOrControl+Shift+F".to_owned()))
+                .unwrap()
+                .is_some()
+        );
+        assert!(parse_shortcut(&None).unwrap().is_none());
+        assert!(parse_shortcut(&Some("not a shortcut".to_owned())).is_err());
+    }
 }

@@ -58,7 +58,7 @@ function NavIcon({ name }: { name: string }) {
 }
 
 function App() {
-  const { locale, setLocale } = useLocale();
+  const { locale, setLocale, t } = useLocale();
   const [page, setPage] = useState<Page>("today");
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
@@ -107,8 +107,8 @@ function App() {
           <span>Watchhouse</span>
         </div>
 
-        <nav aria-label="Main navigation">
-          <p className="nav-label">Activity</p>
+        <nav aria-label={t("Main navigation")}>
+          <p className="nav-label">{t("Activity")}</p>
           {navigation.map((item) => (
             <button
               className={`nav-item${page === item.page ? " active" : ""}`}
@@ -119,7 +119,7 @@ function App() {
               onClick={() => setPage(item.page)}
             >
               <NavIcon name={item.icon} />
-              {item.label}
+              {t(item.label)}
             </button>
           ))}
         </nav>
@@ -156,14 +156,14 @@ function App() {
           >
             <span aria-hidden="true" />
             <span>
-              <strong>{!tracking ? "Checking status" : tracking.paused ? "Tracking paused" : "Tracking active"}</strong>
-              <small>{!tracking ? "Connecting…" : tracking.paused ? "Click to resume" : "Click to pause"}</small>
+              <strong>{t(!tracking ? "Checking status" : tracking.paused ? "Tracking paused" : "Tracking active")}</strong>
+              <small>{t(!tracking ? "Connecting…" : tracking.paused ? "Click to resume" : "Click to pause")}</small>
             </span>
           </button>
           <button className={`nav-item settings-link${page === "settings" ? " active" : ""}`}
             type="button" onClick={() => setPage("settings")}>
             <NavIcon name="settings" />
-            Settings
+            {t("Settings")}
           </button>
         </div>
       </aside>
@@ -172,7 +172,7 @@ function App() {
         {settingsError && (
           <div className="error-banner" role="alert">
             <span>{settingsError}</span>
-            <button type="button" onClick={loadSettings}>Retry</button>
+            <button type="button" onClick={loadSettings}>{t("Retry")}</button>
           </div>
         )}
         {page === "today" && <Dashboard />}

@@ -6,6 +6,7 @@ import {
   MaintenancePreview,
   MaintenanceStatus,
   Settings as SettingsModel,
+  ShortcutSettings,
   backupDatabase,
   chooseBackupDirectory,
   clearApplicationIconCache,
@@ -14,6 +15,7 @@ import {
   exportActivity,
   errorMessage,
   getSettings,
+  getShortcutSettings,
   getAccessibilityPermission,
   AccessibilityPermission,
   NotificationPermission,
@@ -34,6 +36,7 @@ import {
   undoDataHealthRepair,
   sendTestNotification,
   updateSettings,
+  updateShortcutSettings,
 } from "../../lib/ipc";
 import { localize, useLocale } from "../../lib/i18n";
 import { notifyActivityDataChanged } from "../../lib/events";
@@ -64,7 +67,7 @@ function Toggle({
 }
 
 export function Settings() {
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
   const tr = (value: string) => localize(locale, value);
   const [settings, setSettings] = useState<SettingsModel | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -81,6 +84,8 @@ export function Settings() {
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission | null>(null);
   const [checkingNotification, setCheckingNotification] = useState(false);
+  const [shortcuts, setShortcuts] = useState<ShortcutSettings | null>(null);
+  const [savingShortcuts, setSavingShortcuts] = useState(false);
 
   useEffect(() => {
     void getSettings()
@@ -94,6 +99,9 @@ export function Settings() {
     void getAccessibilityPermission().then(setAccessibilityPermission);
     void getNotificationPermission()
       .then(setNotificationPermission)
+      .catch((error) => setMessage(errorMessage(error)));
+    void getShortcutSettings()
+      .then(setShortcuts)
       .catch((error) => setMessage(errorMessage(error)));
   }, []);
 
@@ -350,6 +358,64 @@ export function Settings() {
           </span>
         </div>
       </section>
+
+      {shortcuts && (
+        <section className="settings-card">
+          <div className="list-heading">
+            <div><p className="section-kicker">{t("Keyboard")}</p><h2>{t("Global shortcuts")}</h2></div>
+          </div>
+          <p className="settings-note">
+            {t("Shortcuts work while Watchhouse is hidden. Disabled actions remain available from the app and tray.")}
+          </p>
+          {([
+            ["toggleFocus", "Start or end focus"],
+            ["pauseFocus", "Pause or resume focus"],
+            ["startTemplate", "Start first template"],
+          ] as const).map(([field, label]) => (
+            <label className="setting-row" key={field}>
+              <div><strong>{t(label)}</strong></div>
+              <select
+                value={shortcuts[field] ?? ""}
+                disabled={savingShortcuts}
+                onChange={(event) => setShortcuts({
+                  ...shortcuts,
+                  [field]: event.currentTarget.value || null,
+                })}
+              >
+                <option value="">{t("Disabled")}</option>
+                {[
+                  "CommandOrControl+Shift+F",
+                  "CommandOrControl+Shift+P",
+                  "CommandOrControl+Shift+1",
+                  "CommandOrControl+Shift+2",
+                  "CommandOrControl+Shift+3",
+                ].map((shortcut) => (
+                  <option value={shortcut} key={shortcut}>{shortcut.replace("CommandOrControl", "⌘")}</option>
+                ))}
+              </select>
+            </label>
+          ))}
+          <div className="data-actions">
+            <button
+              type="button"
+              disabled={savingShortcuts}
+              onClick={() => {
+                setSavingShortcuts(true);
+                setMessage(null);
+                void updateShortcutSettings(shortcuts)
+                  .then((saved) => {
+                    setShortcuts(saved);
+                    setMessage("Global shortcuts saved.");
+                  })
+                  .catch((error) => setMessage(errorMessage(error)))
+                  .finally(() => setSavingShortcuts(false));
+              }}
+            >
+              {t("Save shortcuts")}
+            </button>
+          </div>
+        </section>
+      )}
 
       <section className="settings-card">
         <div className="list-heading"><div><p className="section-kicker">Data</p><h2>Local storage</h2></div></div>

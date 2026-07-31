@@ -266,3 +266,21 @@ Decisions:
   explicit translation keys without changing the persisted locale contract.
 - Locale changes are synchronized to the Rust runtime so native tray state and notifications stay
   consistent with the visible interface.
+
+## Phase 13: Configurable Shortcuts And Explicit Localization
+
+Status: Complete
+
+- [x] Persist global shortcut preferences independently from activity settings.
+- [x] Allow each Focus shortcut to be changed or disabled.
+- [x] Detect duplicate or unavailable shortcuts and restore the previous registration on failure.
+- [x] Move the application shell to explicit locale lookups.
+- [x] Add localization coverage tests for primary surfaces and dynamic messages.
+
+Decisions:
+
+- Shortcut choices use validated presets to avoid storing platform-specific strings that cannot be
+  registered on the current operating system.
+- Shortcut persistence is committed only after every enabled shortcut registers successfully.
+- The compatibility translator remains for complex legacy screens while components migrate to the
+  explicit `t()` API.

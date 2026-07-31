@@ -19,5 +19,6 @@ pub(super) fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/0011_reliability_and_template_stats.sql"
         )),
+        M::up(include_str!("../../migrations/0012_shortcut_settings.sql")),
     ])
 }
