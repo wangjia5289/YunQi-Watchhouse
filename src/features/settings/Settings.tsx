@@ -44,6 +44,7 @@ import { clearApplicationIconMemoryCache } from "../applications/ApplicationIcon
 import { PrivacyNotice } from "../onboarding/PrivacyNotice";
 import { UsageLimits } from "./UsageLimits";
 import { UsageLimitReminderCenter } from "./UsageLimitReminderCenter";
+import "./SettingsAnime.css";
 
 function Toggle({
   checked,

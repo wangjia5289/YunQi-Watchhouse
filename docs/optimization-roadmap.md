@@ -428,3 +428,20 @@ Decisions:
 - Existing installations backfill prior delivered reminders while filtering the legacy synthetic
   80% marker created when a rule first crossed directly to 100%.
 - Temporary allowance increases are cumulative but capped at 1,440 minutes for a single day.
+
+## Phase 19: Anime-Inspired Visual System
+
+Status: Complete
+
+- [x] Introduce an original Japanese animation-inspired palette with sky blue, sakura pink, and lavender accents.
+- [x] Restyle the application shell, navigation, controls, cards, forms, filters, and progress indicators.
+- [x] Add restrained sky, cloud, sun, and starlight decoration to the Dashboard without changing its data flow.
+- [x] Redesign Settings with distinct glass-card sections for preferences, usage limits, and reminders.
+- [x] Preserve semantic warning, limit, and destructive-action colors throughout the new theme.
+- [x] Support dark mode, narrow mobile layouts, and reduced-motion preferences.
+
+Decisions:
+
+- All decorative artwork is CSS-generated and original; no copyrighted characters or franchise assets are used.
+- Visual changes stay separate from activity tracking, statistics, limits, reminders, and localization logic.
+- Motion is intentionally subtle and disabled when the operating system requests reduced motion.

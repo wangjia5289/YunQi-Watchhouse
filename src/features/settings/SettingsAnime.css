@@ -1,0 +1,269 @@
+.settings-page {
+  position: relative;
+  isolation: isolate;
+}
+
+.settings-page::before,
+.settings-page::after {
+  position: absolute;
+  z-index: -1;
+  content: "";
+  pointer-events: none;
+}
+
+.settings-page::before {
+  top: -42px;
+  right: -70px;
+  width: 250px;
+  height: 170px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 65%, rgba(255, 255, 255, 0.88) 0 22%, transparent 23%),
+    radial-gradient(circle at 55% 47%, rgba(255, 255, 255, 0.78) 0 29%, transparent 30%),
+    radial-gradient(circle at 78% 68%, rgba(255, 255, 255, 0.72) 0 20%, transparent 21%);
+  filter: drop-shadow(0 18px 30px rgba(125, 145, 209, 0.13));
+}
+
+.settings-page::after {
+  top: 68px;
+  left: -38px;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 178, 211, 0.22), transparent 68%);
+}
+
+.settings-page > header {
+  position: relative;
+  min-height: 92px;
+  padding: 20px 24px;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(142, 151, 222, 0.2);
+  border-radius: 26px;
+  background:
+    linear-gradient(125deg, rgba(238, 247, 255, 0.88), rgba(255, 235, 246, 0.82) 54%, rgba(241, 235, 255, 0.84));
+  box-shadow: 0 18px 42px rgba(105, 113, 178, 0.13);
+}
+
+.settings-page > header::after {
+  position: absolute;
+  top: 14px;
+  right: 24px;
+  color: rgba(120, 112, 196, 0.6);
+  content: "✦  ·  ✧";
+  font-size: 18px;
+  letter-spacing: 9px;
+}
+
+.settings-page > header h1 {
+  color: #545186;
+  text-shadow: 0 2px 0 rgba(255, 255, 255, 0.8);
+}
+
+.settings-page > header .date-label {
+  color: #8b80af;
+}
+
+.settings-page .settings-card {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(139, 151, 215, 0.18);
+  border-radius: 24px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(248, 246, 255, 0.72));
+  box-shadow:
+    0 18px 42px rgba(95, 104, 166, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.settings-page .settings-card::after {
+  position: absolute;
+  top: -35px;
+  right: -30px;
+  width: 105px;
+  height: 105px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(180, 201, 255, 0.16), transparent 68%);
+  content: "";
+  pointer-events: none;
+}
+
+.settings-page .list-heading {
+  position: relative;
+  z-index: 1;
+}
+
+.settings-page .section-kicker {
+  color: #a177b2;
+}
+
+.settings-page .list-heading h2 {
+  color: #54516f;
+}
+
+.settings-page .setting-row {
+  border-top-color: rgba(135, 146, 197, 0.13);
+}
+
+.settings-page .setting-row strong {
+  color: #55516d;
+}
+
+.settings-page select,
+.settings-page input,
+.settings-page textarea,
+.settings-page button:not(.settings-toggle) {
+  border-color: rgba(126, 137, 198, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.settings-page button:not(.settings-toggle):not(:disabled):hover {
+  border-color: rgba(130, 116, 198, 0.4);
+  box-shadow: 0 7px 18px rgba(115, 105, 182, 0.12);
+  transform: translateY(-1px);
+}
+
+.settings-page button:not(.settings-toggle):focus-visible,
+.settings-page select:focus-visible,
+.settings-page input:focus-visible {
+  outline: 3px solid rgba(147, 172, 255, 0.28);
+  outline-offset: 2px;
+}
+
+.settings-page .settings-toggle {
+  background: linear-gradient(135deg, #d8dbea, #c8cae0);
+  box-shadow: inset 0 2px 5px rgba(84, 82, 121, 0.1);
+}
+
+.settings-page .settings-toggle span {
+  box-shadow: 0 3px 8px rgba(72, 69, 114, 0.2);
+}
+
+.settings-page .settings-toggle.active {
+  background: linear-gradient(135deg, #88b9f4, #aa8de3 55%, #ed9fc4);
+}
+
+.settings-page .settings-message {
+  padding: 11px 14px;
+  border: 1px solid rgba(111, 173, 153, 0.18);
+  border-radius: 14px;
+  color: #4d806f;
+  background: rgba(220, 248, 239, 0.78);
+}
+
+.settings-page .settings-segmented {
+  padding: 4px;
+  border-radius: 15px;
+  background: rgba(222, 226, 250, 0.45);
+}
+
+.settings-page .settings-segmented button {
+  flex: 1;
+  border-color: transparent;
+  background: transparent;
+}
+
+.settings-page .settings-segmented button.active {
+  border-color: rgba(134, 116, 195, 0.18);
+  background: linear-gradient(135deg, #7eaee8, #9a83d8 55%, #e592b9);
+  box-shadow: 0 8px 18px rgba(115, 102, 180, 0.2);
+}
+
+.settings-page .diagnostics-grid > div,
+.settings-page .data-health {
+  border-color: rgba(139, 151, 215, 0.16);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(244, 249, 255, 0.82), rgba(255, 242, 249, 0.7));
+}
+
+.settings-page .usage-limits-card {
+  border-color: rgba(238, 154, 193, 0.24);
+  background: linear-gradient(145deg, rgba(255, 252, 254, 0.9), rgba(255, 239, 247, 0.72));
+}
+
+.settings-page .usage-limit-reminders-card {
+  border-color: rgba(139, 154, 230, 0.24);
+  background: linear-gradient(145deg, rgba(247, 251, 255, 0.9), rgba(242, 237, 255, 0.76));
+}
+
+.settings-page .usage-limit-rule,
+.settings-page .usage-limit-reminder-rule,
+.settings-page .usage-limit-reminder-history-entry {
+  border-bottom-color: rgba(128, 138, 193, 0.13);
+}
+
+.settings-page .usage-limit-rule-title > span {
+  border-color: rgba(154, 126, 201, 0.2);
+  color: #8969a2;
+  background: rgba(245, 232, 255, 0.72);
+}
+
+.settings-page .usage-limit-reminder-history-meta strong {
+  color: #8b6ac4;
+}
+
+.settings-page .danger-button,
+.settings-page button.delete,
+.settings-page button.clear {
+  color: #b05876;
+  border-color: rgba(224, 131, 169, 0.25);
+  background: rgba(255, 232, 241, 0.72);
+}
+
+:root[data-theme="dark"] .settings-page > header,
+:root[data-theme="dark"] .settings-page .settings-card {
+  border-color: rgba(167, 171, 232, 0.16);
+  color: #eceafb;
+  background: linear-gradient(145deg, rgba(38, 39, 61, 0.92), rgba(50, 42, 67, 0.82));
+  box-shadow: 0 18px 42px rgba(5, 7, 18, 0.26);
+}
+
+:root[data-theme="dark"] .settings-page > header h1,
+:root[data-theme="dark"] .settings-page .list-heading h2,
+:root[data-theme="dark"] .settings-page .setting-row strong {
+  color: #eeeafd;
+}
+
+:root[data-theme="dark"] .settings-page select,
+:root[data-theme="dark"] .settings-page input,
+:root[data-theme="dark"] .settings-page textarea,
+:root[data-theme="dark"] .settings-page button:not(.settings-toggle) {
+  border-color: rgba(185, 184, 232, 0.15);
+  color: #ebe9f8;
+  background: rgba(35, 36, 53, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .settings-page .usage-limits-card {
+  background: linear-gradient(145deg, rgba(52, 39, 57, 0.9), rgba(45, 39, 59, 0.86));
+}
+
+:root[data-theme="dark"] .settings-page .usage-limit-reminders-card {
+  background: linear-gradient(145deg, rgba(37, 44, 64, 0.92), rgba(47, 39, 66, 0.86));
+}
+
+@media (max-width: 720px) {
+  .settings-page > header {
+    min-height: 80px;
+    padding: 16px 18px;
+    border-radius: 21px;
+  }
+
+  .settings-page .settings-card {
+    padding: 18px 16px;
+    border-radius: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-page button,
+  .settings-page input,
+  .settings-page select,
+  .settings-page .settings-toggle span {
+    transition: none !important;
+  }
+}

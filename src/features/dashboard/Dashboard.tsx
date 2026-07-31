@@ -20,6 +20,7 @@ import {
 } from "../../lib/ipc";
 import { useDashboard } from "./useDashboard";
 import { useLocale } from "../../lib/i18n";
+import "./DashboardAnime.css";
 
 function UsageLimitSummary({ progress }: { progress: UsageLimitProgress[] }) {
   const { locale, t } = useLocale();
@@ -283,7 +284,15 @@ export function Dashboard() {
   }
 
   return (
-    <div className="dashboard">
+    <div className="dashboard anime-dashboard">
+      <div className="anime-sky" aria-hidden="true">
+        <span className="anime-sun" />
+        <span className="anime-cloud cloud-one" />
+        <span className="anime-cloud cloud-two" />
+        <span className="anime-star star-one" />
+        <span className="anime-star star-two" />
+        <span className="anime-star star-three" />
+      </div>
       <header className="topbar">
         <div>
           <p className="date-label">{formatLongDate(new Date(), locale)}</p>
