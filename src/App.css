@@ -33,24 +33,31 @@ button {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   display: grid;
   grid-template-columns: 218px 1fr;
+  overflow: hidden;
   background:
     radial-gradient(circle at 78% 8%, rgba(255, 255, 255, 0.9), transparent 32%),
     #f3f5f1;
 }
 
 .sidebar {
-  position: sticky;
-  top: 0;
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   padding: 28px 18px 22px;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
   background: rgba(233, 237, 231, 0.88);
   backdrop-filter: blur(24px);
+}
+
+.sidebar nav {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .brand {
@@ -216,9 +223,12 @@ button {
 }
 
 .main-content {
+  height: 100vh;
   min-width: 0;
   padding: 46px clamp(42px, 6vw, 84px) 28px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .dashboard {
@@ -3791,10 +3801,14 @@ button:focus-visible {
 
   .app-shell {
     display: block;
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
   }
 
   .sidebar {
     position: static;
+    height: auto;
     min-height: auto;
     padding: 12px;
     display: grid;
@@ -3830,6 +3844,7 @@ button:focus-visible {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 2px;
+    overflow: visible;
   }
 
   .nav-item {
@@ -3882,8 +3897,10 @@ button:focus-visible {
   }
 
   .main-content {
+    height: auto;
     padding: 22px 14px 24px;
     overflow: visible;
+    overscroll-behavior: auto;
   }
 
   .timeline-header,
