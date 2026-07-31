@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   DiagnosticsSummary,
   DataHealthSummary,
+  DataHealthUndoStatus,
   MaintenancePreview,
   MaintenanceStatus,
   Settings as SettingsModel,
@@ -18,6 +19,7 @@ import {
   NotificationPermission,
   getDiagnosticsSummary,
   getDataHealthSummary,
+  getDataHealthUndoStatus,
   getMaintenancePreview,
   getMaintenanceStatus,
   getNotificationPermission,
@@ -29,6 +31,7 @@ import {
   runDataMaintenance,
   requestNotificationPermission,
   repairDataHealth,
+  undoDataHealthRepair,
   sendTestNotification,
   updateSettings,
 } from "../../lib/ipc";
@@ -65,6 +68,7 @@ export function Settings() {
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSummary | null>(null);
   const [dataHealth, setDataHealth] = useState<DataHealthSummary | null>(null);
+  const [dataHealthUndo, setDataHealthUndo] = useState<DataHealthUndoStatus | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [maintenancePreview, setMaintenancePreview] = useState<MaintenancePreview | null>(null);
@@ -81,6 +85,7 @@ export function Settings() {
       .catch((error) => setMessage(errorMessage(error)));
     void getDiagnosticsSummary().then(setDiagnostics);
     void getDataHealthSummary().then(setDataHealth);
+    void getDataHealthUndoStatus().then(setDataHealthUndo);
     void getMaintenancePreview().then(setMaintenancePreview);
     void getMaintenanceStatus().then(setMaintenanceStatus);
     void getAccessibilityPermission().then(setAccessibilityPermission);
@@ -493,13 +498,31 @@ export function Settings() {
                     setMessage(`Data repaired: ${result.trimmedSessionCount} trimmed and ${result.deletedSessionCount} removed.`);
                     notifyActivityDataChanged();
                     void getDataHealthSummary().then(setDataHealth);
+                    void getDataHealthUndoStatus().then(setDataHealthUndo);
                   })
                   .catch((error) => setMessage(errorMessage(error)));
               }}
             >
               Repair Problems
             </button>
+            <button
+              type="button"
+              disabled={!dataHealthUndo?.available}
+              onClick={() => void undoDataHealthRepair()
+                .then((count) => {
+                  setMessage(`Restored ${count} sessions from the last health repair.`);
+                  notifyActivityDataChanged();
+                  void getDataHealthSummary().then(setDataHealth);
+                  void getDataHealthUndoStatus().then(setDataHealthUndo);
+                })
+                .catch((error) => setMessage(errorMessage(error)))}
+            >
+              Undo Last Repair
+            </button>
           </div>
+          {dataHealthUndo?.backupPath && (
+            <p className="settings-path">Safety backup: {dataHealthUndo.backupPath}</p>
+          )}
           <p className="settings-note">
             Last cleanup: {formatOptionalDate(settings.lastMaintenanceAtMs)} · Last backup: {formatOptionalDate(settings.lastBackupAtMs)}
           </p>

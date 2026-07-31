@@ -9,6 +9,7 @@ pub struct FocusModeStatus {
     pub paused: bool,
     pub paused_at_ms: Option<i64>,
     pub total_paused_ms: i64,
+    pub template_id: Option<i64>,
 }
 
 #[derive(Default)]
@@ -28,6 +29,7 @@ impl FocusModeState {
         paused: bool,
         paused_at_ms: Option<i64>,
         total_paused_ms: i64,
+        template_id: Option<i64>,
     ) -> Self {
         Self(Arc::new(Mutex::new(FocusModeRuntime {
             status: FocusModeStatus {
@@ -37,6 +39,7 @@ impl FocusModeState {
                 paused: active && paused,
                 paused_at_ms: (active && paused).then_some(paused_at_ms).flatten(),
                 total_paused_ms: if active { total_paused_ms } else { 0 },
+                template_id: active.then_some(template_id).flatten(),
             },
             last_reminded_interval: 0,
         })))
@@ -49,7 +52,12 @@ impl FocusModeState {
             .unwrap_or_default()
     }
 
-    pub fn start(&self, now_ms: i64, planned_end_at_ms: Option<i64>) -> FocusModeStatus {
+    pub fn start(
+        &self,
+        now_ms: i64,
+        planned_end_at_ms: Option<i64>,
+        template_id: Option<i64>,
+    ) -> FocusModeStatus {
         let Ok(mut runtime) = self.0.lock() else {
             return FocusModeStatus::default();
         };
@@ -60,6 +68,7 @@ impl FocusModeState {
             paused: false,
             paused_at_ms: None,
             total_paused_ms: 0,
+            template_id,
         };
         runtime.last_reminded_interval = 0;
         runtime.status.clone()
@@ -153,7 +162,7 @@ mod tests {
 
     #[test]
     fn reminders_fire_once_per_elapsed_interval() {
-        let state = FocusModeState::new(true, Some(1_000), None, false, None, 0);
+        let state = FocusModeState::new(true, Some(1_000), None, false, None, 0, None);
         assert!(!state.should_send_break_reminder(60_999, 1));
         assert!(state.should_send_break_reminder(61_000, 1));
         assert!(!state.should_send_break_reminder(90_000, 1));
@@ -162,7 +171,7 @@ mod tests {
 
     #[test]
     fn resuming_extends_the_planned_end_by_the_pause_duration() {
-        let state = FocusModeState::new(true, Some(1_000), Some(61_000), false, None, 0);
+        let state = FocusModeState::new(true, Some(1_000), Some(61_000), false, None, 0, None);
         state.set_paused(true, 11_000);
         let status = state.set_paused(false, 21_000);
         assert_eq!(status.planned_end_at_ms, Some(71_000));

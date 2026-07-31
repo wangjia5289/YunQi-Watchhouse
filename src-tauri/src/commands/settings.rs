@@ -14,7 +14,8 @@ use crate::TrackingTrayMenuItem;
 use crate::activity::{MonitorHandle, SessionManagerHandle};
 use crate::database::{ActivityRepository, Settings};
 use crate::database::{
-    DataHealthRepairResult, DataHealthSummary, MaintenancePreview, MaintenanceResult,
+    DataHealthRepairResult, DataHealthSummary, DataHealthUndoStatus, MaintenancePreview,
+    MaintenanceResult,
 };
 use crate::maintenance::{MaintenanceStatus, MaintenanceStatusState};
 
@@ -56,11 +57,43 @@ pub fn get_data_health_summary(
 }
 
 #[tauri::command]
-pub fn repair_data_health(
+pub async fn repair_data_health(
+    app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<DataHealthRepairResult, String> {
+    let repository = repository.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?
+            .join("backups");
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let path = directory.join(format!("before-health-repair-{}.sqlite3", now_ms()?));
+        repository
+            .backup_database(&path)
+            .map_err(|error| error.to_string())?;
+        repository
+            .repair_data_health(&path.to_string_lossy())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn get_data_health_undo_status(
+    repository: State<'_, ActivityRepository>,
+) -> Result<DataHealthUndoStatus, String> {
     repository
-        .repair_data_health()
+        .data_health_undo_status()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn undo_data_health_repair(repository: State<'_, ActivityRepository>) -> Result<usize, String> {
+    repository
+        .undo_data_health_repair()
         .map_err(|error| error.to_string())
 }
 

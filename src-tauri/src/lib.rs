@@ -61,6 +61,7 @@ pub fn run() {
                 persisted_focus.paused,
                 persisted_focus.paused_at_ms,
                 persisted_focus.total_paused_ms,
+                persisted_focus.template_id,
             ));
 
             let reminder_repository = app.state::<database::ActivityRepository>().inner().clone();
@@ -86,6 +87,7 @@ pub fn run() {
                                 now_ms,
                                 current.total_paused_ms,
                                 true,
+                                current.template_id,
                             );
                         }
                         if reminder_repository
@@ -97,6 +99,7 @@ pub fn run() {
                                     paused: false,
                                     paused_at_ms: None,
                                     total_paused_ms: 0,
+                                    template_id: None,
                                 },
                                 now_ms,
                             )
@@ -303,6 +306,7 @@ pub fn run() {
                                     paused: false,
                                     paused_at_ms: None,
                                     total_paused_ms: 0,
+                                    template_id: None,
                                 },
                                 now_ms,
                             )
@@ -319,10 +323,11 @@ pub fn run() {
                                     now_ms,
                                     current.total_paused_ms,
                                     false,
+                                    current.template_id,
                                 );
                         }
                         let status = if active {
-                            state.start(now_ms, None)
+                            state.start(now_ms, None, None)
                         } else {
                             state.end()
                         };
@@ -356,7 +361,9 @@ pub fn run() {
             commands::focus::get_focus_plan_history,
             commands::focus::get_focus_plan_templates,
             commands::focus::create_focus_plan_template,
+            commands::focus::update_focus_plan_template,
             commands::focus::delete_focus_plan_template,
+            commands::focus::start_focus_template,
             commands::focus::set_focus_mode,
             commands::focus::start_focus_plan,
             commands::focus::set_focus_plan_paused,
@@ -369,6 +376,7 @@ pub fn run() {
             commands::statistics::get_today_summary,
             commands::statistics::get_today_focus_summary,
             commands::statistics::get_timeline,
+            commands::statistics::get_timeline_page,
             commands::statistics::get_app_usage,
             commands::statistics::get_category_usage,
             commands::statistics::get_daily_usage,
@@ -390,6 +398,8 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::get_data_health_summary,
             commands::settings::repair_data_health,
+            commands::settings::get_data_health_undo_status,
+            commands::settings::undo_data_health_repair,
             commands::settings::get_accessibility_permission,
             commands::settings::get_notification_permission,
             commands::settings::request_notification_permission,

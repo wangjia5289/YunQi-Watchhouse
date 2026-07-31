@@ -8,7 +8,7 @@ use crate::{
     error::AppError,
     statistics::{
         AppUsage, CategoryUsage, DailyUsage, FocusSummary, ProductivityReport, StatisticsService,
-        TimeRange, TimelineEntry, TodaySummary,
+        TimeRange, TimelineEntry, TimelinePage, TodaySummary,
     },
 };
 
@@ -38,6 +38,18 @@ pub async fn get_timeline(
     let date = parse_date(&date)?;
     let statistics = statistics.inner().clone();
     run_blocking(move || statistics.timeline_for_date(date)).await
+}
+
+#[tauri::command]
+pub async fn get_timeline_page(
+    date: String,
+    offset: usize,
+    limit: usize,
+    statistics: State<'_, StatisticsService>,
+) -> IpcResult<TimelinePage> {
+    let date = parse_date(&date)?;
+    let statistics = statistics.inner().clone();
+    run_blocking(move || statistics.timeline_page_for_date(date, offset, limit)).await
 }
 
 #[tauri::command]

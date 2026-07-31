@@ -140,7 +140,18 @@ export function Timeline() {
   const today = localIsoDate();
   const [date, setDate] = useState(today);
   const [view, setView] = useState<"overview" | "details">("overview");
-  const { entries, loading, error, refresh } = useTimeline(date);
+  const {
+    entries,
+    loading,
+    error,
+    refresh,
+    loadMore,
+    loadAll,
+    hasMore,
+    totalCount,
+    activeDurationMs,
+    idleDurationMs,
+  } = useTimeline(date);
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<"ALL" | ActivityState>("ALL");
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -149,7 +160,6 @@ export function Timeline() {
   const [editStart, setEditStart] = useState("");
   const [editEnd, setEditEnd] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
-  const [visibleCount, setVisibleCount] = useState(200);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [undoHistory, setUndoHistory] = useState<TimelineUndoEntry[]>([]);
   const [undoHistoryOpen, setUndoHistoryOpen] = useState(false);
@@ -172,12 +182,14 @@ export function Timeline() {
     });
   }, [entries, query, stateFilter]);
   const hours = useMemo(() => summarizeByHour(filteredEntries), [filteredEntries]);
-  const visibleEntries = filteredEntries.slice(0, visibleCount);
+  const visibleEntries = filteredEntries;
 
   useEffect(() => {
-    setVisibleCount(200);
     setSelectedIds(new Set());
   }, [date, query, stateFilter]);
+  useEffect(() => {
+    if ((view === "overview" || query || stateFilter !== "ALL") && hasMore && !loading) loadAll();
+  }, [hasMore, loadAll, loading, query, stateFilter, view]);
   useEffect(() => {
     void getTimelineUndoHistory().then(setUndoHistory).catch(() => {});
   }, []);
@@ -227,8 +239,12 @@ export function Timeline() {
   };
   const dateValue = dateFromLocalIso(date);
   const isToday = date === today;
-  const activeTotal = stateTotal(filteredEntries, "ACTIVE");
-  const idleTotal = stateTotal(filteredEntries, "IDLE");
+  const activeTotal = query || stateFilter !== "ALL"
+    ? stateTotal(filteredEntries, "ACTIVE")
+    : activeDurationMs;
+  const idleTotal = query || stateFilter !== "ALL"
+    ? stateTotal(filteredEntries, "IDLE")
+    : idleDurationMs;
   const dateTitle = isToday
     ? "Today"
     : new Intl.DateTimeFormat(undefined, {
@@ -288,7 +304,7 @@ export function Timeline() {
         <div>
           <span className="summary-swatch sessions" />
           <p>Sessions</p>
-          <strong>{filteredEntries.length}</strong>
+          <strong>{query || stateFilter !== "ALL" ? filteredEntries.length : totalCount}</strong>
         </div>
       </section>
 
@@ -679,13 +695,14 @@ export function Timeline() {
           );
         })}
 
-        {visibleCount < filteredEntries.length && (
+        {hasMore && !query && stateFilter === "ALL" && (
           <button
             type="button"
             className="timeline-load-more"
-            onClick={() => setVisibleCount((count) => count + 200)}
+            disabled={loading}
+            onClick={loadMore}
           >
-            Show 200 more sessions
+            {loading ? "Loading…" : `Show more sessions (${entries.length} of ${totalCount})`}
           </button>
         )}
 

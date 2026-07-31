@@ -75,6 +75,7 @@ export interface FocusModeStatus {
   paused: boolean;
   pausedAtMs: number | null;
   totalPausedMs: number;
+  templateId: number | null;
 }
 
 export interface FocusPlanHistoryEntry {
@@ -100,6 +101,9 @@ export interface FocusPlanTemplate {
   id: number;
   name: string;
   durationMinutes: number;
+  sortOrder: number;
+  useCount: number;
+  completedCount: number;
 }
 
 export interface DataHealthSummary {
@@ -110,6 +114,14 @@ export interface DataHealthSummary {
 export interface DataHealthRepairResult {
   trimmedSessionCount: number;
   deletedSessionCount: number;
+  backupPath: string;
+  undoAvailable: boolean;
+}
+
+export interface DataHealthUndoStatus {
+  available: boolean;
+  backupPath: string | null;
+  createdAtMs: number | null;
 }
 
 export interface TimelineEntry {
@@ -258,6 +270,23 @@ export function getTimeline(date: string): Promise<TimelineEntry[]> {
   return invoke("get_timeline", { date });
 }
 
+export interface TimelinePage {
+  entries: TimelineEntry[];
+  totalCount: number;
+  activeDurationMs: number;
+  idleDurationMs: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+export function getTimelinePage(
+  date: string,
+  offset: number,
+  limit = 200,
+): Promise<TimelinePage> {
+  return invoke("get_timeline_page", { date, offset, limit });
+}
+
 export interface TimelineMutationResult {
   affectedCount: number;
   undoToken: string | null;
@@ -334,6 +363,24 @@ export function createFocusPlanTemplate(
   durationMinutes: number,
 ): Promise<FocusPlanTemplate> {
   return invoke("create_focus_plan_template", { name, durationMinutes });
+}
+
+export function updateFocusPlanTemplate(
+  templateId: number,
+  name: string,
+  durationMinutes: number,
+  sortOrder: number,
+): Promise<FocusPlanTemplate> {
+  return invoke("update_focus_plan_template", {
+    templateId,
+    name,
+    durationMinutes,
+    sortOrder,
+  });
+}
+
+export function startFocusTemplate(templateId: number): Promise<FocusModeStatus> {
+  return invoke("start_focus_template", { templateId });
 }
 
 export function deleteFocusPlanTemplate(templateId: number): Promise<void> {
@@ -482,6 +529,14 @@ export function getDataHealthSummary(): Promise<DataHealthSummary> {
 
 export function repairDataHealth(): Promise<DataHealthRepairResult> {
   return invoke("repair_data_health");
+}
+
+export function getDataHealthUndoStatus(): Promise<DataHealthUndoStatus> {
+  return invoke("get_data_health_undo_status");
+}
+
+export function undoDataHealthRepair(): Promise<number> {
+  return invoke("undo_data_health_repair");
 }
 
 export function completeOnboarding(): Promise<Settings> {

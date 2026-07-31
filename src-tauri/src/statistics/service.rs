@@ -127,6 +127,17 @@ pub struct ProductivityReport {
     pub category_usage: Vec<CategoryUsage>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelinePage {
+    pub entries: Vec<TimelineEntry>,
+    pub total_count: usize,
+    pub active_duration_ms: i64,
+    pub idle_duration_ms: i64,
+    pub offset: usize,
+    pub has_more: bool,
+}
+
 #[derive(Clone)]
 pub struct StatisticsService {
     repository: ActivityRepository,
@@ -278,41 +289,39 @@ impl StatisticsService {
         self.timeline(range)
     }
 
-    pub fn timeline(&self, range: TimeRange) -> AppResult<Vec<TimelineEntry>> {
-        Ok(self
+    pub fn timeline_page_for_date(
+        &self,
+        date: NaiveDate,
+        offset: usize,
+        limit: usize,
+    ) -> AppResult<TimelinePage> {
+        let range = local_day_range(date)?;
+        let (total_count, active_duration_ms, idle_duration_ms) = self
             .repository
-            .records_overlapping(range.start_ms, range.end_ms)?
-            .into_iter()
-            .filter_map(|record| {
-                let (start, end) = clipped_bounds(&record, range)?;
-                Some(TimelineEntry {
-                    session_id: record.session.id,
-                    application_id: record
-                        .application
-                        .as_ref()
-                        .map(|application| application.id),
-                    state: record.session.state,
-                    application_name: record
-                        .application
-                        .as_ref()
-                        .map(|application| application.name.clone()),
-                    bundle_identifier: record
-                        .application
-                        .as_ref()
-                        .and_then(|application| application.bundle_id.clone()),
-                    category: record
-                        .application
-                        .as_ref()
-                        .map(|application| application.category.clone()),
-                    window_title: record.session.window_title,
-                    note: record.session.note,
-                    started_at_ms: start,
-                    ended_at_ms: end,
-                    duration_ms: end - start,
-                    is_open: record.session.is_open,
-                })
-            })
-            .collect())
+            .timeline_page_totals(range.start_ms, range.end_ms)?;
+        let records = self.repository.records_overlapping_page(
+            range.start_ms,
+            range.end_ms,
+            offset,
+            limit,
+        )?;
+        let entries = timeline_entries(records, range);
+        Ok(TimelinePage {
+            has_more: offset.saturating_add(entries.len()) < total_count,
+            entries,
+            total_count,
+            active_duration_ms,
+            idle_duration_ms,
+            offset,
+        })
+    }
+
+    pub fn timeline(&self, range: TimeRange) -> AppResult<Vec<TimelineEntry>> {
+        Ok(timeline_entries(
+            self.repository
+                .records_overlapping(range.start_ms, range.end_ms)?,
+            range,
+        ))
     }
 
     pub fn app_usage(&self, range: TimeRange) -> AppResult<Vec<AppUsage>> {
@@ -561,6 +570,41 @@ impl FocusBlockBuilder {
             is_open: self.is_open,
         }
     }
+}
+
+fn timeline_entries(records: Vec<ActivityRecord>, range: TimeRange) -> Vec<TimelineEntry> {
+    records
+        .into_iter()
+        .filter_map(|record| {
+            let (start, end) = clipped_bounds(&record, range)?;
+            Some(TimelineEntry {
+                session_id: record.session.id,
+                application_id: record
+                    .application
+                    .as_ref()
+                    .map(|application| application.id),
+                state: record.session.state,
+                application_name: record
+                    .application
+                    .as_ref()
+                    .map(|application| application.name.clone()),
+                bundle_identifier: record
+                    .application
+                    .as_ref()
+                    .and_then(|application| application.bundle_id.clone()),
+                category: record
+                    .application
+                    .as_ref()
+                    .map(|application| application.category.clone()),
+                window_title: record.session.window_title,
+                note: record.session.note,
+                started_at_ms: start,
+                ended_at_ms: end,
+                duration_ms: end - start,
+                is_open: record.session.is_open,
+            })
+        })
+        .collect()
 }
 
 fn clipped_bounds(record: &ActivityRecord, range: TimeRange) -> Option<(i64, i64)> {

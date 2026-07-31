@@ -42,6 +42,19 @@ pub fn create_focus_plan_template(
 }
 
 #[tauri::command]
+pub fn update_focus_plan_template(
+    template_id: i64,
+    name: String,
+    duration_minutes: i64,
+    sort_order: i64,
+    repository: State<'_, ActivityRepository>,
+) -> Result<FocusPlanTemplate, String> {
+    repository
+        .update_focus_plan_template(template_id, &name, duration_minutes, sort_order)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn delete_focus_plan_template(
     template_id: i64,
     repository: State<'_, ActivityRepository>,
@@ -157,6 +170,38 @@ pub fn start_focus_plan(
     status: State<'_, FocusModeState>,
     repository: State<'_, ActivityRepository>,
 ) -> Result<FocusModeStatus, String> {
+    start_focus_plan_with_template(duration_minutes, None, app, status, repository)
+}
+
+#[tauri::command]
+pub fn start_focus_template(
+    template_id: i64,
+    app: AppHandle,
+    status: State<'_, FocusModeState>,
+    repository: State<'_, ActivityRepository>,
+) -> Result<FocusModeStatus, String> {
+    let template = repository
+        .focus_plan_templates()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|template| template.id == template_id)
+        .ok_or_else(|| "focus template was not found".to_owned())?;
+    start_focus_plan_with_template(
+        Some(template.duration_minutes),
+        Some(template.id),
+        app,
+        status,
+        repository,
+    )
+}
+
+fn start_focus_plan_with_template(
+    duration_minutes: Option<i64>,
+    template_id: Option<i64>,
+    app: AppHandle,
+    status: State<'_, FocusModeState>,
+    repository: State<'_, ActivityRepository>,
+) -> Result<FocusModeStatus, String> {
     if duration_minutes.is_some_and(|minutes| !(5..=240).contains(&minutes)) {
         return Err("focus plan duration must be between 5 and 240 minutes".to_owned());
     }
@@ -172,11 +217,17 @@ pub fn start_focus_plan(
                 paused: false,
                 paused_at_ms: None,
                 total_paused_ms: 0,
+                template_id,
             },
             now_ms,
         )
         .map_err(|error| error.to_string())?;
-    let next = status.start(now_ms, planned_end_at_ms);
+    if let Some(template_id) = template_id {
+        repository
+            .mark_focus_template_started(template_id, now_ms)
+            .map_err(|error| error.to_string())?;
+    }
+    let next = status.start(now_ms, planned_end_at_ms, template_id);
     publish_status(&app, &next);
     Ok(next)
 }
@@ -218,6 +269,7 @@ pub fn end_focus_plan(
                 now_ms,
                 current.total_paused_ms.saturating_add(current_pause),
                 completed,
+                current.template_id,
             )
             .map_err(|error| error.to_string())?;
     }
@@ -230,6 +282,7 @@ pub fn end_focus_plan(
                 paused: false,
                 paused_at_ms: None,
                 total_paused_ms: 0,
+                template_id: None,
             },
             now_ms,
         )
@@ -266,6 +319,7 @@ fn persisted(status: &FocusModeStatus) -> PersistedFocusMode {
         paused: status.paused,
         paused_at_ms: status.paused_at_ms,
         total_paused_ms: status.total_paused_ms,
+        template_id: status.template_id,
     }
 }
 

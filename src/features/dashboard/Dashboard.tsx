@@ -13,7 +13,9 @@ import {
   getFocusPlanTemplates,
   setFocusPlanPaused,
   startFocusPlan,
+  startFocusTemplate,
   setTrackingPaused,
+  updateFocusPlanTemplate,
 } from "../../lib/ipc";
 import { useDashboard } from "./useDashboard";
 
@@ -96,6 +98,7 @@ export function Dashboard() {
   const [templateName, setTemplateName] = useState("");
   const [templateMinutes, setTemplateMinutes] = useState(50);
   const [templateOpen, setTemplateOpen] = useState(false);
+  const [editingTemplateId, setEditingTemplateId] = useState<number | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [, setClockRevision] = useState(0);
 
@@ -143,6 +146,38 @@ export function Dashboard() {
       && dismissedBlockStart !== currentFocusBlock.startedAtMs
       && !isQuietHours(focus.quietHoursStart, focus.quietHoursEnd),
   );
+
+  async function moveTemplate(index: number, delta: -1 | 1) {
+    const targetIndex = index + delta;
+    if (targetIndex < 0 || targetIndex >= focusTemplates.length) return;
+    const current = focusTemplates[index];
+    const target = focusTemplates[targetIndex];
+    try {
+      const [updatedCurrent, updatedTarget] = await Promise.all([
+        updateFocusPlanTemplate(
+          current.id,
+          current.name,
+          current.durationMinutes,
+          target.sortOrder,
+        ),
+        updateFocusPlanTemplate(
+          target.id,
+          target.name,
+          target.durationMinutes,
+          current.sortOrder,
+        ),
+      ]);
+      setFocusTemplates((templates) => templates
+        .map((template) => template.id === updatedCurrent.id
+          ? updatedCurrent
+          : template.id === updatedTarget.id
+            ? updatedTarget
+            : template)
+        .sort((left, right) => left.sortOrder - right.sortOrder));
+    } catch (reason) {
+      setTemplateError(errorMessage(reason));
+    }
+  }
 
   return (
     <div className="dashboard">
@@ -262,18 +297,46 @@ export function Dashboard() {
             ) : (
               <>
                 <div className="focus-template-list" aria-label="Focus plan templates">
-                  {focusTemplates.map((template) => (
+                  {focusTemplates.map((template, index) => (
                     <span key={template.id}>
                       <button
                         type="button"
                         onClick={() => {
                           setTemplateError(null);
-                          void startFocusPlan(template.durationMinutes)
+                          void startFocusTemplate(template.id)
                             .then(setFocusModeStatus)
                             .catch((reason) => setTemplateError(errorMessage(reason)));
                         }}
                       >
                         {template.name} · {template.durationMinutes}m
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Edit ${template.name} template`}
+                        onClick={() => {
+                          setEditingTemplateId(template.id);
+                          setTemplateName(template.name);
+                          setTemplateMinutes(template.durationMinutes);
+                          setTemplateOpen(true);
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Move ${template.name} template up`}
+                        disabled={index === 0}
+                        onClick={() => void moveTemplate(index, -1)}
+                      >
+                        Up
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Move ${template.name} template down`}
+                        disabled={index === focusTemplates.length - 1}
+                        onClick={() => void moveTemplate(index, 1)}
+                      >
+                        Down
                       </button>
                       <button
                         type="button"
@@ -290,6 +353,16 @@ export function Dashboard() {
                     </span>
                   ))}
                 </div>
+                {focusTemplates.length > 0 && (
+                  <small className="focus-template-stats">
+                    {focusTemplates.map((template) => {
+                      const rate = template.useCount
+                        ? Math.round(template.completedCount / template.useCount * 100)
+                        : 0;
+                      return `${template.name}: ${template.useCount} starts · ${rate}% complete`;
+                    }).join(" · ")}
+                  </small>
+                )}
                 <select
                   value={focusPlanMinutes}
                   aria-label="Focus plan duration"
@@ -331,16 +404,26 @@ export function Dashboard() {
                       disabled={!templateName.trim() || templateMinutes < 5 || templateMinutes > 240}
                       onClick={() => {
                         setTemplateError(null);
-                        void createFocusPlanTemplate(templateName, templateMinutes)
-                          .then((template) => {
-                            setFocusTemplates((current) => [...current, template]);
+                        const request = editingTemplateId === null
+                          ? createFocusPlanTemplate(templateName, templateMinutes)
+                          : updateFocusPlanTemplate(
+                              editingTemplateId,
+                              templateName,
+                              templateMinutes,
+                              focusTemplates.find((item) => item.id === editingTemplateId)?.sortOrder ?? 0,
+                            );
+                        void request.then((template) => {
+                            setFocusTemplates((current) => editingTemplateId === null
+                              ? [...current, template]
+                              : current.map((item) => item.id === template.id ? template : item));
                             setTemplateName("");
+                            setEditingTemplateId(null);
                             setTemplateOpen(false);
                           })
                           .catch((reason) => setTemplateError(errorMessage(reason)));
                       }}
                     >
-                      Save template
+                      {editingTemplateId === null ? "Save template" : "Update template"}
                     </button>
                   </div>
                 )}
