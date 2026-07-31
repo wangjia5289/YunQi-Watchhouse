@@ -375,7 +375,7 @@ export function Dashboard() {
             <span>{t("Daily goal")}</span>
             <strong>{focus.goalMinutes ? `${Math.round(focusProgress)}%` : t("Off")}</strong>
           </article>
-          <div className="focus-plan-controls">
+          <div className={`focus-plan-controls${focusTemplates.length === 0 ? " no-templates" : ""}`}>
             {focusMode?.active ? (
               <>
                 <div>
@@ -408,63 +408,65 @@ export function Dashboard() {
               </>
             ) : (
               <>
-                <div className="focus-template-list" aria-label={t("Focus plan templates")}>
-                  {focusTemplates.map((template, index) => (
-                    <span key={template.id}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setTemplateError(null);
-                          void startFocusTemplate(template.id)
-                            .then(setFocusModeStatus)
-                            .catch((reason) => setTemplateError(errorMessage(reason)));
-                        }}
-                      >
-                        {template.name} · {t(`${template.durationMinutes}m`)}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={t(`Edit ${template.name} template`)}
-                        onClick={() => {
-                          setEditingTemplateId(template.id);
-                          setTemplateName(template.name);
-                          setTemplateMinutes(template.durationMinutes);
-                          setTemplateOpen(true);
-                        }}
-                      >
-                        {t("Edit")}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={t(`Move ${template.name} template up`)}
-                        disabled={index === 0}
-                        onClick={() => void moveTemplate(index, -1)}
-                      >
-                        {t("Up")}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={t(`Move ${template.name} template down`)}
-                        disabled={index === focusTemplates.length - 1}
-                        onClick={() => void moveTemplate(index, 1)}
-                      >
-                        {t("Down")}
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={t(`Remove ${template.name} template`)}
-                        onClick={() => {
-                          setTemplateError(null);
-                          void deleteFocusPlanTemplate(template.id).then(() => {
-                            setFocusTemplates((current) => current.filter((item) => item.id !== template.id));
-                          }).catch((reason) => setTemplateError(errorMessage(reason)));
-                        }}
-                      >
-                        {t("Remove")}
-                      </button>
-                    </span>
-                  ))}
-                </div>
+                {focusTemplates.length > 0 && (
+                  <div className="focus-template-list" aria-label={t("Focus plan templates")}>
+                    {focusTemplates.map((template, index) => (
+                      <span key={template.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTemplateError(null);
+                            void startFocusTemplate(template.id)
+                              .then(setFocusModeStatus)
+                              .catch((reason) => setTemplateError(errorMessage(reason)));
+                          }}
+                        >
+                          {template.name} · {t(`${template.durationMinutes}m`)}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t(`Edit ${template.name} template`)}
+                          onClick={() => {
+                            setEditingTemplateId(template.id);
+                            setTemplateName(template.name);
+                            setTemplateMinutes(template.durationMinutes);
+                            setTemplateOpen(true);
+                          }}
+                        >
+                          {t("Edit")}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t(`Move ${template.name} template up`)}
+                          disabled={index === 0}
+                          onClick={() => void moveTemplate(index, -1)}
+                        >
+                          {t("Up")}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t(`Move ${template.name} template down`)}
+                          disabled={index === focusTemplates.length - 1}
+                          onClick={() => void moveTemplate(index, 1)}
+                        >
+                          {t("Down")}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t(`Remove ${template.name} template`)}
+                          onClick={() => {
+                            setTemplateError(null);
+                            void deleteFocusPlanTemplate(template.id).then(() => {
+                              setFocusTemplates((current) => current.filter((item) => item.id !== template.id));
+                            }).catch((reason) => setTemplateError(errorMessage(reason)));
+                          }}
+                        >
+                          {t("Remove")}
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {focusTemplates.length > 0 && (
                   <small className="focus-template-stats">
                     {focusTemplates.map((template) => {
