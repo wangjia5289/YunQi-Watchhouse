@@ -15,5 +15,6 @@ pub(super) fn migrations() -> Migrations<'static> {
         )),
         M::up(include_str!("../../migrations/0008_focus_mode_state.sql")),
         M::up(include_str!("../../migrations/0009_focus_plans.sql")),
+        M::up(include_str!("../../migrations/0010_focus_templates.sql")),
     ])
 }

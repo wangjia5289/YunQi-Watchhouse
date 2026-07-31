@@ -96,6 +96,22 @@ export interface FocusPlanHistorySummary {
   recentPlans: FocusPlanHistoryEntry[];
 }
 
+export interface FocusPlanTemplate {
+  id: number;
+  name: string;
+  durationMinutes: number;
+}
+
+export interface DataHealthSummary {
+  overlappingSessionCount: number;
+  zeroDurationSessionCount: number;
+}
+
+export interface DataHealthRepairResult {
+  trimmedSessionCount: number;
+  deletedSessionCount: number;
+}
+
 export interface TimelineEntry {
   sessionId: number;
   applicationId: number | null;
@@ -309,6 +325,21 @@ export function getFocusPlanHistory(
   return invoke("get_focus_plan_history", { rangeStartMs, rangeEndMs });
 }
 
+export function getFocusPlanTemplates(): Promise<FocusPlanTemplate[]> {
+  return invoke("get_focus_plan_templates");
+}
+
+export function createFocusPlanTemplate(
+  name: string,
+  durationMinutes: number,
+): Promise<FocusPlanTemplate> {
+  return invoke("create_focus_plan_template", { name, durationMinutes });
+}
+
+export function deleteFocusPlanTemplate(templateId: number): Promise<void> {
+  return invoke("delete_focus_plan_template", { templateId });
+}
+
 export interface TimelineUndoEntry {
   token: string;
   createdAtMs: number;
@@ -422,6 +453,13 @@ export function getProductivityReport(
   return invoke("get_productivity_report", { rangeStartMs, rangeEndMs });
 }
 
+export function exportProductivityReportCsv(
+  rangeStartMs: number,
+  rangeEndMs: number,
+): Promise<string | null> {
+  return invoke("export_productivity_report_csv", { rangeStartMs, rangeEndMs });
+}
+
 export function getApplicationDailyUsage(
   applicationId: number,
   rangeStartMs: number,
@@ -436,6 +474,14 @@ export function getApplicationDailyUsage(
 
 export function getSettings(): Promise<Settings> {
   return invoke("get_settings");
+}
+
+export function getDataHealthSummary(): Promise<DataHealthSummary> {
+  return invoke("get_data_health_summary");
+}
+
+export function repairDataHealth(): Promise<DataHealthRepairResult> {
+  return invoke("repair_data_health");
 }
 
 export function completeOnboarding(): Promise<Settings> {

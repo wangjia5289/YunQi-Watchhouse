@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
     FocusTrayMenuItem,
-    database::{ActivityRepository, PersistedFocusMode},
+    database::{ActivityRepository, FocusPlanTemplate, PersistedFocusMode},
     focus::{FocusModeState, FocusModeStatus},
 };
 
@@ -19,6 +19,36 @@ pub struct FocusPlanHistorySummary {
     total_paused_duration_ms: i64,
     longest_completed_streak_days: usize,
     recent_plans: Vec<crate::database::FocusPlanHistoryEntry>,
+}
+
+#[tauri::command]
+pub fn get_focus_plan_templates(
+    repository: State<'_, ActivityRepository>,
+) -> Result<Vec<FocusPlanTemplate>, String> {
+    repository
+        .focus_plan_templates()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn create_focus_plan_template(
+    name: String,
+    duration_minutes: i64,
+    repository: State<'_, ActivityRepository>,
+) -> Result<FocusPlanTemplate, String> {
+    repository
+        .create_focus_plan_template(&name, duration_minutes)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn delete_focus_plan_template(
+    template_id: i64,
+    repository: State<'_, ActivityRepository>,
+) -> Result<(), String> {
+    repository
+        .delete_focus_plan_template(template_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DiagnosticsSummary,
+  DataHealthSummary,
   MaintenancePreview,
   MaintenanceStatus,
   Settings as SettingsModel,
@@ -16,6 +17,7 @@ import {
   AccessibilityPermission,
   NotificationPermission,
   getDiagnosticsSummary,
+  getDataHealthSummary,
   getMaintenancePreview,
   getMaintenanceStatus,
   getNotificationPermission,
@@ -26,6 +28,7 @@ import {
   restoreDatabase,
   runDataMaintenance,
   requestNotificationPermission,
+  repairDataHealth,
   sendTestNotification,
   updateSettings,
 } from "../../lib/ipc";
@@ -61,6 +64,7 @@ export function Settings() {
   const [message, setMessage] = useState<string | null>(null);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSummary | null>(null);
+  const [dataHealth, setDataHealth] = useState<DataHealthSummary | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [maintenancePreview, setMaintenancePreview] = useState<MaintenancePreview | null>(null);
@@ -76,6 +80,7 @@ export function Settings() {
       .then(setSettings)
       .catch((error) => setMessage(errorMessage(error)));
     void getDiagnosticsSummary().then(setDiagnostics);
+    void getDataHealthSummary().then(setDataHealth);
     void getMaintenancePreview().then(setMaintenancePreview);
     void getMaintenanceStatus().then(setMaintenanceStatus);
     void getAccessibilityPermission().then(setAccessibilityPermission);
@@ -468,6 +473,32 @@ export function Settings() {
                 }).catch((error) => setMessage(errorMessage(error)));
               }
             }}>Clean Up Now</button>
+          </div>
+          <div className="data-health">
+            <div>
+              <strong>Data Health</strong>
+              <small>
+                {dataHealth && dataHealth.overlappingSessionCount + dataHealth.zeroDurationSessionCount > 0
+                  ? `${dataHealth.overlappingSessionCount} overlapping and ${dataHealth.zeroDurationSessionCount} zero-duration sessions found.`
+                  : "No repairable session problems found."}
+              </small>
+            </div>
+            <button
+              type="button"
+              disabled={!dataHealth || dataHealth.overlappingSessionCount + dataHealth.zeroDurationSessionCount === 0}
+              onClick={() => {
+                if (!window.confirm("Repair overlapping and zero-duration closed sessions? Back up first if you may need the original timestamps.")) return;
+                void repairDataHealth()
+                  .then((result) => {
+                    setMessage(`Data repaired: ${result.trimmedSessionCount} trimmed and ${result.deletedSessionCount} removed.`);
+                    notifyActivityDataChanged();
+                    void getDataHealthSummary().then(setDataHealth);
+                  })
+                  .catch((error) => setMessage(errorMessage(error)));
+              }}
+            >
+              Repair Problems
+            </button>
           </div>
           <p className="settings-note">
             Last cleanup: {formatOptionalDate(settings.lastMaintenanceAtMs)} · Last backup: {formatOptionalDate(settings.lastBackupAtMs)}

@@ -81,7 +81,7 @@ mod tests {
             migrations()
                 .current_version(&connection)
                 .expect("schema version should be readable"),
-            SchemaVersion::Inside(std::num::NonZeroUsize::new(9).expect("nine is non-zero"))
+            SchemaVersion::Inside(std::num::NonZeroUsize::new(10).expect("ten is non-zero"))
         );
         assert_eq!(
             connection

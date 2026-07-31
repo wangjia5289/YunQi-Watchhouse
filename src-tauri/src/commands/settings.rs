@@ -13,7 +13,9 @@ use tauri_plugin_opener::OpenerExt;
 use crate::TrackingTrayMenuItem;
 use crate::activity::{MonitorHandle, SessionManagerHandle};
 use crate::database::{ActivityRepository, Settings};
-use crate::database::{MaintenancePreview, MaintenanceResult};
+use crate::database::{
+    DataHealthRepairResult, DataHealthSummary, MaintenancePreview, MaintenanceResult,
+};
 use crate::maintenance::{MaintenanceStatus, MaintenanceStatusState};
 
 #[derive(serde::Serialize)]
@@ -42,6 +44,24 @@ pub struct DiagnosticsSummary {
 #[tauri::command]
 pub fn get_settings(repository: State<'_, ActivityRepository>) -> Result<Settings, String> {
     repository.settings().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_data_health_summary(
+    repository: State<'_, ActivityRepository>,
+) -> Result<DataHealthSummary, String> {
+    repository
+        .data_health_summary()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn repair_data_health(
+    repository: State<'_, ActivityRepository>,
+) -> Result<DataHealthRepairResult, String> {
+    repository
+        .repair_data_health()
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

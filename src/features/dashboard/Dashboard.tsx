@@ -3,9 +3,14 @@ import { listen } from "@tauri-apps/api/event";
 import { formatClock, formatDuration, formatLongDate } from "../../lib/format";
 import {
   FocusModeStatus,
+  FocusPlanTemplate,
   TimelineEntry,
+  createFocusPlanTemplate,
+  deleteFocusPlanTemplate,
   endFocusPlan,
+  errorMessage,
   getFocusMode,
+  getFocusPlanTemplates,
   setFocusPlanPaused,
   startFocusPlan,
   setTrackingPaused,
@@ -87,10 +92,16 @@ export function Dashboard() {
   const [dismissedBlockStart, setDismissedBlockStart] = useState<number | null>(null);
   const [focusMode, setFocusModeStatus] = useState<FocusModeStatus | null>(null);
   const [focusPlanMinutes, setFocusPlanMinutes] = useState(50);
+  const [focusTemplates, setFocusTemplates] = useState<FocusPlanTemplate[]>([]);
+  const [templateName, setTemplateName] = useState("");
+  const [templateMinutes, setTemplateMinutes] = useState(50);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [templateError, setTemplateError] = useState<string | null>(null);
   const [, setClockRevision] = useState(0);
 
   useEffect(() => {
     void getFocusMode().then(setFocusModeStatus);
+    void getFocusPlanTemplates().then(setFocusTemplates);
     const unlisten = listen<FocusModeStatus>("focus-mode-changed", (event) => {
       setFocusModeStatus(event.payload);
     });
@@ -162,6 +173,7 @@ export function Dashboard() {
           </button>
         </div>
       )}
+      {templateError && <div className="error-banner" role="alert">{templateError}</div>}
 
       {showBreakReminder && currentFocusBlock && (
         <div className="break-reminder" role="status">
@@ -249,6 +261,35 @@ export function Dashboard() {
               </>
             ) : (
               <>
+                <div className="focus-template-list" aria-label="Focus plan templates">
+                  {focusTemplates.map((template) => (
+                    <span key={template.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTemplateError(null);
+                          void startFocusPlan(template.durationMinutes)
+                            .then(setFocusModeStatus)
+                            .catch((reason) => setTemplateError(errorMessage(reason)));
+                        }}
+                      >
+                        {template.name} · {template.durationMinutes}m
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${template.name} template`}
+                        onClick={() => {
+                          setTemplateError(null);
+                          void deleteFocusPlanTemplate(template.id).then(() => {
+                            setFocusTemplates((current) => current.filter((item) => item.id !== template.id));
+                          }).catch((reason) => setTemplateError(errorMessage(reason)));
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </span>
+                  ))}
+                </div>
                 <select
                   value={focusPlanMinutes}
                   aria-label="Focus plan duration"
@@ -265,6 +306,44 @@ export function Dashboard() {
                 >
                   Start focus plan
                 </button>
+                <button type="button" onClick={() => setTemplateOpen((open) => !open)}>
+                  {templateOpen ? "Close template editor" : "New template"}
+                </button>
+                {templateOpen && (
+                  <div className="focus-template-editor">
+                    <input
+                      value={templateName}
+                      maxLength={40}
+                      placeholder="Template name"
+                      aria-label="Template name"
+                      onChange={(event) => setTemplateName(event.currentTarget.value)}
+                    />
+                    <input
+                      type="number"
+                      min={5}
+                      max={240}
+                      value={templateMinutes}
+                      aria-label="Template duration in minutes"
+                      onChange={(event) => setTemplateMinutes(Number(event.currentTarget.value))}
+                    />
+                    <button
+                      type="button"
+                      disabled={!templateName.trim() || templateMinutes < 5 || templateMinutes > 240}
+                      onClick={() => {
+                        setTemplateError(null);
+                        void createFocusPlanTemplate(templateName, templateMinutes)
+                          .then((template) => {
+                            setFocusTemplates((current) => [...current, template]);
+                            setTemplateName("");
+                            setTemplateOpen(false);
+                          })
+                          .catch((reason) => setTemplateError(errorMessage(reason)));
+                      }}
+                    >
+                      Save template
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </div>

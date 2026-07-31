@@ -1,7 +1,10 @@
 use chrono::NaiveDate;
-use tauri::State;
+use std::fs;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::{
+    database::ActivityRepository,
     error::AppError,
     statistics::{
         AppUsage, CategoryUsage, DailyUsage, FocusSummary, ProductivityReport, StatisticsService,
@@ -82,6 +85,88 @@ pub async fn get_productivity_report(
 }
 
 #[tauri::command]
+pub async fn export_productivity_report_csv(
+    range_start_ms: i64,
+    range_end_ms: i64,
+    app: AppHandle,
+    statistics: State<'_, StatisticsService>,
+    repository: State<'_, ActivityRepository>,
+) -> Result<Option<String>, String> {
+    let range = TimeRange::new(range_start_ms, range_end_ms).map_err(|error| error.to_string())?;
+    let statistics = statistics.inner().clone();
+    let repository = repository.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let report = statistics
+            .productivity_report(range)
+            .map_err(|error| error.to_string())?;
+        let mut csv = "section,label,active_duration_ms,idle_duration_ms,value\n".to_owned();
+        csv.push_str(&format!(
+            "summary,total,{},{},\n",
+            report.active_duration_ms, report.idle_duration_ms
+        ));
+        for day in report.daily_usage {
+            csv.push_str(&format!(
+                "daily,{},{},{},\n",
+                csv_field(&day.date),
+                day.active_duration_ms,
+                day.idle_duration_ms
+            ));
+        }
+        for hour in report.hourly_usage {
+            csv.push_str(&format!(
+                "hourly,{:02}:00,{},0,\n",
+                hour.hour, hour.active_duration_ms
+            ));
+        }
+        for category in report.category_usage {
+            csv.push_str(&format!(
+                "category,{},0,0,{}\n",
+                csv_field(&category.category),
+                category.duration_ms
+            ));
+        }
+        for plan in repository
+            .focus_plan_history(range.start_ms, range.end_ms)
+            .map_err(|error| error.to_string())?
+        {
+            let actual_duration_ms = plan
+                .ended_at_ms
+                .saturating_sub(plan.started_at_ms)
+                .saturating_sub(plan.paused_duration_ms)
+                .max(0);
+            let planned_duration_ms = plan
+                .planned_end_at_ms
+                .map(|end| end.saturating_sub(plan.started_at_ms).max(0))
+                .unwrap_or_default();
+            csv.push_str(&format!(
+                "focus_plan,{},{},{},{}\n",
+                csv_field(&plan.outcome),
+                actual_duration_ms,
+                plan.paused_duration_ms.max(0),
+                planned_duration_ms
+            ));
+        }
+        let destination = app
+            .dialog()
+            .file()
+            .set_file_name("watchhouse-report.csv")
+            .add_filter("CSV", &["csv"])
+            .blocking_save_file();
+        let Some(path) = destination.and_then(|path| path.into_path().ok()) else {
+            return Ok(None);
+        };
+        fs::write(&path, csv).map_err(|error| error.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn csv_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[tauri::command]
 pub async fn get_application_daily_usage(
     application_id: i64,
     range_start_ms: i64,
@@ -115,5 +200,10 @@ mod tests {
     fn rejects_ambiguous_display_date() {
         let error = parse_date("07/30/2026").expect_err("date should fail");
         assert_eq!(error.code, "INVALID_TIME_RANGE");
+    }
+
+    #[test]
+    fn csv_fields_escape_quotes() {
+        assert_eq!(csv_field("Work \"deep\""), "\"Work \"\"deep\"\"\"");
     }
 }

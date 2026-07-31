@@ -1,17 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
-import { formatDuration } from "../../lib/format";
+import { dateFromLocalIso, formatDuration, localIsoDate, shiftLocalDate } from "../../lib/format";
 import {
   ProductivityReport,
   FocusPlanHistorySummary,
   errorMessage,
+  exportProductivityReportCsv,
   getFocusPlanHistory,
   getProductivityReport,
   startFocusPlan,
 } from "../../lib/ipc";
 
-type ReportPeriod = "week" | "month";
+type ReportPeriod = "week" | "month" | "custom";
 
-function reportRange(period: ReportPeriod): { startMs: number; endMs: number } {
+function reportRange(
+  period: ReportPeriod,
+  customStart: string,
+  customEnd: string,
+): { startMs: number; endMs: number } {
+  if (period === "custom") {
+    const start = dateFromLocalIso(customStart);
+    start.setHours(0, 0, 0, 0);
+    const end = dateFromLocalIso(shiftLocalDate(customEnd, 1));
+    end.setHours(0, 0, 0, 0);
+    return {
+      startMs: start.getTime(),
+      endMs: end.getTime(),
+    };
+  }
   const now = new Date();
   const end = new Date(now);
   end.setHours(23, 59, 59, 999);
@@ -33,12 +48,18 @@ function comparison(current: number, previous: number): string {
 }
 
 export function Reports() {
+  const today = localIsoDate();
   const [period, setPeriod] = useState<ReportPeriod>("week");
+  const [customStart, setCustomStart] = useState(shiftLocalDate(today, -6));
+  const [customEnd, setCustomEnd] = useState(today);
   const [report, setReport] = useState<ProductivityReport | null>(null);
   const [focusHistory, setFocusHistory] = useState<FocusPlanHistorySummary | null>(null);
   const [focusMessage, setFocusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const range = useMemo(() => reportRange(period), [period]);
+  const range = useMemo(
+    () => reportRange(period, customStart, customEnd),
+    [customEnd, customStart, period],
+  );
 
   useEffect(() => {
     setError(null);
@@ -82,8 +103,49 @@ export function Reports() {
           <button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>
             This month
           </button>
+          <button className={period === "custom" ? "active" : ""} onClick={() => setPeriod("custom")}>
+            Custom
+          </button>
         </div>
       </header>
+
+      {period === "custom" && (
+        <div className="report-custom-range">
+          <label>
+            <span>From</span>
+            <input
+              type="date"
+              value={customStart}
+              max={customEnd}
+              onChange={(event) => {
+                if (event.currentTarget.value) setCustomStart(event.currentTarget.value);
+              }}
+            />
+          </label>
+          <label>
+            <span>To</span>
+            <input
+              type="date"
+              value={customEnd}
+              min={customStart}
+              max={today}
+              onChange={(event) => {
+                if (event.currentTarget.value) setCustomEnd(event.currentTarget.value);
+              }}
+            />
+          </label>
+        </div>
+      )}
+      <div className="report-actions">
+        <button type="button" onClick={() => {
+          setFocusMessage(null);
+          void exportProductivityReportCsv(range.startMs, range.endMs)
+            .then((path) => {
+              if (path) setFocusMessage(`Report saved to ${path}`);
+            })
+            .catch((reason) => setFocusMessage(errorMessage(reason)));
+        }}>Export CSV</button>
+      </div>
 
       {error && <div className="error-banner" role="alert">{error}</div>}
 

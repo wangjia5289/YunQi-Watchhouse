@@ -101,6 +101,28 @@ pub struct FocusPlanHistoryEntry {
     pub outcome: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusPlanTemplate {
+    pub id: i64,
+    pub name: String,
+    pub duration_minutes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataHealthSummary {
+    pub overlapping_session_count: i64,
+    pub zero_duration_session_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataHealthRepairResult {
+    pub trimmed_session_count: usize,
+    pub deleted_session_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistedFocusMode {
     pub active: bool,
@@ -392,6 +414,122 @@ impl ActivityRepository {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(entries)
+    }
+
+    pub fn focus_plan_templates(&self) -> AppResult<Vec<FocusPlanTemplate>> {
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, duration_minutes FROM focus_plan_templates
+             ORDER BY created_at_ms, id",
+        )?;
+        Ok(statement
+            .query_map([], |row| {
+                Ok(FocusPlanTemplate {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    duration_minutes: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn create_focus_plan_template(
+        &self,
+        name: &str,
+        duration_minutes: i64,
+    ) -> AppResult<FocusPlanTemplate> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 40 || !(5..=240).contains(&duration_minutes) {
+            return Err(AppError::InvalidSession(
+                "template name must be 1-40 characters and duration 5-240 minutes".to_owned(),
+            ));
+        }
+        let connection = self.database.lock()?;
+        let now = now_millis();
+        connection.execute(
+            "INSERT INTO focus_plan_templates(name, duration_minutes, created_at_ms, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?3)",
+            params![name, duration_minutes, now],
+        )?;
+        Ok(FocusPlanTemplate {
+            id: connection.last_insert_rowid(),
+            name: name.to_owned(),
+            duration_minutes,
+        })
+    }
+
+    pub fn delete_focus_plan_template(&self, id: i64) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        connection.execute("DELETE FROM focus_plan_templates WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn data_health_summary(&self) -> AppResult<DataHealthSummary> {
+        let connection = self.database.lock()?;
+        let overlapping_session_count = connection.query_row(
+            "SELECT COUNT(*) FROM activity_sessions current
+             WHERE current.is_open = 0 AND EXISTS (
+               SELECT 1 FROM activity_sessions next
+               WHERE next.is_open = 0 AND next.id != current.id
+                 AND next.started_at_ms < current.ended_at_ms
+                 AND next.ended_at_ms > current.started_at_ms
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        let zero_duration_session_count = connection.query_row(
+            "SELECT COUNT(*) FROM activity_sessions WHERE is_open = 0 AND duration_ms = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(DataHealthSummary {
+            overlapping_session_count,
+            zero_duration_session_count,
+        })
+    }
+
+    pub fn repair_data_health(&self) -> AppResult<DataHealthRepairResult> {
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let mut deleted_session_count = transaction.execute(
+            "DELETE FROM activity_sessions WHERE is_open = 0 AND duration_ms = 0",
+            [],
+        )?;
+        let mut statement = transaction.prepare(
+            "SELECT id, started_at_ms, ended_at_ms FROM activity_sessions
+             WHERE is_open = 0 ORDER BY started_at_ms, ended_at_ms, id",
+        )?;
+        let sessions = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let mut trimmed_session_count = 0;
+        for pair in sessions.windows(2) {
+            let (id, started_at_ms, ended_at_ms) = pair[0];
+            let next_start = pair[1].1;
+            if ended_at_ms > next_start && next_start > started_at_ms {
+                trimmed_session_count += transaction.execute(
+                    "UPDATE activity_sessions
+                     SET ended_at_ms = ?2, duration_ms = ?2 - started_at_ms, updated_at_ms = ?2
+                     WHERE id = ?1",
+                    params![id, next_start],
+                )?;
+            } else if ended_at_ms > next_start {
+                deleted_session_count +=
+                    transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [id])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(DataHealthRepairResult {
+            trimmed_session_count,
+            deleted_session_count,
+        })
     }
 
     pub fn update_settings(&self, settings: &Settings, updated_at_ms: i64) -> AppResult<Settings> {
@@ -1665,6 +1803,56 @@ mod tests {
                 .expect("filtered history should load")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn focus_plan_templates_can_be_created_and_deleted() {
+        let repository = repository();
+        assert_eq!(repository.focus_plan_templates().unwrap().len(), 2);
+        let template = repository
+            .create_focus_plan_template("Writing", 75)
+            .unwrap();
+        assert_eq!(template.name, "Writing");
+        assert_eq!(template.duration_minutes, 75);
+        repository.delete_focus_plan_template(template.id).unwrap();
+        assert_eq!(repository.focus_plan_templates().unwrap().len(), 2);
+        assert!(repository.create_focus_plan_template("", 4).is_err());
+    }
+
+    #[test]
+    fn data_health_repair_trims_overlaps_and_removes_zero_duration_sessions() {
+        let repository = repository();
+        {
+            let connection = repository.database.lock().unwrap();
+            for (start, end) in [(100, 300), (200, 400), (500, 500)] {
+                connection
+                    .execute(
+                        "INSERT INTO activity_sessions (
+                           state, application_id, started_at_ms, ended_at_ms, duration_ms,
+                           is_open, closed_reason, created_at_ms, updated_at_ms
+                         ) VALUES ('IDLE', NULL, ?1, ?2, ?2 - ?1, 0, 'BECAME_ACTIVE', ?1, ?2)",
+                        params![start, end],
+                    )
+                    .unwrap();
+            }
+        }
+        let summary = repository.data_health_summary().unwrap();
+        assert!(summary.overlapping_session_count >= 2);
+        assert_eq!(summary.zero_duration_session_count, 1);
+
+        let repaired = repository.repair_data_health().unwrap();
+        assert_eq!(repaired.trimmed_session_count, 1);
+        assert_eq!(repaired.deleted_session_count, 1);
+        let sessions = repository.records_overlapping(0, 600).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].session.ended_at_ms, 200);
+        assert_eq!(
+            repository.data_health_summary().unwrap(),
+            DataHealthSummary {
+                overlapping_session_count: 0,
+                zero_duration_session_count: 0,
+            }
         );
     }
 
