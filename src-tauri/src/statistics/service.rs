@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use chrono::{Local, LocalResult, NaiveDate, NaiveTime, TimeZone};
+use chrono::{Local, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -105,6 +105,26 @@ pub struct DailyUsage {
     pub date: String,
     pub active_duration_ms: i64,
     pub idle_duration_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HourlyUsage {
+    pub hour: u32,
+    pub active_duration_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductivityReport {
+    pub range: TimeRange,
+    pub active_duration_ms: i64,
+    pub idle_duration_ms: i64,
+    pub previous_active_duration_ms: i64,
+    pub previous_idle_duration_ms: i64,
+    pub daily_usage: Vec<DailyUsage>,
+    pub hourly_usage: Vec<HourlyUsage>,
+    pub category_usage: Vec<CategoryUsage>,
 }
 
 #[derive(Clone)]
@@ -412,6 +432,71 @@ impl StatisticsService {
             .collect())
     }
 
+    pub fn productivity_report(&self, range: TimeRange) -> AppResult<ProductivityReport> {
+        let duration = range.end_ms - range.start_ms;
+        let previous = TimeRange::new(range.start_ms.saturating_sub(duration), range.start_ms)?;
+        let timeline = self.timeline(range)?;
+        let previous_timeline = self.timeline(previous)?;
+        let mut hourly = [0_i64; 24];
+        let mut active_duration_ms = 0;
+        let mut idle_duration_ms = 0;
+
+        for entry in &timeline {
+            match entry.state {
+                ActivityState::Active => {
+                    active_duration_ms += entry.duration_ms;
+                    let mut cursor = entry.started_at_ms;
+                    while cursor < entry.ended_at_ms {
+                        let local = Local.timestamp_millis_opt(cursor).single().ok_or_else(|| {
+                            AppError::InvalidTimeRange(
+                                "timestamp cannot be represented locally".to_owned(),
+                            )
+                        })?;
+                        let hour = local.hour() as usize;
+                        let next_hour = local
+                            .with_minute(0)
+                            .and_then(|value| value.with_second(0))
+                            .and_then(|value| value.with_nanosecond(0))
+                            .map(|value| value.timestamp_millis().saturating_add(3_600_000))
+                            .unwrap_or(entry.ended_at_ms);
+                        let segment_end = entry.ended_at_ms.min(next_hour);
+                        hourly[hour] += segment_end.saturating_sub(cursor);
+                        cursor = segment_end;
+                    }
+                }
+                ActivityState::Idle => idle_duration_ms += entry.duration_ms,
+            }
+        }
+        let previous_active_duration_ms = previous_timeline
+            .iter()
+            .filter(|entry| entry.state == ActivityState::Active)
+            .map(|entry| entry.duration_ms)
+            .sum();
+        let previous_idle_duration_ms = previous_timeline
+            .iter()
+            .filter(|entry| entry.state == ActivityState::Idle)
+            .map(|entry| entry.duration_ms)
+            .sum();
+
+        Ok(ProductivityReport {
+            range,
+            active_duration_ms,
+            idle_duration_ms,
+            previous_active_duration_ms,
+            previous_idle_duration_ms,
+            daily_usage: self.daily_usage(range)?,
+            hourly_usage: hourly
+                .into_iter()
+                .enumerate()
+                .map(|(hour, active_duration_ms)| HourlyUsage {
+                    hour: hour as u32,
+                    active_duration_ms,
+                })
+                .collect(),
+            category_usage: self.category_usage(range)?,
+        })
+    }
+
     pub fn application_daily_usage(
         &self,
         application_id: i64,
@@ -600,6 +685,34 @@ mod tests {
             .expect("usage should succeed");
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].duration_ms, 250);
+    }
+
+    #[test]
+    fn productivity_report_compares_the_previous_equal_range() {
+        let (service, repository, application_id) = setup();
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            0,
+            50,
+        );
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            100,
+            200,
+        );
+        store_session(&repository, ActivityState::Idle, None, 200, 250);
+
+        let report = service
+            .productivity_report(TimeRange::new(100, 300).unwrap())
+            .unwrap();
+        assert_eq!(report.active_duration_ms, 100);
+        assert_eq!(report.idle_duration_ms, 50);
+        assert_eq!(report.previous_active_duration_ms, 50);
+        assert_eq!(report.hourly_usage.len(), 24);
     }
 
     #[test]

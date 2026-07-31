@@ -71,6 +71,10 @@ export interface FocusSummary {
 export interface FocusModeStatus {
   active: boolean;
   startedAtMs: number | null;
+  plannedEndAtMs: number | null;
+  paused: boolean;
+  pausedAtMs: number | null;
+  totalPausedMs: number;
 }
 
 export interface TimelineEntry {
@@ -114,6 +118,17 @@ export interface DailyUsage {
   date: string;
   activeDurationMs: number;
   idleDurationMs: number;
+}
+
+export interface ProductivityReport {
+  range: TimeRange;
+  activeDurationMs: number;
+  idleDurationMs: number;
+  previousActiveDurationMs: number;
+  previousIdleDurationMs: number;
+  dailyUsage: DailyUsage[];
+  hourlyUsage: { hour: number; activeDurationMs: number }[];
+  categoryUsage: CategoryUsage[];
 }
 
 export interface Settings {
@@ -192,6 +207,18 @@ export function setFocusMode(active: boolean): Promise<FocusModeStatus> {
   return invoke("set_focus_mode", { active });
 }
 
+export function startFocusPlan(durationMinutes: number | null): Promise<FocusModeStatus> {
+  return invoke("start_focus_plan", { durationMinutes });
+}
+
+export function setFocusPlanPaused(paused: boolean): Promise<FocusModeStatus> {
+  return invoke("set_focus_plan_paused", { paused });
+}
+
+export function endFocusPlan(completed = false): Promise<FocusModeStatus> {
+  return invoke("end_focus_plan", { completed });
+}
+
 export function getTimeline(date: string): Promise<TimelineEntry[]> {
   return invoke("get_timeline", { date });
 }
@@ -227,6 +254,13 @@ export function mergeTimelineSessions(sessionIds: number[]): Promise<TimelineMut
   return invoke("merge_timeline_sessions", { sessionIds });
 }
 
+export function splitTimelineSession(
+  sessionId: number,
+  splitAtMs: number,
+): Promise<TimelineMutationResult> {
+  return invoke("split_timeline_session", { sessionId, splitAtMs });
+}
+
 export function updateTimelineSessionNotes(
   sessionIds: number[],
   note: string | null,
@@ -243,6 +277,10 @@ export function updateTimelineSessionCategories(
 
 export function undoTimelineEdit(undoToken: string): Promise<number> {
   return invoke("undo_timeline_edit", { undoToken });
+}
+
+export function getTimelineUndoTokens(): Promise<string[]> {
+  return invoke("get_timeline_undo_tokens");
 }
 
 export function previewActivityImport(
@@ -324,6 +362,13 @@ export function getDailyUsage(
   rangeEndMs: number,
 ): Promise<DailyUsage[]> {
   return invoke("get_daily_usage", { rangeStartMs, rangeEndMs });
+}
+
+export function getProductivityReport(
+  rangeStartMs: number,
+  rangeEndMs: number,
+): Promise<ProductivityReport> {
+  return invoke("get_productivity_report", { rangeStartMs, rangeEndMs });
 }
 
 export function getApplicationDailyUsage(

@@ -5,6 +5,7 @@ import { Timeline } from "./features/timeline/Timeline";
 import { Applications } from "./features/applications/Applications";
 import { History } from "./features/history/History";
 import { Settings } from "./features/settings/Settings";
+import { Reports } from "./features/reports/Reports";
 import {
   CurrentActivity,
   errorMessage,
@@ -21,6 +22,7 @@ const navigation = [
   { label: "Timeline", icon: "timeline", page: "timeline", enabled: true },
   { label: "Applications", icon: "apps", page: "applications", enabled: true },
   { label: "History", icon: "history", page: "history", enabled: true },
+  { label: "Reports", icon: "reports", page: "reports", enabled: true },
 ] as const;
 
 type Page = (typeof navigation)[number]["page"] | "settings";
@@ -38,6 +40,7 @@ function NavIcon({ name }: { name: string }) {
       </>
     ),
     history: <path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.6M4 4v4.6h4.6M12 7.5V12l3 2" />,
+    reports: <path d="M5 19V9M12 19V5M19 19v-7M3 19h18" />,
     settings: (
       <>
         <circle cx="12" cy="12" r="3" />
@@ -156,6 +159,7 @@ function App() {
         {page === "timeline" && <Timeline />}
         {page === "applications" && <Applications />}
         {page === "history" && <History />}
+        {page === "reports" && <Reports />}
         {page === "settings" && <Settings />}
       </main>
     </div>

@@ -5,6 +5,10 @@ use std::sync::{Arc, Mutex};
 pub struct FocusModeStatus {
     pub active: bool,
     pub started_at_ms: Option<i64>,
+    pub planned_end_at_ms: Option<i64>,
+    pub paused: bool,
+    pub paused_at_ms: Option<i64>,
+    pub total_paused_ms: i64,
 }
 
 #[derive(Default)]
@@ -17,11 +21,22 @@ struct FocusModeRuntime {
 pub struct FocusModeState(Arc<Mutex<FocusModeRuntime>>);
 
 impl FocusModeState {
-    pub fn new(active: bool, started_at_ms: Option<i64>) -> Self {
+    pub fn new(
+        active: bool,
+        started_at_ms: Option<i64>,
+        planned_end_at_ms: Option<i64>,
+        paused: bool,
+        paused_at_ms: Option<i64>,
+        total_paused_ms: i64,
+    ) -> Self {
         Self(Arc::new(Mutex::new(FocusModeRuntime {
             status: FocusModeStatus {
                 active,
                 started_at_ms: active.then_some(started_at_ms).flatten(),
+                planned_end_at_ms: active.then_some(planned_end_at_ms).flatten(),
+                paused: active && paused,
+                paused_at_ms: (active && paused).then_some(paused_at_ms).flatten(),
+                total_paused_ms: if active { total_paused_ms } else { 0 },
             },
             last_reminded_interval: 0,
         })))
@@ -34,21 +49,76 @@ impl FocusModeState {
             .unwrap_or_default()
     }
 
-    pub fn set_active(&self, active: bool, now_ms: i64) -> FocusModeStatus {
+    pub fn start(&self, now_ms: i64, planned_end_at_ms: Option<i64>) -> FocusModeStatus {
         let Ok(mut runtime) = self.0.lock() else {
             return FocusModeStatus::default();
         };
-        runtime.status.active = active;
-        runtime.status.started_at_ms = active.then_some(now_ms);
+        runtime.status = FocusModeStatus {
+            active: true,
+            started_at_ms: Some(now_ms),
+            planned_end_at_ms,
+            paused: false,
+            paused_at_ms: None,
+            total_paused_ms: 0,
+        };
         runtime.last_reminded_interval = 0;
         runtime.status.clone()
+    }
+
+    pub fn end(&self) -> FocusModeStatus {
+        let Ok(mut runtime) = self.0.lock() else {
+            return FocusModeStatus::default();
+        };
+        runtime.status = FocusModeStatus::default();
+        runtime.last_reminded_interval = 0;
+        runtime.status.clone()
+    }
+
+    pub fn set_paused(&self, paused: bool, now_ms: i64) -> FocusModeStatus {
+        let Ok(mut runtime) = self.0.lock() else {
+            return FocusModeStatus::default();
+        };
+        if !runtime.status.active || runtime.status.paused == paused {
+            return runtime.status.clone();
+        }
+        if paused {
+            runtime.status.paused = true;
+            runtime.status.paused_at_ms = Some(now_ms);
+        } else {
+            let paused_duration = runtime
+                .status
+                .paused_at_ms
+                .map(|started| now_ms.saturating_sub(started))
+                .unwrap_or_default();
+            runtime.status.total_paused_ms = runtime
+                .status
+                .total_paused_ms
+                .saturating_add(paused_duration);
+            runtime.status.planned_end_at_ms = runtime
+                .status
+                .planned_end_at_ms
+                .map(|end| end.saturating_add(paused_duration));
+            runtime.status.paused = false;
+            runtime.status.paused_at_ms = None;
+        }
+        runtime.status.clone()
+    }
+
+    pub fn is_due(&self, now_ms: i64) -> bool {
+        let status = self.snapshot();
+        status.active
+            && !status.paused
+            && status.planned_end_at_ms.is_some_and(|end| now_ms >= end)
     }
 
     pub fn should_send_break_reminder(&self, now_ms: i64, interval_minutes: i64) -> bool {
         let Ok(mut runtime) = self.0.lock() else {
             return false;
         };
-        let Some(started_at_ms) = runtime.status.started_at_ms.filter(|_| runtime.status.active)
+        let Some(started_at_ms) = runtime
+            .status
+            .started_at_ms
+            .filter(|_| runtime.status.active && !runtime.status.paused)
         else {
             return false;
         };
@@ -56,7 +126,10 @@ impl FocusModeState {
         if interval_ms <= 0 {
             return false;
         }
-        let milestone = now_ms.saturating_sub(started_at_ms) / interval_ms;
+        let elapsed_ms = now_ms
+            .saturating_sub(started_at_ms)
+            .saturating_sub(runtime.status.total_paused_ms);
+        let milestone = elapsed_ms / interval_ms;
         if milestone < 1 || milestone <= runtime.last_reminded_interval {
             return false;
         }
@@ -82,11 +155,22 @@ mod tests {
 
     #[test]
     fn reminders_fire_once_per_elapsed_interval() {
-        let state = FocusModeState::new(true, Some(1_000));
+        let state = FocusModeState::new(true, Some(1_000), None, false, None, 0);
         assert!(!state.should_send_break_reminder(60_999, 1));
         assert!(state.should_send_break_reminder(61_000, 1));
         assert!(!state.should_send_break_reminder(90_000, 1));
         assert!(state.should_send_break_reminder(121_000, 1));
+    }
+
+    #[test]
+    fn resuming_extends_the_planned_end_by_the_pause_duration() {
+        let state = FocusModeState::new(true, Some(1_000), Some(61_000), false, None, 0);
+        state.set_paused(true, 11_000);
+        let status = state.set_paused(false, 21_000);
+        assert_eq!(status.planned_end_at_ms, Some(71_000));
+        assert_eq!(status.total_paused_ms, 10_000);
+        assert!(!state.should_send_break_reminder(61_000, 1));
+        assert!(state.should_send_break_reminder(71_000, 1));
     }
 
     #[test]

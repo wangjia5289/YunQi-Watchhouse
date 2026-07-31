@@ -51,12 +51,16 @@ pub fn run() {
             let repository = database::ActivityRepository::new(database);
             repository.recover_open_session()?;
             let settings = repository.settings()?;
-            let (focus_active, focus_started_at_ms) = repository.focus_mode_status()?;
+            let persisted_focus = repository.focus_mode_status()?;
             app.manage(statistics::StatisticsService::new(repository.clone()));
             app.manage(repository);
             app.manage(focus::FocusModeState::new(
-                focus_active,
-                focus_started_at_ms,
+                persisted_focus.active,
+                persisted_focus.started_at_ms,
+                persisted_focus.planned_end_at_ms,
+                persisted_focus.paused,
+                persisted_focus.paused_at_ms,
+                persisted_focus.total_paused_ms,
             ));
 
             let reminder_repository =
@@ -70,6 +74,49 @@ pub fn run() {
                     let Ok(settings) = reminder_repository.settings() else {
                         continue;
                     };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as i64)
+                        .unwrap_or_default();
+                    if reminder_state.is_due(now_ms) {
+                        let current = reminder_state.snapshot();
+                        if let Some(started_at_ms) = current.started_at_ms {
+                            let _ = reminder_repository.record_focus_plan_outcome(
+                                started_at_ms,
+                                current.planned_end_at_ms,
+                                now_ms,
+                                current.total_paused_ms,
+                                true,
+                            );
+                        }
+                        if reminder_repository
+                            .update_focus_mode(
+                                &database::PersistedFocusMode {
+                                    active: false,
+                                    started_at_ms: None,
+                                    planned_end_at_ms: None,
+                                    paused: false,
+                                    paused_at_ms: None,
+                                    total_paused_ms: 0,
+                                },
+                                now_ms,
+                            )
+                            .is_ok()
+                        {
+                            let next = reminder_state.end();
+                            let _ = reminder_app.emit("focus-mode-changed", &next);
+                            if let Some(item) = reminder_app.try_state::<FocusTrayMenuItem>() {
+                                let _ = item.0.set_text("Start Focus Mode");
+                            }
+                            let _ = reminder_app
+                                .notification()
+                                .builder()
+                                .title("Focus plan complete")
+                                .body("Your planned focus session is complete.")
+                                .show();
+                        }
+                        continue;
+                    }
                     if !settings.break_reminders_enabled {
                         continue;
                     }
@@ -81,10 +128,6 @@ pub fn run() {
                     ) {
                         continue;
                     }
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|duration| duration.as_millis() as i64)
-                        .unwrap_or_default();
                     if reminder_state.should_send_break_reminder(
                         now_ms,
                         settings.break_reminder_minutes,
@@ -201,7 +244,7 @@ pub fn run() {
             let focus = MenuItem::with_id(
                 app,
                 "focus",
-                if focus_active {
+                if persisted_focus.active {
                     "End Focus Mode"
                 } else {
                     "Start Focus Mode"
@@ -246,19 +289,47 @@ pub fn run() {
                     }
                     "focus" => {
                         let state = app.state::<focus::FocusModeState>();
-                        let active = !state.snapshot().active;
+                        let current = state.snapshot();
+                        let active = !current.active;
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|duration| duration.as_millis() as i64)
                             .unwrap_or_default();
                         if let Err(error) = app
                             .state::<database::ActivityRepository>()
-                            .update_focus_mode(active, active.then_some(now_ms), now_ms)
+                            .update_focus_mode(
+                                &database::PersistedFocusMode {
+                                    active,
+                                    started_at_ms: active.then_some(now_ms),
+                                    planned_end_at_ms: None,
+                                    paused: false,
+                                    paused_at_ms: None,
+                                    total_paused_ms: 0,
+                                },
+                                now_ms,
+                            )
                         {
                             log::error!("could not persist focus mode state: {error}");
                             return;
                         }
-                        let status = state.set_active(active, now_ms);
+                        if !active
+                            && let Some(started_at_ms) = current.started_at_ms
+                        {
+                            let _ = app
+                                .state::<database::ActivityRepository>()
+                                .record_focus_plan_outcome(
+                                    started_at_ms,
+                                    current.planned_end_at_ms,
+                                    now_ms,
+                                    current.total_paused_ms,
+                                    false,
+                                );
+                        }
+                        let status = if active {
+                            state.start(now_ms, None)
+                        } else {
+                            state.end()
+                        };
                         let _ = app.state::<FocusTrayMenuItem>().0.set_text(if active {
                             "End Focus Mode"
                         } else {
@@ -287,6 +358,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::focus::get_focus_mode,
             commands::focus::set_focus_mode,
+            commands::focus::start_focus_plan,
+            commands::focus::set_focus_plan_paused,
+            commands::focus::end_focus_plan,
             commands::activity::get_current_activity,
             commands::activity::set_tracking_paused,
             commands::applications::get_application_icon,
@@ -298,13 +372,16 @@ pub fn run() {
             commands::statistics::get_app_usage,
             commands::statistics::get_category_usage,
             commands::statistics::get_daily_usage,
+            commands::statistics::get_productivity_report,
             commands::statistics::get_application_daily_usage,
             commands::timeline::delete_timeline_session,
             commands::timeline::delete_timeline_sessions,
             commands::timeline::merge_timeline_sessions,
+            commands::timeline::split_timeline_session,
             commands::timeline::update_timeline_session_notes,
             commands::timeline::update_timeline_session_categories,
             commands::timeline::undo_timeline_edit,
+            commands::timeline::get_timeline_undo_tokens,
             commands::timeline::update_timeline_session,
             commands::timeline::preview_activity_import,
             commands::timeline::import_activity,

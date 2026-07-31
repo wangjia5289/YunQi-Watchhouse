@@ -4,8 +4,10 @@ import { formatClock, formatDuration, formatLongDate } from "../../lib/format";
 import {
   FocusModeStatus,
   TimelineEntry,
+  endFocusPlan,
   getFocusMode,
-  setFocusMode,
+  setFocusPlanPaused,
+  startFocusPlan,
   setTrackingPaused,
 } from "../../lib/ipc";
 import { useDashboard } from "./useDashboard";
@@ -84,6 +86,7 @@ export function Dashboard() {
   const { summary, timeline, current, focus, loading, error, refresh } = useDashboard();
   const [dismissedBlockStart, setDismissedBlockStart] = useState<number | null>(null);
   const [focusMode, setFocusModeStatus] = useState<FocusModeStatus | null>(null);
+  const [focusPlanMinutes, setFocusPlanMinutes] = useState(50);
   const [, setClockRevision] = useState(0);
 
   useEffect(() => {
@@ -213,15 +216,58 @@ export function Dashboard() {
             <span>Daily goal</span>
             <strong>{focus.goalMinutes ? `${Math.round(focusProgress)}%` : "Off"}</strong>
           </article>
-          <button
-            type="button"
-            className={`focus-mode-button${focusMode?.active ? " active" : ""}`}
-            onClick={() => void setFocusMode(!focusMode?.active).then(setFocusModeStatus)}
-          >
-            {focusMode?.active
-              ? `End focus · ${formatDuration(Date.now() - (focusMode.startedAtMs ?? Date.now()))}`
-              : "Start focus mode"}
-          </button>
+          <div className="focus-plan-controls">
+            {focusMode?.active ? (
+              <>
+                <div>
+                  <strong>
+                    {focusMode.paused
+                      ? "Focus paused"
+                      : focusMode.plannedEndAtMs
+                        ? `${formatDuration(Math.max(0, focusMode.plannedEndAtMs - Date.now()))} remaining`
+                        : `Focused ${formatDuration(Date.now() - (focusMode.startedAtMs ?? Date.now()))}`}
+                  </strong>
+                  <small>
+                    {focusMode.plannedEndAtMs
+                      ? `Planned until ${formatClock(focusMode.plannedEndAtMs)}`
+                      : "Open-ended focus mode"}
+                  </small>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void setFocusPlanPaused(!focusMode.paused).then(setFocusModeStatus)}
+                >
+                  {focusMode.paused ? "Resume" : "Pause"}
+                </button>
+                <button
+                  type="button"
+                  className="focus-plan-end"
+                  onClick={() => void endFocusPlan(false).then(setFocusModeStatus)}
+                >
+                  End
+                </button>
+              </>
+            ) : (
+              <>
+                <select
+                  value={focusPlanMinutes}
+                  aria-label="Focus plan duration"
+                  onChange={(event) => setFocusPlanMinutes(Number(event.currentTarget.value))}
+                >
+                  {[25, 45, 50, 60, 90, 120].map((minutes) => (
+                    <option value={minutes} key={minutes}>{minutes} minutes</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="focus-mode-button"
+                  onClick={() => void startFocusPlan(focusPlanMinutes).then(setFocusModeStatus)}
+                >
+                  Start focus plan
+                </button>
+              </>
+            )}
+          </div>
         </section>
       )}
 

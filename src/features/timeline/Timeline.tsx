@@ -12,10 +12,12 @@ import {
   deleteTimelineSession,
   deleteTimelineSessions,
   errorMessage,
+  getTimelineUndoTokens,
   importActivity,
   ImportPreview,
   mergeTimelineSessions,
   previewActivityImport,
+  splitTimelineSession,
   undoTimelineEdit,
   updateTimelineSessionCategories,
   updateTimelineSessionNotes,
@@ -141,12 +143,14 @@ export function Timeline() {
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<"ALL" | ActivityState>("ALL");
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [splittingId, setSplittingId] = useState<number | null>(null);
+  const [splitAt, setSplitAt] = useState("");
   const [editStart, setEditStart] = useState("");
   const [editEnd, setEditEnd] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(200);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [undoToken, setUndoToken] = useState<string | null>(null);
+  const [undoStack, setUndoStack] = useState<string[]>([]);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [actionDialog, setActionDialog] = useState<TimelineActionDialog | null>(null);
   const [dialogValue, setDialogValue] = useState("");
@@ -172,11 +176,14 @@ export function Timeline() {
     setVisibleCount(200);
     setSelectedIds(new Set());
   }, [date, query, stateFilter]);
+  useEffect(() => {
+    void getTimelineUndoTokens().then(setUndoStack).catch(() => {});
+  }, []);
   const selected = [...selectedIds];
 
   const completeMutation = (message: string, token?: string | null) => {
     setSelectedIds(new Set());
-    setUndoToken(token ?? null);
+    if (token) setUndoStack((current) => [...current, token]);
     setOperationMessage(message);
     notifyActivityDataChanged();
     refresh();
@@ -379,14 +386,14 @@ export function Timeline() {
       {operationMessage && (
         <div className="timeline-operation-message" role="status">
           <span>{operationMessage}</span>
-          {undoToken && <button type="button" onClick={() => void runOperation(async () => {
+          {undoStack.length > 0 && <button type="button" onClick={() => void runOperation(async () => {
+            const undoToken = undoStack[undoStack.length - 1];
             const restored = await undoTimelineEdit(undoToken);
-            setUndoToken(null);
-            completeMutation(`Restored ${restored} sessions.`);
-          })}>Undo</button>}
+            setUndoStack((current) => current.slice(0, -1));
+            completeMutation(`Restored ${restored} sessions. ${undoStack.length - 1} undo steps remain.`);
+          })}>Undo ({undoStack.length})</button>}
           <button type="button" aria-label="Dismiss message" onClick={() => {
             setOperationMessage(null);
-            setUndoToken(null);
           }}>Close</button>
         </div>
       )}
@@ -584,6 +591,19 @@ export function Timeline() {
                   >Edit</button>
                   <button
                     type="button"
+                    className="edit-session"
+                    aria-label={`Split ${name} session`}
+                    title="Split session"
+                    onClick={() => {
+                      setSplittingId(entry.sessionId);
+                      setSplitAt(toLocalDateTimeInput(
+                        entry.startedAtMs + Math.floor(entry.durationMs / 2),
+                      ));
+                      setEditError(null);
+                    }}
+                  >Split</button>
+                  <button
+                    type="button"
                     className="delete-session"
                     aria-label={`Delete ${name} session at ${formatClock(entry.startedAtMs)}`}
                     title="Delete session"
@@ -735,6 +755,46 @@ export function Timeline() {
               >
                 {actionDialog.kind === "delete" ? "Delete sessions" : "Apply changes"}
               </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {splittingId !== null && (
+        <div className="timeline-dialog-backdrop" role="presentation">
+          <section
+            className="timeline-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="split-session-title"
+          >
+            <div>
+              <p className="section-kicker">Session</p>
+              <h2 id="split-session-title">Split recorded session</h2>
+              <span>Create two adjacent sessions at the selected time.</span>
+            </div>
+            <label>
+              Split at
+              <input
+                type="datetime-local"
+                value={splitAt}
+                onChange={(event) => setSplitAt(event.currentTarget.value)}
+              />
+            </label>
+            <div className="timeline-dialog-actions">
+              <button type="button" onClick={() => setSplittingId(null)}>Cancel</button>
+              <button className="primary" type="button" onClick={() => {
+                const splitAtMs = new Date(splitAt).getTime();
+                if (!Number.isFinite(splitAtMs)) {
+                  setEditError("Choose a valid split time.");
+                  return;
+                }
+                void splitTimelineSession(splittingId, splitAtMs)
+                  .then((result) => {
+                    setSplittingId(null);
+                    completeMutation("Split session into two parts.", result.undoToken);
+                  })
+                  .catch((reason) => setEditError(errorMessage(reason)));
+              }}>Split session</button>
             </div>
           </section>
         </div>

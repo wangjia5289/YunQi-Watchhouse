@@ -54,6 +54,17 @@ pub fn merge_timeline_sessions(
 }
 
 #[tauri::command]
+pub fn split_timeline_session(
+    session_id: i64,
+    split_at_ms: i64,
+    repository: State<'_, ActivityRepository>,
+) -> Result<TimelineMutationResult, String> {
+    repository
+        .split_closed_session(session_id, split_at_ms)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn update_timeline_session_notes(
     session_ids: Vec<i64>,
     note: Option<String>,
@@ -82,6 +93,15 @@ pub fn undo_timeline_edit(
 ) -> Result<usize, String> {
     repository
         .undo_timeline_edit(&undo_token)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_timeline_undo_tokens(
+    repository: State<'_, ActivityRepository>,
+) -> Result<Vec<String>, String> {
+    repository
+        .timeline_undo_tokens()
         .map_err(|error| error.to_string())
 }
 

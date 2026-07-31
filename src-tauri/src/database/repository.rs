@@ -81,7 +81,23 @@ pub struct TimelineMutationResult {
     pub undo_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedFocusMode {
+    pub active: bool,
+    pub started_at_ms: Option<i64>,
+    pub planned_end_at_ms: Option<i64>,
+    pub paused: bool,
+    pub paused_at_ms: Option<i64>,
+    pub total_paused_ms: i64,
+}
+
 type OverlappingSession = (i64, String, Option<i64>, Option<String>, i64, i64);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TimelineUndoSnapshot {
+    sessions: Vec<ActivitySession>,
+    delete_session_ids: Vec<i64>,
+}
 
 #[derive(Clone)]
 pub struct ActivityRepository {
@@ -248,30 +264,82 @@ impl ActivityRepository {
             .map_err(Into::into)
     }
 
-    pub fn focus_mode_status(&self) -> AppResult<(bool, Option<i64>)> {
+    pub fn focus_mode_status(&self) -> AppResult<PersistedFocusMode> {
         let connection = self.database.lock()?;
         connection
             .query_row(
-                "SELECT focus_mode_active, focus_mode_started_at_ms
+                "SELECT focus_mode_active, focus_mode_started_at_ms,
+                        focus_plan_end_at_ms, focus_plan_paused,
+                        focus_plan_paused_at_ms, focus_plan_total_paused_ms
                  FROM settings WHERE singleton_id = 1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| {
+                    Ok(PersistedFocusMode {
+                        active: row.get(0)?,
+                        started_at_ms: row.get(1)?,
+                        planned_end_at_ms: row.get(2)?,
+                        paused: row.get(3)?,
+                        paused_at_ms: row.get(4)?,
+                        total_paused_ms: row.get(5)?,
+                    })
+                },
             )
             .map_err(Into::into)
     }
 
     pub fn update_focus_mode(
         &self,
-        active: bool,
-        started_at_ms: Option<i64>,
+        status: &PersistedFocusMode,
         updated_at_ms: i64,
     ) -> AppResult<()> {
         let connection = self.database.lock()?;
         connection.execute(
             "UPDATE settings
-             SET focus_mode_active = ?1, focus_mode_started_at_ms = ?2, updated_at_ms = ?3
+             SET focus_mode_active = ?1, focus_mode_started_at_ms = ?2,
+                 focus_plan_end_at_ms = ?3, focus_plan_paused = ?4,
+                 focus_plan_paused_at_ms = ?5, focus_plan_total_paused_ms = ?6,
+                 updated_at_ms = ?7
              WHERE singleton_id = 1",
-            params![active, active.then_some(started_at_ms).flatten(), updated_at_ms],
+            params![
+                status.active,
+                status.active.then_some(status.started_at_ms).flatten(),
+                status.active.then_some(status.planned_end_at_ms).flatten(),
+                status.active && status.paused,
+                (status.active && status.paused)
+                    .then_some(status.paused_at_ms)
+                    .flatten(),
+                if status.active {
+                    status.total_paused_ms
+                } else {
+                    0
+                },
+                updated_at_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_focus_plan_outcome(
+        &self,
+        started_at_ms: i64,
+        planned_end_at_ms: Option<i64>,
+        ended_at_ms: i64,
+        paused_duration_ms: i64,
+        completed: bool,
+    ) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        connection.execute(
+            "INSERT INTO focus_plan_history (
+                started_at_ms, planned_end_at_ms, ended_at_ms,
+                paused_duration_ms, outcome
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                started_at_ms,
+                planned_end_at_ms,
+                ended_at_ms,
+                paused_duration_ms,
+                if completed { "COMPLETED" } else { "CANCELLED" }
+            ],
         )?;
         Ok(())
     }
@@ -650,6 +718,71 @@ impl ActivityRepository {
         })
     }
 
+    pub fn split_closed_session(
+        &self,
+        session_id: i64,
+        split_at_ms: i64,
+    ) -> AppResult<TimelineMutationResult> {
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let original = find_session(&transaction, session_id)?
+            .ok_or(AppError::SessionNotFound(session_id))?;
+        if original.is_open {
+            return Err(AppError::InvalidSession(
+                "open sessions cannot be split".to_owned(),
+            ));
+        }
+        if split_at_ms <= original.started_at_ms || split_at_ms >= original.ended_at_ms {
+            return Err(AppError::InvalidSession(
+                "split time must be inside the session".to_owned(),
+            ));
+        }
+        transaction.execute(
+            "UPDATE activity_sessions
+             SET ended_at_ms = ?2, duration_ms = ?2 - started_at_ms, updated_at_ms = ?2
+             WHERE id = ?1",
+            params![session_id, split_at_ms],
+        )?;
+        transaction.execute(
+            "INSERT INTO activity_sessions (
+                state, application_id, window_title, started_at_ms, ended_at_ms,
+                duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?5 - ?4, 0, ?6, ?7, ?8, ?9)",
+            params![
+                original.state.as_db_str(),
+                original.application_id,
+                original.window_title.as_deref(),
+                split_at_ms,
+                original.ended_at_ms,
+                original.closed_reason.map(ClosedReason::as_db_str),
+                original.created_at_ms,
+                original.updated_at_ms,
+                original.note.as_deref(),
+            ],
+        )?;
+        let new_id = transaction.last_insert_rowid();
+        let token = format!("{}-{session_id}", now_millis());
+        let snapshot = TimelineUndoSnapshot {
+            sessions: vec![original],
+            delete_session_ids: vec![session_id, new_id],
+        };
+        transaction.execute(
+            "INSERT INTO timeline_undo(token, snapshot_json, created_at_ms) VALUES (?1, ?2, ?3)",
+            params![
+                token,
+                serde_json::to_string(&snapshot).map_err(|error| {
+                    AppError::InvalidSession(format!("could not create undo snapshot: {error}"))
+                })?,
+                now_millis()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(TimelineMutationResult {
+            affected_count: 2,
+            undo_token: Some(token),
+        })
+    }
+
     fn destructive_session_edit<F>(
         &self,
         session_ids: &[i64],
@@ -689,7 +822,11 @@ impl ActivityRepository {
             "INSERT INTO timeline_undo(token, snapshot_json, created_at_ms) VALUES (?1, ?2, ?3)",
             params![
                 token,
-                serde_json::to_string(&snapshot).map_err(|error| {
+                serde_json::to_string(&TimelineUndoSnapshot {
+                    sessions: snapshot,
+                    delete_session_ids: ids.clone(),
+                })
+                .map_err(|error| {
                     AppError::InvalidSession(format!("could not create undo snapshot: {error}"))
                 })?,
                 now_millis()
@@ -713,10 +850,19 @@ impl ActivityRepository {
             )
             .optional()?
             .ok_or_else(|| AppError::InvalidSession("undo is no longer available".to_owned()))?;
-        let sessions: Vec<ActivitySession> = serde_json::from_str(&snapshot_json)
-            .map_err(|error| AppError::InvalidSession(format!("invalid undo snapshot: {error}")))?;
-        for session in &sessions {
-            transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session.id])?;
+        let snapshot: TimelineUndoSnapshot = serde_json::from_str(&snapshot_json).or_else(|_| {
+            serde_json::from_str::<Vec<ActivitySession>>(&snapshot_json).map(|sessions| {
+                TimelineUndoSnapshot {
+                    delete_session_ids: sessions.iter().map(|session| session.id).collect(),
+                    sessions,
+                }
+            })
+        })
+        .map_err(|error| AppError::InvalidSession(format!("invalid undo snapshot: {error}")))?;
+        for session_id in &snapshot.delete_session_ids {
+            transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session_id])?;
+        }
+        for session in &snapshot.sessions {
             transaction.execute(
                 "INSERT INTO activity_sessions (
                     id, state, application_id, window_title, started_at_ms, ended_at_ms,
@@ -740,7 +886,23 @@ impl ActivityRepository {
         }
         transaction.execute("DELETE FROM timeline_undo WHERE token = ?1", [token])?;
         transaction.commit()?;
-        Ok(sessions.len())
+        Ok(snapshot.sessions.len())
+    }
+
+    pub fn timeline_undo_tokens(&self) -> AppResult<Vec<String>> {
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT token FROM timeline_undo
+             WHERE created_at_ms >= ?1
+             ORDER BY created_at_ms, token",
+        )?;
+        let tokens = statement
+            .query_map(
+                [now_millis().saturating_sub(24 * 60 * 60 * 1_000)],
+                |row| row.get(0),
+            )?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(tokens)
     }
 
     pub fn import_conflict_count(&self, records: &[ImportRecord]) -> AppResult<usize> {
@@ -1336,24 +1498,51 @@ mod tests {
         let repository = repository();
         assert_eq!(
             repository.focus_mode_status().expect("status should load"),
-            (false, None)
+            PersistedFocusMode {
+                active: false,
+                started_at_ms: None,
+                planned_end_at_ms: None,
+                paused: false,
+                paused_at_ms: None,
+                total_paused_ms: 0,
+            }
         );
 
         repository
-            .update_focus_mode(true, Some(1_234), 1_234)
+            .update_focus_mode(
+                &PersistedFocusMode {
+                    active: true,
+                    started_at_ms: Some(1_234),
+                    planned_end_at_ms: Some(61_234),
+                    paused: false,
+                    paused_at_ms: None,
+                    total_paused_ms: 0,
+                },
+                1_234,
+            )
             .expect("focus mode should start");
-        assert_eq!(
-            repository.focus_mode_status().expect("status should reload"),
-            (true, Some(1_234))
-        );
+        let active = repository.focus_mode_status().expect("status should reload");
+        assert!(active.active);
+        assert_eq!(active.started_at_ms, Some(1_234));
+        assert_eq!(active.planned_end_at_ms, Some(61_234));
 
         repository
-            .update_focus_mode(false, None, 2_345)
+            .update_focus_mode(
+                &PersistedFocusMode {
+                    active: false,
+                    started_at_ms: None,
+                    planned_end_at_ms: None,
+                    paused: false,
+                    paused_at_ms: None,
+                    total_paused_ms: 0,
+                },
+                2_345,
+            )
             .expect("focus mode should end");
-        assert_eq!(
-            repository.focus_mode_status().expect("status should reload"),
-            (false, None)
-        );
+        assert!(!repository
+            .focus_mode_status()
+            .expect("status should reload")
+            .active);
     }
 
     #[test]
@@ -1793,6 +1982,36 @@ mod tests {
             1
         );
         assert_eq!(repository.records_overlapping(0, 300).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn split_session_can_be_undone_without_leaving_the_new_half() {
+        let repository = repository();
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Idle,
+                application_id: None,
+                window_title: None,
+                started_at_ms: 100,
+            })
+            .unwrap();
+        repository
+            .close_session(session.id, 300, ClosedReason::BecameActive)
+            .unwrap();
+
+        let result = repository.split_closed_session(session.id, 200).unwrap();
+        let split = repository.records_overlapping(0, 400).unwrap();
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].session.ended_at_ms, 200);
+        assert_eq!(split[1].session.started_at_ms, 200);
+
+        repository
+            .undo_timeline_edit(result.undo_token.as_deref().unwrap())
+            .unwrap();
+        let restored = repository.records_overlapping(0, 400).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].session.started_at_ms, 100);
+        assert_eq!(restored[0].session.ended_at_ms, 300);
     }
 
     #[test]

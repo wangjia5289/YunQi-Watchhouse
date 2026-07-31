@@ -123,6 +123,33 @@ Validation:
 - The macOS application bundle was generated successfully.
 - Timeline layouts were visually checked at desktop and 375 px widths with no horizontal overflow.
 
+## Phase 6: Plans, Reports And Reversible Editing
+
+Status: Complete
+
+- [x] Add timed Focus Plans with pause, resume, early end, and completion notifications.
+- [x] Persist active plan state and completed or cancelled plan history.
+- [x] Add weekly and monthly reports with previous-period comparisons.
+- [x] Add daily trends, hourly activity heatmaps, and category allocation.
+- [x] Split closed timeline sessions at a validated timestamp.
+- [x] Preserve multiple undo steps and support reversible session splits.
+
+Decisions:
+
+- Reports are calculated from current session data so edits, imports, and category changes are
+  reflected immediately without maintaining duplicate aggregates.
+- Focus Plan pauses extend the planned end time by the exact paused duration.
+- Undo snapshots list both the sessions to restore and current session IDs to remove; legacy
+  snapshot arrays remain readable.
+
+Validation:
+
+- Frontend production build passed.
+- 66 Rust tests passed.
+- Clippy passed for all targets with warnings denied.
+- Reports layouts were visually checked at desktop and 375 px widths with no horizontal overflow.
+- The macOS application bundle was generated successfully.
+
 ## Known Environment Blocker
 
 Codex can modify workspace files but the current sandbox may reject writes to `.git`.
