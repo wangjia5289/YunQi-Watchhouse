@@ -50,6 +50,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 objc2-foundation = { version = "0.3", default-features = false, features = [
   "NSData",
   "NSDictionary",
+  "NSUserNotification",
   "NSString",
 ] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = [

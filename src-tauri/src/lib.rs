@@ -49,9 +49,50 @@ pub fn run() {
             let repository = database::ActivityRepository::new(database);
             repository.recover_open_session()?;
             let settings = repository.settings()?;
+            let (focus_active, focus_started_at_ms) = repository.focus_mode_status()?;
             app.manage(statistics::StatisticsService::new(repository.clone()));
             app.manage(repository);
-            app.manage(focus::FocusModeState::default());
+            app.manage(focus::FocusModeState::new(
+                focus_active,
+                focus_started_at_ms,
+            ));
+
+            let reminder_repository =
+                app.state::<database::ActivityRepository>().inner().clone();
+            let reminder_state = app.state::<focus::FocusModeState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    let Ok(settings) = reminder_repository.settings() else {
+                        continue;
+                    };
+                    if !settings.break_reminders_enabled {
+                        continue;
+                    }
+                    let local_time = chrono::Local::now().format("%H:%M").to_string();
+                    if focus::is_quiet_hours(
+                        &local_time,
+                        &settings.quiet_hours_start,
+                        &settings.quiet_hours_end,
+                    ) {
+                        continue;
+                    }
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as i64)
+                        .unwrap_or_default();
+                    if reminder_state.should_send_break_reminder(
+                        now_ms,
+                        settings.break_reminder_minutes,
+                    ) {
+                        #[cfg(target_os = "macos")]
+                        if let Err(error) = platform::show_break_notification() {
+                            log::warn!("could not show break notification: {error}");
+                        }
+                    }
+                }
+            });
 
             let maintenance_status = maintenance::MaintenanceStatusState::default();
             app.manage(maintenance_status.clone());
@@ -151,7 +192,17 @@ pub fn run() {
                 None::<&str>,
             )?;
             app.manage(TrackingTrayMenuItem(pause.clone()));
-            let focus = MenuItem::with_id(app, "focus", "Start Focus Mode", true, None::<&str>)?;
+            let focus = MenuItem::with_id(
+                app,
+                "focus",
+                if focus_active {
+                    "End Focus Mode"
+                } else {
+                    "Start Focus Mode"
+                },
+                true,
+                None::<&str>,
+            )?;
             app.manage(FocusTrayMenuItem(focus.clone()));
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &pause, &focus, &quit])?;
@@ -194,6 +245,13 @@ pub fn run() {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|duration| duration.as_millis() as i64)
                             .unwrap_or_default();
+                        if let Err(error) = app
+                            .state::<database::ActivityRepository>()
+                            .update_focus_mode(active, active.then_some(now_ms), now_ms)
+                        {
+                            log::error!("could not persist focus mode state: {error}");
+                            return;
+                        }
                         let status = state.set_active(active, now_ms);
                         let _ = app.state::<FocusTrayMenuItem>().0.set_text(if active {
                             "End Focus Mode"

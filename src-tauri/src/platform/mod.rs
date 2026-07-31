@@ -8,7 +8,10 @@ use crate::error::AppResult;
 mod macos;
 
 #[cfg(target_os = "macos")]
-pub use macos::{MacOsActivityProvider, application_icon_png, application_icon_revision};
+pub use macos::{
+    MacOsActivityProvider, application_icon_png, application_icon_revision,
+    show_break_notification,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

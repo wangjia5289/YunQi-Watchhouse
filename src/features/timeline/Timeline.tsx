@@ -72,6 +72,12 @@ interface HourSummary {
   applications: HourApplication[];
 }
 
+type TimelineActionDialog = {
+  kind: "note" | "category" | "delete";
+  sessionIds: number[];
+  label: string;
+};
+
 function summarizeByHour(entries: TimelineEntry[]): HourSummary[] {
   const groups = new Map<number, {
     activeDurationMs: number;
@@ -142,6 +148,8 @@ export function Timeline() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [undoToken, setUndoToken] = useState<string | null>(null);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
+  const [actionDialog, setActionDialog] = useState<TimelineActionDialog | null>(null);
+  const [dialogValue, setDialogValue] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [importContents, setImportContents] = useState("");
   const [importFormat, setImportFormat] = useState<"json" | "csv">("json");
@@ -181,6 +189,30 @@ export function Timeline() {
     } catch (reason) {
       setEditError(errorMessage(reason));
     }
+  };
+
+  const submitActionDialog = () => {
+    if (!actionDialog) return;
+    const { kind, sessionIds } = actionDialog;
+    if (kind === "category" && !dialogValue.trim()) {
+      setEditError("Enter an application category.");
+      return;
+    }
+    setActionDialog(null);
+    void runOperation(async () => {
+      if (kind === "note") {
+        const count = await updateTimelineSessionNotes(sessionIds, dialogValue.trim() || null);
+        completeMutation(`Updated notes on ${count} sessions.`);
+      } else if (kind === "category") {
+        const count = await updateTimelineSessionCategories(sessionIds, dialogValue.trim());
+        completeMutation(`Updated ${count} application categories.`);
+      } else {
+        const result = sessionIds.length === 1
+          ? await deleteTimelineSession(sessionIds[0])
+          : await deleteTimelineSessions(sessionIds);
+        completeMutation(`Deleted ${result.affectedCount} sessions.`, result.undoToken);
+      }
+    });
   };
   const dateValue = dateFromLocalIso(date);
   const isToday = date === today;
@@ -438,26 +470,26 @@ export function Timeline() {
                 completeMutation(`Merged ${result.affectedCount} sessions.`, result.undoToken);
               })}>Merge</button>
               <button type="button" onClick={() => {
-                const note = window.prompt("Note for selected sessions (leave empty to clear)");
-                if (note === null) return;
-                void runOperation(async () => {
-                  const count = await updateTimelineSessionNotes(selected, note || null);
-                  completeMutation(`Updated notes on ${count} sessions.`);
+                setDialogValue("");
+                setActionDialog({
+                  kind: "note",
+                  sessionIds: selected,
+                  label: `${selected.length} selected sessions`,
                 });
               }}>Note</button>
               <button type="button" onClick={() => {
-                const category = window.prompt("Application category");
-                if (!category) return;
-                void runOperation(async () => {
-                  const count = await updateTimelineSessionCategories(selected, category);
-                  completeMutation(`Updated ${count} application categories.`);
+                setDialogValue("");
+                setActionDialog({
+                  kind: "category",
+                  sessionIds: selected,
+                  label: `${selected.length} selected sessions`,
                 });
               }}>Category</button>
               <button className="danger" type="button" onClick={() => {
-                if (!window.confirm(`Delete ${selected.length} selected sessions?`)) return;
-                void runOperation(async () => {
-                  const result = await deleteTimelineSessions(selected);
-                  completeMutation(`Deleted ${result.affectedCount} sessions.`, result.undoToken);
+                setActionDialog({
+                  kind: "delete",
+                  sessionIds: selected,
+                  label: `${selected.length} selected sessions`,
                 });
               }}>Delete</button>
             </div>
@@ -535,39 +567,6 @@ export function Timeline() {
                   )}
                   {entry.note && <small className="session-note">{entry.note}</small>}
                 </div>
-                {editingId === entry.sessionId && (
-                  <div className="session-editor">
-                    <input
-                      type="datetime-local"
-                      value={editStart}
-                      onChange={(event) => setEditStart(event.currentTarget.value)}
-                      aria-label="Session start"
-                    />
-                    <input
-                      type="datetime-local"
-                      value={editEnd}
-                      onChange={(event) => setEditEnd(event.currentTarget.value)}
-                      aria-label="Session end"
-                    />
-                    <button type="button" onClick={() => {
-                      const startedAtMs = new Date(editStart).getTime();
-                      const endedAtMs = new Date(editEnd).getTime();
-                      if (!Number.isFinite(startedAtMs) || endedAtMs <= startedAtMs) {
-                        setEditError("Session end must be after its start.");
-                        return;
-                      }
-                      void updateTimelineSession(entry.sessionId, startedAtMs, endedAtMs)
-                        .then(() => {
-                          setEditingId(null);
-                          setEditError(null);
-                          notifyActivityDataChanged();
-                          refresh();
-                        })
-                        .catch((reason) => setEditError(errorMessage(reason)));
-                    }}>Save</button>
-                    <button type="button" onClick={() => setEditingId(null)}>Cancel</button>
-                  </div>
-                )}
                 <span className="session-duration">{formatDuration(entry.durationMs)}</span>
                 {!entry.isOpen && (
                   <>
@@ -589,11 +588,11 @@ export function Timeline() {
                     aria-label={`Delete ${name} session at ${formatClock(entry.startedAtMs)}`}
                     title="Delete session"
                     onClick={() => {
-                      if (window.confirm(`Delete this ${name} session? You can undo it afterward.`)) {
-                        void deleteTimelineSession(entry.sessionId).then((result) => {
-                          completeMutation("Deleted 1 session.", result.undoToken);
-                        }).catch((reason) => setEditError(errorMessage(reason)));
-                      }
+                      setActionDialog({
+                        kind: "delete",
+                        sessionIds: [entry.sessionId],
+                        label: `${name}, ${formatClock(entry.startedAtMs)}–${formatClock(entry.endedAtMs)}`,
+                      });
                     }}
                   >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -627,6 +626,119 @@ export function Timeline() {
           </div>
         )}
       </section>
+      {editingId !== null && (
+        <div className="timeline-dialog-backdrop" role="presentation">
+          <section
+            className="timeline-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-session-title"
+          >
+            <div>
+              <p className="section-kicker">Session</p>
+              <h2 id="edit-session-title">Edit recorded time</h2>
+              <span>Adjust the start and end of this closed session.</span>
+            </div>
+            <label>
+              Start
+              <input
+                type="datetime-local"
+                value={editStart}
+                onChange={(event) => setEditStart(event.currentTarget.value)}
+              />
+            </label>
+            <label>
+              End
+              <input
+                type="datetime-local"
+                value={editEnd}
+                onChange={(event) => setEditEnd(event.currentTarget.value)}
+              />
+            </label>
+            <div className="timeline-dialog-actions">
+              <button type="button" onClick={() => setEditingId(null)}>Cancel</button>
+              <button className="primary" type="button" onClick={() => {
+                const startedAtMs = new Date(editStart).getTime();
+                const endedAtMs = new Date(editEnd).getTime();
+                if (!Number.isFinite(startedAtMs) || endedAtMs <= startedAtMs) {
+                  setEditError("Session end must be after its start.");
+                  return;
+                }
+                void updateTimelineSession(editingId, startedAtMs, endedAtMs)
+                  .then(() => {
+                    setEditingId(null);
+                    setEditError(null);
+                    notifyActivityDataChanged();
+                    refresh();
+                  })
+                  .catch((reason) => setEditError(errorMessage(reason)));
+              }}>Save changes</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {actionDialog && (
+        <div className="timeline-dialog-backdrop" role="presentation">
+          <section
+            className="timeline-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="timeline-action-title"
+          >
+            <div>
+              <p className="section-kicker">Timeline operation</p>
+              <h2 id="timeline-action-title">
+                {actionDialog.kind === "note"
+                  ? "Update session notes"
+                  : actionDialog.kind === "category"
+                    ? "Change application category"
+                    : "Delete recorded sessions"}
+              </h2>
+              <span>{actionDialog.label}</span>
+            </div>
+            {actionDialog.kind === "note" && (
+              <label>
+                Note
+                <textarea
+                  autoFocus
+                  maxLength={500}
+                  rows={4}
+                  value={dialogValue}
+                  placeholder="Leave empty to clear existing notes"
+                  onChange={(event) => setDialogValue(event.currentTarget.value)}
+                />
+              </label>
+            )}
+            {actionDialog.kind === "category" && (
+              <label>
+                Category
+                <input
+                  autoFocus
+                  maxLength={40}
+                  value={dialogValue}
+                  placeholder="Work, Communication, Learning…"
+                  onChange={(event) => setDialogValue(event.currentTarget.value)}
+                />
+              </label>
+            )}
+            {actionDialog.kind === "delete" && (
+              <p className="timeline-dialog-warning">
+                These sessions will be removed from the timeline. You can undo this operation afterward.
+              </p>
+            )}
+            <div className="timeline-dialog-actions">
+              <button type="button" onClick={() => setActionDialog(null)}>Cancel</button>
+              <button
+                className={actionDialog.kind === "delete" ? "danger" : "primary"}
+                type="button"
+                onClick={submitActionDialog}
+              >
+                {actionDialog.kind === "delete" ? "Delete sessions" : "Apply changes"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       </>
       )}
     </div>

@@ -98,6 +98,30 @@ Validation:
 - Clippy passed for all targets with warnings denied.
 - The macOS application bundle was generated successfully.
 
+## Phase 5: Focus Reliability And Editing UX
+
+Status: Complete
+
+- [x] Persist active Focus Mode state and restore it after application restart.
+- [x] Deliver native macOS break reminders while the application is hidden.
+- [x] Deduplicate reminders by elapsed focus interval and respect quiet hours.
+- [x] Replace timeline prompts and confirmations with accessible action dialogs.
+- [x] Move closed-session time editing into a dedicated validation dialog.
+
+Decisions:
+
+- Native reminders are driven by the backend so they do not depend on the dashboard being open.
+- Focus Mode is persisted in the local settings database and changed atomically before UI events.
+- The existing macOS notification API is wrapped in one platform function because downloading the
+  official Tauri notification plugin was blocked by the Codex approval service.
+
+Validation:
+
+- Frontend production build passed.
+- 63 Rust tests passed.
+- Clippy passed for all targets with warnings denied.
+- The macOS application bundle was generated successfully.
+
 ## Known Environment Blocker
 
 Codex can modify workspace files but the current sandbox may reject writes to `.git`.

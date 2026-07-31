@@ -573,6 +573,93 @@ button {
   white-space: nowrap;
 }
 
+.timeline-dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 22, 19, 0.42);
+  backdrop-filter: blur(3px);
+}
+
+.timeline-dialog {
+  width: min(460px, 100%);
+  padding: 22px;
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: inherit;
+  background: var(--surface-solid);
+  box-shadow: 0 24px 70px rgba(14, 27, 21, 0.24);
+}
+
+.timeline-dialog h2 {
+  margin: 2px 0 5px;
+  font-size: 18px;
+}
+
+.timeline-dialog > div > span,
+.timeline-dialog-warning {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline-dialog label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.timeline-dialog input,
+.timeline-dialog textarea {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface);
+  font: inherit;
+  resize: vertical;
+}
+
+.timeline-dialog input {
+  height: 38px;
+}
+
+.timeline-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.timeline-dialog-actions button {
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.timeline-dialog-actions button.primary {
+  border-color: var(--green-700);
+  color: white;
+  background: var(--green-700);
+}
+
+.timeline-dialog-actions button.danger {
+  border-color: #a34848;
+  color: white;
+  background: #a34848;
+}
+
 .timeline-load-more {
   width: calc(100% - 78px);
   height: 38px;

@@ -248,6 +248,34 @@ impl ActivityRepository {
             .map_err(Into::into)
     }
 
+    pub fn focus_mode_status(&self) -> AppResult<(bool, Option<i64>)> {
+        let connection = self.database.lock()?;
+        connection
+            .query_row(
+                "SELECT focus_mode_active, focus_mode_started_at_ms
+                 FROM settings WHERE singleton_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn update_focus_mode(
+        &self,
+        active: bool,
+        started_at_ms: Option<i64>,
+        updated_at_ms: i64,
+    ) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        connection.execute(
+            "UPDATE settings
+             SET focus_mode_active = ?1, focus_mode_started_at_ms = ?2, updated_at_ms = ?3
+             WHERE singleton_id = 1",
+            params![active, active.then_some(started_at_ms).flatten(), updated_at_ms],
+        )?;
+        Ok(())
+    }
+
     pub fn update_settings(&self, settings: &Settings, updated_at_ms: i64) -> AppResult<Settings> {
         if !(30..=3600).contains(&settings.idle_threshold_seconds) {
             return Err(AppError::InvalidIdleThreshold(
@@ -1300,6 +1328,31 @@ mod tests {
                 .settings()
                 .expect("settings should reload")
                 .onboarding_completed
+        );
+    }
+
+    #[test]
+    fn focus_mode_state_persists_until_explicitly_ended() {
+        let repository = repository();
+        assert_eq!(
+            repository.focus_mode_status().expect("status should load"),
+            (false, None)
+        );
+
+        repository
+            .update_focus_mode(true, Some(1_234), 1_234)
+            .expect("focus mode should start");
+        assert_eq!(
+            repository.focus_mode_status().expect("status should reload"),
+            (true, Some(1_234))
+        );
+
+        repository
+            .update_focus_mode(false, None, 2_345)
+            .expect("focus mode should end");
+        assert_eq!(
+            repository.focus_mode_status().expect("status should reload"),
+            (false, None)
         );
     }
 
