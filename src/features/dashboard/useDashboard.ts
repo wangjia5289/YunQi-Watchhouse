@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CurrentActivity,
+  FocusSummary,
   TimelineEntry,
   TodaySummary,
   errorMessage,
   getCurrentActivity,
   getTimeline,
+  getTodayFocusSummary,
   getTodaySummary,
 } from "../../lib/ipc";
 import { localIsoDate } from "../../lib/format";
@@ -15,6 +17,7 @@ interface DashboardState {
   summary: TodaySummary | null;
   timeline: TimelineEntry[];
   current: CurrentActivity | null;
+  focus: FocusSummary | null;
   loading: boolean;
   error: string | null;
 }
@@ -23,6 +26,7 @@ const initialState: DashboardState = {
   summary: null,
   timeline: [],
   current: null,
+  focus: null,
   loading: true,
   error: null,
 };
@@ -35,15 +39,17 @@ export function useDashboard(): DashboardState & { refresh: () => void } {
   const loadHistory = useCallback(async () => {
     const request = ++historyRequest.current;
     try {
-      const [summary, timeline] = await Promise.all([
+      const [summary, timeline, focus] = await Promise.all([
         getTodaySummary(),
         getTimeline(localIsoDate()),
+        getTodayFocusSummary(),
       ]);
       if (request !== historyRequest.current) return;
       setState((current) => ({
         ...current,
         summary,
         timeline,
+        focus,
         loading: false,
         error: null,
       }));
@@ -78,7 +84,6 @@ export function useDashboard(): DashboardState & { refresh: () => void } {
   useEffect(() => {
     void loadHistory();
     void loadCurrent();
-    const historyTimer = window.setInterval(() => void loadHistory(), 10_000);
     const currentTimer = window.setInterval(() => void loadCurrent(), 2_000);
     const reload = () => {
       void loadHistory();
@@ -86,7 +91,6 @@ export function useDashboard(): DashboardState & { refresh: () => void } {
     };
     window.addEventListener(ACTIVITY_DATA_CHANGED, reload);
     return () => {
-      window.clearInterval(historyTimer);
       window.clearInterval(currentTimer);
       window.removeEventListener(ACTIVITY_DATA_CHANGED, reload);
     };

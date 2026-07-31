@@ -163,12 +163,21 @@ export function Applications() {
     setCategoryDraft(selected?.category ?? "");
   }, [selected?.applicationId, selected?.category]);
 
-  async function savePreferences(category: string, isIgnored: boolean) {
+  async function savePreferences(
+    category: string,
+    isIgnored: boolean,
+    recordWindowTitles = selected?.recordWindowTitles ?? false,
+  ) {
     if (!selected || savingPreferences) return;
     setSavingPreferences(true);
     setPreferenceError(null);
     try {
-      await updateApplicationPreferences(selected.applicationId, category, isIgnored);
+      await updateApplicationPreferences(
+        selected.applicationId,
+        category,
+        isIgnored,
+        recordWindowTitles,
+      );
       if (categoryFilter === selected.category && category !== selected.category) {
         setCategoryFilter(category);
       }
@@ -371,6 +380,24 @@ export function Applications() {
                   <span>
                     <strong>Ignore future activity</strong>
                     <small>Existing history is preserved.</small>
+                  </span>
+                </label>
+                <label className="ignore-application">
+                  <input
+                    type="checkbox"
+                    checked={selected.recordWindowTitles}
+                    disabled={savingPreferences}
+                    onChange={(event) => {
+                      void savePreferences(
+                        selected.category,
+                        selected.isIgnored,
+                        event.currentTarget.checked,
+                      );
+                    }}
+                  />
+                  <span>
+                    <strong>Record window titles</strong>
+                    <small>Used only when the global privacy setting is enabled.</small>
                   </span>
                 </label>
                 {preferenceError && <small className="preference-error">{preferenceError}</small>}

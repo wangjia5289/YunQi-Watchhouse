@@ -13,6 +13,7 @@ use crate::TrackingTrayMenuItem;
 use crate::activity::{MonitorHandle, SessionManagerHandle};
 use crate::database::{ActivityRepository, Settings};
 use crate::database::{MaintenancePreview, MaintenanceResult};
+use crate::maintenance::{MaintenanceStatus, MaintenanceStatusState};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,6 +41,11 @@ pub struct DiagnosticsSummary {
 #[tauri::command]
 pub fn get_settings(repository: State<'_, ActivityRepository>) -> Result<Settings, String> {
     repository.settings().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_accessibility_permission() -> crate::platform::AccessibilityPermission {
+    crate::platform::accessibility_permission()
 }
 
 #[tauri::command]
@@ -96,6 +102,24 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
     }
     if !(1..=20).contains(&settings.backup_keep_count) {
         return Err("backup keep count must be between 1 and 20".to_owned());
+    }
+    if !(0..=1440).contains(&settings.daily_focus_goal_minutes) {
+        return Err("daily focus goal must be between 0 and 1440 minutes".to_owned());
+    }
+    if !(1..=60).contains(&settings.focus_block_gap_minutes) {
+        return Err("focus block gap must be between 1 and 60 minutes".to_owned());
+    }
+    if !matches!(settings.break_reminder_minutes, 30 | 45 | 60 | 90 | 120) {
+        return Err("break reminder must be 30, 45, 60, 90, or 120 minutes".to_owned());
+    }
+    for value in [&settings.quiet_hours_start, &settings.quiet_hours_end] {
+        let valid = value.len() == 5
+            && value.as_bytes().get(2) == Some(&b':')
+            && value[..2].parse::<u8>().is_ok_and(|hour| hour < 24)
+            && value[3..].parse::<u8>().is_ok_and(|minute| minute < 60);
+        if !valid {
+            return Err("quiet hours must use HH:MM in 24-hour time".to_owned());
+        }
     }
     Ok(())
 }
@@ -174,7 +198,7 @@ pub async fn export_activity(
 
 fn records_to_csv(records: &[crate::database::ActivityRecord]) -> String {
     let mut output =
-        "# watchhouse_export_schema=1\nsession_id,state,application_name,bundle_identifier,started_at_ms,ended_at_ms,duration_ms,closed_reason\n"
+        "# watchhouse_export_schema=1\nsession_id,state,application_name,bundle_identifier,started_at_ms,ended_at_ms,duration_ms,closed_reason,window_title,note\n"
             .to_owned();
     for record in records {
         let application_name = record
@@ -193,7 +217,7 @@ fn records_to_csv(records: &[crate::database::ActivityRecord]) -> String {
             .map(|reason| format!("{reason:?}"))
             .unwrap_or_default();
         output.push_str(&format!(
-            "{},{:?},{},{},{},{},{},{}\n",
+            "{},{:?},{},{},{},{},{},{},{},{}\n",
             record.session.id,
             record.session.state,
             csv_field(application_name),
@@ -201,7 +225,9 @@ fn records_to_csv(records: &[crate::database::ActivityRecord]) -> String {
             record.session.started_at_ms,
             record.session.ended_at_ms,
             record.session.duration_ms,
-            reason
+            reason,
+            csv_field(record.session.window_title.as_deref().unwrap_or("")),
+            csv_field(record.session.note.as_deref().unwrap_or(""))
         ));
     }
     output
@@ -215,7 +241,10 @@ fn now_ms() -> Result<i64, String> {
 }
 
 fn csv_field(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
+    format!(
+        "\"{}\"",
+        value.replace(['\r', '\n'], " ").replace('"', "\"\"")
+    )
 }
 
 #[tauri::command]
@@ -385,6 +414,11 @@ pub fn get_maintenance_preview(
 }
 
 #[tauri::command]
+pub fn get_maintenance_status(status: State<'_, MaintenanceStatusState>) -> MaintenanceStatus {
+    status.snapshot()
+}
+
+#[tauri::command]
 pub async fn run_data_maintenance(
     app: AppHandle,
     repository: State<'_, ActivityRepository>,
@@ -522,6 +556,12 @@ mod tests {
             backup_directory: None,
             last_maintenance_at_ms: 0,
             last_backup_at_ms: 0,
+            daily_focus_goal_minutes: 240,
+            focus_block_gap_minutes: 5,
+            break_reminders_enabled: false,
+            break_reminder_minutes: 60,
+            quiet_hours_start: "22:00".to_owned(),
+            quiet_hours_end: "08:00".to_owned(),
         };
         assert!(validate_settings(&invalid_threshold).is_err());
 

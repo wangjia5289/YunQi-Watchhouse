@@ -48,6 +48,7 @@ pub struct TimelineEntry {
     pub bundle_identifier: Option<String>,
     pub category: Option<String>,
     pub window_title: Option<String>,
+    pub note: Option<String>,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub duration_ms: i64,
@@ -62,6 +63,7 @@ pub struct AppUsage {
     pub bundle_identifier: Option<String>,
     pub category: String,
     pub is_ignored: bool,
+    pub record_window_titles: bool,
     pub duration_ms: i64,
 }
 
@@ -71,6 +73,30 @@ pub struct CategoryUsage {
     pub category: String,
     pub duration_ms: i64,
     pub application_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusBlock {
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub active_duration_ms: i64,
+    pub application_switch_count: i64,
+    pub is_open: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusSummary {
+    pub total_focus_duration_ms: i64,
+    pub longest_focus_duration_ms: i64,
+    pub application_switch_count: i64,
+    pub goal_minutes: i64,
+    pub break_reminders_enabled: bool,
+    pub break_reminder_minutes: i64,
+    pub quiet_hours_start: String,
+    pub quiet_hours_end: String,
+    pub blocks: Vec<FocusBlock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +119,99 @@ impl StatisticsService {
 
     pub fn today_summary(&self) -> AppResult<TodaySummary> {
         self.summary_for_date(Local::now().date_naive())
+    }
+
+    pub fn today_focus_summary(&self) -> AppResult<FocusSummary> {
+        let settings = self.repository.settings()?;
+        let mut summary = self.focus_summary(
+            local_day_range(Local::now().date_naive())?,
+            settings.focus_block_gap_minutes,
+            settings.daily_focus_goal_minutes,
+        )?;
+        summary.break_reminders_enabled = settings.break_reminders_enabled;
+        summary.break_reminder_minutes = settings.break_reminder_minutes;
+        summary.quiet_hours_start = settings.quiet_hours_start;
+        summary.quiet_hours_end = settings.quiet_hours_end;
+        Ok(summary)
+    }
+
+    pub fn focus_summary(
+        &self,
+        range: TimeRange,
+        gap_minutes: i64,
+        goal_minutes: i64,
+    ) -> AppResult<FocusSummary> {
+        let records = self
+            .repository
+            .records_overlapping(range.start_ms, range.end_ms)?;
+        let gap_ms = gap_minutes.saturating_mul(60_000);
+        let mut blocks = Vec::new();
+        let mut current: Option<FocusBlockBuilder> = None;
+
+        for record in records {
+            let Some((start, end)) = clipped_bounds(&record, range) else {
+                continue;
+            };
+            if record.session.state == ActivityState::Idle {
+                if end - start >= gap_ms
+                    && let Some(block) = current.take()
+                {
+                    blocks.push(block.finish());
+                }
+                continue;
+            }
+            let application_id = record
+                .application
+                .as_ref()
+                .map(|application| application.id);
+            if current
+                .as_ref()
+                .is_some_and(|block| start.saturating_sub(block.ended_at_ms) >= gap_ms)
+                && let Some(block) = current.take()
+            {
+                blocks.push(block.finish());
+            }
+            let block = current.get_or_insert(FocusBlockBuilder {
+                started_at_ms: start,
+                ended_at_ms: end,
+                active_duration_ms: 0,
+                application_switch_count: 0,
+                last_application_id: application_id,
+                is_open: false,
+            });
+            if block.last_application_id.is_some()
+                && application_id.is_some()
+                && block.last_application_id != application_id
+            {
+                block.application_switch_count += 1;
+            }
+            block.last_application_id = application_id;
+            block.ended_at_ms = block.ended_at_ms.max(end);
+            block.active_duration_ms += end - start;
+            block.is_open = record.session.is_open;
+        }
+        if let Some(block) = current {
+            blocks.push(block.finish());
+        }
+
+        Ok(FocusSummary {
+            total_focus_duration_ms: blocks.iter().map(|block| block.active_duration_ms).sum(),
+            longest_focus_duration_ms: blocks
+                .iter()
+                .map(|block| block.active_duration_ms)
+                .max()
+                .unwrap_or_default(),
+            application_switch_count: blocks
+                .iter()
+                .map(|block| block.application_switch_count)
+                .sum(),
+            goal_minutes,
+            break_reminders_enabled: false,
+            break_reminder_minutes: 60,
+            quiet_hours_start: "22:00".to_owned(),
+            quiet_hours_end: "08:00".to_owned(),
+            blocks,
+        })
     }
 
     pub fn summary_for_date(&self, date: NaiveDate) -> AppResult<TodaySummary> {
@@ -166,6 +285,7 @@ impl StatisticsService {
                         .as_ref()
                         .map(|application| application.category.clone()),
                     window_title: record.session.window_title,
+                    note: record.session.note,
                     started_at_ms: start,
                     ended_at_ms: end,
                     duration_ms: end - start,
@@ -197,6 +317,7 @@ impl StatisticsService {
                 bundle_identifier: application.bundle_id,
                 category: application.category,
                 is_ignored: application.is_ignored,
+                record_window_titles: application.record_window_titles,
                 duration_ms: 0,
             });
             item.duration_ms += end - start;
@@ -335,6 +456,27 @@ impl StatisticsService {
     }
 }
 
+struct FocusBlockBuilder {
+    started_at_ms: i64,
+    ended_at_ms: i64,
+    active_duration_ms: i64,
+    application_switch_count: i64,
+    last_application_id: Option<i64>,
+    is_open: bool,
+}
+
+impl FocusBlockBuilder {
+    fn finish(self) -> FocusBlock {
+        FocusBlock {
+            started_at_ms: self.started_at_ms,
+            ended_at_ms: self.ended_at_ms,
+            active_duration_ms: self.active_duration_ms,
+            application_switch_count: self.application_switch_count,
+            is_open: self.is_open,
+        }
+    }
+}
+
 fn clipped_bounds(record: &ActivityRecord, range: TimeRange) -> Option<(i64, i64)> {
     let start = record.session.started_at_ms.max(range.start_ms);
     let end = record.session.ended_at_ms.min(range.end_ms);
@@ -464,7 +606,7 @@ mod tests {
     fn category_usage_aggregates_duration_and_unique_applications() {
         let (service, repository, application_id) = setup();
         repository
-            .update_application_preferences(application_id, "Work", false)
+            .update_application_preferences(application_id, "Work", false, false)
             .expect("first application category should update");
         let second = repository
             .upsert_application(&NewApplication {
@@ -475,7 +617,7 @@ mod tests {
             })
             .expect("second application should be stored");
         repository
-            .update_application_preferences(second.id, "Work", false)
+            .update_application_preferences(second.id, "Work", false, false)
             .expect("second application category should update");
         store_session(
             &repository,
@@ -510,6 +652,61 @@ mod tests {
                 application_count: 2,
             }]
         );
+    }
+
+    #[test]
+    fn focus_summary_groups_short_breaks_and_counts_application_switches() {
+        let (service, repository, application_id) = setup();
+        let second = repository
+            .upsert_application(&NewApplication {
+                name: "Terminal".to_owned(),
+                bundle_id: Some("example.terminal".to_owned()),
+                executable_path: None,
+                seen_at_ms: 0,
+            })
+            .expect("second application should be stored");
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            0,
+            100,
+        );
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(second.id),
+            100,
+            200,
+        );
+        store_session(&repository, ActivityState::Idle, None, 200, 250);
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            250,
+            350,
+        );
+        store_session(&repository, ActivityState::Idle, None, 350, 70_000);
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            70_000,
+            70_150,
+        );
+
+        let summary = service
+            .focus_summary(
+                TimeRange::new(0, 100_000).expect("range should be valid"),
+                1,
+                240,
+            )
+            .expect("focus summary should succeed");
+        assert_eq!(summary.blocks.len(), 2);
+        assert_eq!(summary.total_focus_duration_ms, 450);
+        assert_eq!(summary.longest_focus_duration_ms, 300);
+        assert_eq!(summary.application_switch_count, 2);
     }
 
     #[test]

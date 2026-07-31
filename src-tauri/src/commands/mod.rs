@@ -1,5 +1,6 @@
 pub(crate) mod activity;
 pub(crate) mod applications;
+pub(crate) mod focus;
 pub(crate) mod settings;
 pub(crate) mod statistics;
 pub(crate) mod timeline;
@@ -8,17 +9,22 @@ pub use activity::{get_current_activity, set_tracking_paused};
 pub use applications::{
     clear_application_icon_cache, get_application_icon, update_application_preferences,
 };
+pub use focus::{get_focus_mode, set_focus_mode};
 pub use settings::{
     backup_database, choose_backup_directory, complete_onboarding, create_automatic_backup_now,
     delete_all_activity, export_activity, get_diagnostics_summary, get_maintenance_preview,
-    get_settings, open_backup_directory, open_data_directory, open_log_directory,
-    optimize_database, restore_database, run_data_maintenance, update_settings,
+    get_maintenance_status, get_settings, open_backup_directory, open_data_directory,
+    open_log_directory, optimize_database, restore_database, run_data_maintenance, update_settings,
 };
 pub use statistics::{
     get_app_usage, get_application_daily_usage, get_category_usage, get_daily_usage, get_timeline,
-    get_today_summary,
+    get_today_focus_summary, get_today_summary,
 };
-pub use timeline::{delete_timeline_session, update_timeline_session};
+pub use timeline::{
+    delete_timeline_session, delete_timeline_sessions, import_activity, merge_timeline_sessions,
+    preview_activity_import, undo_timeline_edit, update_timeline_session,
+    update_timeline_session_categories, update_timeline_session_notes,
+};
 
 use serde::Serialize;
 

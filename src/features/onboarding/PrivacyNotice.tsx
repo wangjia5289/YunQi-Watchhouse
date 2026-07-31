@@ -27,6 +27,7 @@ export function PrivacyNotice({
               <li>Application name and identifier</li>
               <li>Active and idle timestamps</li>
               <li>Session duration</li>
+              <li>Window titles only after global and per-application opt-in</li>
             </ul>
           </article>
           <article>

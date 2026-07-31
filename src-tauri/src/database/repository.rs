@@ -28,6 +28,12 @@ pub struct Settings {
     pub backup_directory: Option<String>,
     pub last_maintenance_at_ms: i64,
     pub last_backup_at_ms: i64,
+    pub daily_focus_goal_minutes: i64,
+    pub focus_block_gap_minutes: i64,
+    pub break_reminders_enabled: bool,
+    pub break_reminder_minutes: i64,
+    pub quiet_hours_start: String,
+    pub quiet_hours_end: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -55,6 +61,27 @@ pub struct ActivityRecord {
     pub session: ActivitySession,
     pub application: Option<Application>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRecord {
+    pub state: ActivityState,
+    pub application_name: Option<String>,
+    pub bundle_identifier: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub window_title: Option<String>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineMutationResult {
+    pub affected_count: usize,
+    pub undo_token: Option<String>,
+}
+
+type OverlappingSession = (i64, String, Option<i64>, Option<String>, i64, i64);
 
 #[derive(Clone)]
 pub struct ActivityRepository {
@@ -98,7 +125,8 @@ impl ActivityRepository {
         connection
             .query_row(
                 "SELECT id, identity_key, name, bundle_id, executable_path,
-                        category, is_ignored, first_seen_at_ms, last_seen_at_ms
+                        category, is_ignored, record_window_titles,
+                        first_seen_at_ms, last_seen_at_ms
                  FROM applications WHERE identity_key = ?1",
                 [identity_key],
                 map_application,
@@ -111,7 +139,8 @@ impl ActivityRepository {
         connection
             .query_row(
                 "SELECT id, identity_key, name, bundle_id, executable_path,
-                        category, is_ignored, first_seen_at_ms, last_seen_at_ms
+                        category, is_ignored, record_window_titles,
+                        first_seen_at_ms, last_seen_at_ms
                  FROM applications WHERE id = ?1",
                 [application_id],
                 map_application,
@@ -138,6 +167,7 @@ impl ActivityRepository {
         application_id: i64,
         category: &str,
         is_ignored: bool,
+        record_window_titles: bool,
     ) -> AppResult<Application> {
         let category = category.trim();
         if category.is_empty() || category.chars().count() > 40 {
@@ -147,8 +177,10 @@ impl ActivityRepository {
         }
         let connection = self.database.lock()?;
         let changed = connection.execute(
-            "UPDATE applications SET category = ?2, is_ignored = ?3 WHERE id = ?1",
-            params![application_id, category, is_ignored],
+            "UPDATE applications
+             SET category = ?2, is_ignored = ?3, record_window_titles = ?4
+             WHERE id = ?1",
+            params![application_id, category, is_ignored, record_window_titles],
         )?;
         if changed == 0 {
             return Err(AppError::InvalidSession(format!(
@@ -160,6 +192,20 @@ impl ActivityRepository {
             .ok_or_else(|| AppError::InvalidSession("updated application was not found".to_owned()))
     }
 
+    pub fn should_record_window_title(&self, identity_key: &str) -> AppResult<bool> {
+        let connection = self.database.lock()?;
+        connection
+            .query_row(
+                "SELECT s.record_window_titles AND COALESCE(a.record_window_titles, 0)
+                 FROM settings s
+                 LEFT JOIN applications a ON a.identity_key = ?1
+                 WHERE s.singleton_id = 1",
+                [identity_key],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn settings(&self) -> AppResult<Settings> {
         let connection = self.database.lock()?;
         connection
@@ -169,7 +215,9 @@ impl ActivityRepository {
                         record_window_titles, appearance, onboarding_completed,
                         retention_days, automatic_backup_enabled, backup_interval,
                         backup_keep_count, backup_directory, last_maintenance_at_ms,
-                        last_backup_at_ms
+                        last_backup_at_ms, daily_focus_goal_minutes,
+                        focus_block_gap_minutes, break_reminders_enabled,
+                        break_reminder_minutes, quiet_hours_start, quiet_hours_end
                  FROM settings WHERE singleton_id = 1",
                 [],
                 |row| {
@@ -188,6 +236,12 @@ impl ActivityRepository {
                         backup_directory: row.get(11)?,
                         last_maintenance_at_ms: row.get(12)?,
                         last_backup_at_ms: row.get(13)?,
+                        daily_focus_goal_minutes: row.get(14)?,
+                        focus_block_gap_minutes: row.get(15)?,
+                        break_reminders_enabled: row.get(16)?,
+                        break_reminder_minutes: row.get(17)?,
+                        quiet_hours_start: row.get(18)?,
+                        quiet_hours_end: row.get(19)?,
                     })
                 },
             )
@@ -220,6 +274,23 @@ impl ActivityRepository {
                 "backup keep count must be between 1 and 20".to_owned(),
             ));
         }
+        if !(0..=1440).contains(&settings.daily_focus_goal_minutes) {
+            return Err(AppError::InvalidMonitorConfiguration(
+                "daily focus goal must be between 0 and 1440 minutes".to_owned(),
+            ));
+        }
+        if !(1..=60).contains(&settings.focus_block_gap_minutes) {
+            return Err(AppError::InvalidMonitorConfiguration(
+                "focus block gap must be between 1 and 60 minutes".to_owned(),
+            ));
+        }
+        if !matches!(settings.break_reminder_minutes, 30 | 45 | 60 | 90 | 120) {
+            return Err(AppError::InvalidMonitorConfiguration(
+                "break reminder must be 30, 45, 60, 90, or 120 minutes".to_owned(),
+            ));
+        }
+        validate_clock_time(&settings.quiet_hours_start)?;
+        validate_clock_time(&settings.quiet_hours_end)?;
         let connection = self.database.lock()?;
         connection.execute(
             "UPDATE settings SET idle_threshold_seconds = ?1, launch_at_login = ?2,
@@ -227,7 +298,10 @@ impl ActivityRepository {
                 record_window_titles = ?5, appearance = ?6,
                 retention_days = ?7, automatic_backup_enabled = ?8,
                 backup_interval = ?9, backup_keep_count = ?10,
-                backup_directory = ?11, updated_at_ms = ?12
+                backup_directory = ?11, daily_focus_goal_minutes = ?12,
+                focus_block_gap_minutes = ?13, break_reminders_enabled = ?14,
+                break_reminder_minutes = ?15, quiet_hours_start = ?16,
+                quiet_hours_end = ?17, updated_at_ms = ?18
              WHERE singleton_id = 1",
             params![
                 settings.idle_threshold_seconds,
@@ -241,6 +315,12 @@ impl ActivityRepository {
                 settings.backup_interval,
                 settings.backup_keep_count,
                 settings.backup_directory,
+                settings.daily_focus_goal_minutes,
+                settings.focus_block_gap_minutes,
+                settings.break_reminders_enabled,
+                settings.break_reminder_minutes,
+                settings.quiet_hours_start,
+                settings.quiet_hours_end,
                 updated_at_ms,
             ],
         )?;
@@ -401,6 +481,359 @@ impl ActivityRepository {
             ));
         }
         find_session(&connection, session_id)?.ok_or(AppError::SessionNotFound(session_id))
+    }
+
+    pub fn update_session_notes(
+        &self,
+        session_ids: &[i64],
+        note: Option<&str>,
+    ) -> AppResult<usize> {
+        if session_ids.is_empty() {
+            return Ok(0);
+        }
+        let note = note.map(str::trim).filter(|value| !value.is_empty());
+        if note.is_some_and(|value| value.chars().count() > 500) {
+            return Err(AppError::InvalidSession(
+                "session notes cannot exceed 500 characters".to_owned(),
+            ));
+        }
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let mut affected = 0;
+        for id in session_ids {
+            affected += transaction.execute(
+                "UPDATE activity_sessions SET note = ?2, updated_at_ms = MAX(updated_at_ms, ?3)
+                 WHERE id = ?1 AND is_open = 0",
+                params![id, note, now_millis()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(affected)
+    }
+
+    pub fn update_session_application_categories(
+        &self,
+        session_ids: &[i64],
+        category: &str,
+    ) -> AppResult<usize> {
+        let category = category.trim();
+        if category.is_empty() || category.chars().count() > 40 {
+            return Err(AppError::InvalidSession(
+                "application category must contain between 1 and 40 characters".to_owned(),
+            ));
+        }
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let mut affected = 0;
+        for id in session_ids {
+            affected += transaction.execute(
+                "UPDATE applications SET category = ?2 WHERE id = (
+                    SELECT application_id FROM activity_sessions WHERE id = ?1
+                 )",
+                params![id, category],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(affected)
+    }
+
+    pub fn delete_closed_sessions(&self, session_ids: &[i64]) -> AppResult<TimelineMutationResult> {
+        self.destructive_session_edit(session_ids, |transaction, ids| {
+            let mut affected = 0;
+            for id in ids {
+                affected += transaction.execute(
+                    "DELETE FROM activity_sessions WHERE id = ?1 AND is_open = 0",
+                    [id],
+                )?;
+            }
+            Ok(affected)
+        })
+    }
+
+    pub fn merge_closed_sessions(&self, session_ids: &[i64]) -> AppResult<TimelineMutationResult> {
+        self.destructive_session_edit(session_ids, |transaction, ids| {
+            if ids.len() < 2 {
+                return Err(AppError::InvalidSession(
+                    "select at least two sessions to merge".to_owned(),
+                ));
+            }
+            let mut sessions = Vec::with_capacity(ids.len());
+            for id in ids {
+                let session =
+                    find_session(transaction, *id)?.ok_or(AppError::SessionNotFound(*id))?;
+                if session.is_open {
+                    return Err(AppError::InvalidSession(
+                        "open sessions cannot be merged".to_owned(),
+                    ));
+                }
+                sessions.push(session);
+            }
+            sessions.sort_by_key(|session| (session.started_at_ms, session.id));
+            let first = &sessions[0];
+            for pair in sessions.windows(2) {
+                if pair[0].state != pair[1].state
+                    || pair[0].application_id != pair[1].application_id
+                    || pair[0].window_title != pair[1].window_title
+                {
+                    return Err(AppError::InvalidSession(
+                        "only compatible sessions can be merged".to_owned(),
+                    ));
+                }
+                let intervening: bool = transaction.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM activity_sessions
+                        WHERE id NOT IN (?1, ?2)
+                          AND started_at_ms < ?4 AND ended_at_ms > ?3
+                    )",
+                    params![
+                        pair[0].id,
+                        pair[1].id,
+                        pair[0].ended_at_ms,
+                        pair[1].started_at_ms
+                    ],
+                    |row| row.get(0),
+                )?;
+                if intervening {
+                    return Err(AppError::InvalidSession(
+                        "selected sessions are not adjacent".to_owned(),
+                    ));
+                }
+            }
+            let end = sessions
+                .iter()
+                .map(|session| session.ended_at_ms)
+                .max()
+                .unwrap();
+            let notes = sessions
+                .iter()
+                .filter_map(|session| session.note.as_deref())
+                .filter(|note| !note.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            transaction.execute(
+                "UPDATE activity_sessions SET ended_at_ms = ?2, duration_ms = ?2 - started_at_ms,
+                 note = NULLIF(?3, ''), updated_at_ms = ?2 WHERE id = ?1",
+                params![first.id, end, notes],
+            )?;
+            for session in sessions.iter().skip(1) {
+                transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session.id])?;
+            }
+            Ok(sessions.len())
+        })
+    }
+
+    fn destructive_session_edit<F>(
+        &self,
+        session_ids: &[i64],
+        operation: F,
+    ) -> AppResult<TimelineMutationResult>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>, &[i64]) -> AppResult<usize>,
+    {
+        if session_ids.is_empty() {
+            return Ok(TimelineMutationResult {
+                affected_count: 0,
+                undo_token: None,
+            });
+        }
+        let mut ids = session_ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let mut snapshot = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let session = find_session(&transaction, *id)?.ok_or(AppError::SessionNotFound(*id))?;
+            if session.is_open {
+                return Err(AppError::InvalidSession(
+                    "open sessions cannot be changed".to_owned(),
+                ));
+            }
+            snapshot.push(session);
+        }
+        let affected_count = operation(&transaction, &ids)?;
+        let token = format!("{}-{}", now_millis(), snapshot[0].id);
+        transaction.execute(
+            "DELETE FROM timeline_undo WHERE created_at_ms < ?1",
+            [now_millis().saturating_sub(24 * 60 * 60 * 1_000)],
+        )?;
+        transaction.execute(
+            "INSERT INTO timeline_undo(token, snapshot_json, created_at_ms) VALUES (?1, ?2, ?3)",
+            params![
+                token,
+                serde_json::to_string(&snapshot).map_err(|error| {
+                    AppError::InvalidSession(format!("could not create undo snapshot: {error}"))
+                })?,
+                now_millis()
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(TimelineMutationResult {
+            affected_count,
+            undo_token: Some(token),
+        })
+    }
+
+    pub fn undo_timeline_edit(&self, token: &str) -> AppResult<usize> {
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let snapshot_json: String = transaction
+            .query_row(
+                "SELECT snapshot_json FROM timeline_undo WHERE token = ?1",
+                [token],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::InvalidSession("undo is no longer available".to_owned()))?;
+        let sessions: Vec<ActivitySession> = serde_json::from_str(&snapshot_json)
+            .map_err(|error| AppError::InvalidSession(format!("invalid undo snapshot: {error}")))?;
+        for session in &sessions {
+            transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session.id])?;
+            transaction.execute(
+                "INSERT INTO activity_sessions (
+                    id, state, application_id, window_title, started_at_ms, ended_at_ms,
+                    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    session.id,
+                    session.state.as_db_str(),
+                    session.application_id,
+                    session.window_title,
+                    session.started_at_ms,
+                    session.ended_at_ms,
+                    session.duration_ms,
+                    session.is_open,
+                    session.closed_reason.map(ClosedReason::as_db_str),
+                    session.created_at_ms,
+                    session.updated_at_ms,
+                    session.note,
+                ],
+            )?;
+        }
+        transaction.execute("DELETE FROM timeline_undo WHERE token = ?1", [token])?;
+        transaction.commit()?;
+        Ok(sessions.len())
+    }
+
+    pub fn import_conflict_count(&self, records: &[ImportRecord]) -> AppResult<usize> {
+        let connection = self.database.lock()?;
+        let mut conflicts = 0;
+        for record in records {
+            validate_import_record(record)?;
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM activity_sessions
+                    WHERE started_at_ms < ?2 AND ended_at_ms > ?1
+                )",
+                params![record.started_at_ms, record.ended_at_ms],
+                |row| row.get(0),
+            )?;
+            conflicts += usize::from(exists);
+        }
+        Ok(conflicts)
+    }
+
+    pub fn import_records(
+        &self,
+        records: &[ImportRecord],
+        merge_conflicts: bool,
+    ) -> AppResult<(usize, usize, usize)> {
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let mut imported = 0;
+        let mut merged = 0;
+        let mut skipped = 0;
+        for record in records {
+            validate_import_record(record)?;
+            let application_id = if record.state == ActivityState::Active {
+                let name = record
+                    .application_name
+                    .as_deref()
+                    .unwrap_or("Imported application");
+                let identity_key = record
+                    .bundle_identifier
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .map(|bundle| format!("bundle:{bundle}"))
+                    .unwrap_or_else(|| format!("name:{name}"));
+                transaction.execute(
+                    "INSERT INTO applications (
+                        identity_key, name, bundle_id, executable_path,
+                        first_seen_at_ms, last_seen_at_ms
+                     ) VALUES (?1, ?2, ?3, NULL, ?4, ?5)
+                     ON CONFLICT(identity_key) DO UPDATE SET
+                        name = excluded.name,
+                        last_seen_at_ms = MAX(applications.last_seen_at_ms, excluded.last_seen_at_ms)",
+                    params![
+                        identity_key, name, record.bundle_identifier,
+                        record.started_at_ms, record.ended_at_ms
+                    ],
+                )?;
+                Some(transaction.query_row(
+                    "SELECT id FROM applications WHERE identity_key = ?1",
+                    [identity_key],
+                    |row| row.get(0),
+                )?)
+            } else {
+                None
+            };
+            let overlapping: Option<OverlappingSession> = transaction
+                .query_row(
+                    "SELECT id, state, application_id, window_title,
+                                started_at_ms, ended_at_ms
+                         FROM activity_sessions
+                         WHERE started_at_ms < ?2 AND ended_at_ms > ?1
+                         ORDER BY started_at_ms LIMIT 1",
+                    params![record.started_at_ms, record.ended_at_ms],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some((id, state, existing_app, title, start, end)) = overlapping {
+                let compatible = state == record.state.as_db_str()
+                    && existing_app == application_id
+                    && title == record.window_title;
+                if merge_conflicts && compatible {
+                    let merged_start = start.min(record.started_at_ms);
+                    let merged_end = end.max(record.ended_at_ms);
+                    transaction.execute(
+                        "UPDATE activity_sessions SET started_at_ms = ?2, ended_at_ms = ?3,
+                         duration_ms = ?3 - ?2, note = COALESCE(note, ?4), updated_at_ms = ?3
+                         WHERE id = ?1 AND is_open = 0",
+                        params![id, merged_start, merged_end, record.note],
+                    )?;
+                    merged += 1;
+                } else {
+                    skipped += 1;
+                }
+                continue;
+            }
+            transaction.execute(
+                "INSERT INTO activity_sessions (
+                    state, application_id, window_title, started_at_ms, ended_at_ms,
+                    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?5 - ?4, 0, 'SHUTDOWN', ?4, ?5, ?6)",
+                params![
+                    record.state.as_db_str(),
+                    application_id,
+                    record.window_title,
+                    record.started_at_ms,
+                    record.ended_at_ms,
+                    record.note
+                ],
+            )?;
+            imported += 1;
+        }
+        transaction.commit()?;
+        Ok((imported, merged, skipped))
     }
 
     pub fn backup_database(&self, destination: &Path) -> AppResult<()> {
@@ -638,9 +1071,10 @@ impl ActivityRepository {
             "SELECT
                 s.id, s.state, s.application_id, s.window_title,
                 s.started_at_ms, s.ended_at_ms, s.duration_ms, s.is_open,
-                s.closed_reason, s.created_at_ms, s.updated_at_ms,
+                s.closed_reason, s.created_at_ms, s.updated_at_ms, s.note,
                 a.id, a.identity_key, a.name, a.bundle_id, a.executable_path,
-                a.category, a.is_ignored, a.first_seen_at_ms, a.last_seen_at_ms
+                a.category, a.is_ignored, a.record_window_titles,
+                a.first_seen_at_ms, a.last_seen_at_ms
              FROM activity_sessions s
              LEFT JOIN applications a ON a.id = s.application_id
              WHERE s.started_at_ms < ?2 AND s.ended_at_ms > ?1
@@ -649,19 +1083,20 @@ impl ActivityRepository {
         let records = statement
             .query_map(params![range_start_ms, range_end_ms], |row| {
                 let session = map_session(row)?;
-                let application_id: Option<i64> = row.get(11)?;
+                let application_id: Option<i64> = row.get(12)?;
                 let application = application_id
                     .map(|id| {
                         Ok::<Application, rusqlite::Error>(Application {
                             id,
-                            identity_key: row.get(12)?,
-                            name: row.get(13)?,
-                            bundle_id: row.get(14)?,
-                            executable_path: row.get(15)?,
-                            category: row.get(16)?,
-                            is_ignored: row.get(17)?,
-                            first_seen_at_ms: row.get(18)?,
-                            last_seen_at_ms: row.get(19)?,
+                            identity_key: row.get(13)?,
+                            name: row.get(14)?,
+                            bundle_id: row.get(15)?,
+                            executable_path: row.get(16)?,
+                            category: row.get(17)?,
+                            is_ignored: row.get(18)?,
+                            record_window_titles: row.get(19)?,
+                            first_seen_at_ms: row.get(20)?,
+                            last_seen_at_ms: row.get(21)?,
                         })
                     })
                     .transpose()?;
@@ -692,7 +1127,7 @@ impl ActivityRepository {
 
 const SESSION_SELECT: &str = "SELECT
     id, state, application_id, window_title, started_at_ms, ended_at_ms,
-    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms
+    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
     FROM activity_sessions";
 
 fn validate_new_session(session: &NewSession) -> AppResult<()> {
@@ -707,11 +1142,60 @@ fn validate_new_session(session: &NewSession) -> AppResult<()> {
     }
 }
 
+fn validate_import_record(record: &ImportRecord) -> AppResult<()> {
+    if record.ended_at_ms <= record.started_at_ms {
+        return Err(AppError::InvalidTimeRange(
+            "imported session end must be after its start".to_owned(),
+        ));
+    }
+    if record.state == ActivityState::Active
+        && record
+            .application_name
+            .as_deref()
+            .is_none_or(|name| name.trim().is_empty())
+    {
+        return Err(AppError::InvalidSession(
+            "imported active sessions require an application name".to_owned(),
+        ));
+    }
+    if record
+        .note
+        .as_ref()
+        .is_some_and(|note| note.chars().count() > 500)
+    {
+        return Err(AppError::InvalidSession(
+            "imported session notes cannot exceed 500 characters".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
 fn retention_cutoff(now_ms: i64, retention_days: i64) -> Option<i64> {
     if retention_days == 0 {
         None
     } else {
         Some(now_ms.saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000)))
+    }
+}
+
+fn validate_clock_time(value: &str) -> AppResult<()> {
+    let valid = value.len() == 5
+        && value.as_bytes().get(2) == Some(&b':')
+        && value[..2].parse::<u8>().is_ok_and(|hour| hour < 24)
+        && value[3..].parse::<u8>().is_ok_and(|minute| minute < 60);
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::InvalidMonitorConfiguration(
+            "quiet hours must use HH:MM in 24-hour time".to_owned(),
+        ))
     }
 }
 
@@ -738,8 +1222,9 @@ fn map_application(row: &Row<'_>) -> rusqlite::Result<Application> {
         executable_path: row.get(4)?,
         category: row.get(5)?,
         is_ignored: row.get(6)?,
-        first_seen_at_ms: row.get(7)?,
-        last_seen_at_ms: row.get(8)?,
+        record_window_titles: row.get(7)?,
+        first_seen_at_ms: row.get(8)?,
+        last_seen_at_ms: row.get(9)?,
     })
 }
 
@@ -752,6 +1237,7 @@ fn map_session(row: &Row<'_>) -> rusqlite::Result<ActivitySession> {
         state: ActivityState::from_db_str(&state)?,
         application_id: row.get(2)?,
         window_title: row.get(3)?,
+        note: row.get(11)?,
         started_at_ms: row.get(4)?,
         ended_at_ms: row.get(5)?,
         duration_ms: row.get(6)?,
@@ -887,10 +1373,26 @@ mod tests {
         let repository = repository();
         let app = application(&repository, 100);
         let preferences = repository
-            .update_application_preferences(app.id, "Work", true)
+            .update_application_preferences(app.id, "Work", true, true)
             .expect("preferences should update");
         assert_eq!(preferences.category, "Work");
         assert!(preferences.is_ignored);
+        assert!(preferences.record_window_titles);
+        assert!(
+            !repository
+                .should_record_window_title(&preferences.identity_key)
+                .expect("global title setting should load")
+        );
+        let mut settings = repository.settings().expect("settings should load");
+        settings.record_window_titles = true;
+        repository
+            .update_settings(&settings, 101)
+            .expect("global title setting should update");
+        assert!(
+            repository
+                .should_record_window_title(&preferences.identity_key)
+                .expect("combined title policy should load")
+        );
 
         let session = repository
             .create_session(&NewSession {
@@ -951,7 +1453,7 @@ mod tests {
             })
             .expect("ignored application should be stored");
         repository
-            .update_application_preferences(ignored.id, "Personal", true)
+            .update_application_preferences(ignored.id, "Personal", true, false)
             .expect("ignore rule should be stored");
 
         let preview = repository
@@ -1211,6 +1713,58 @@ mod tests {
         assert_eq!(
             repository.record_counts().expect("counts should load"),
             (1, 1)
+        );
+    }
+
+    #[test]
+    fn destructive_batch_edit_can_be_undone() {
+        let repository = repository();
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Idle,
+                application_id: None,
+                window_title: None,
+                started_at_ms: 100,
+            })
+            .unwrap();
+        repository
+            .close_session(session.id, 200, ClosedReason::BecameActive)
+            .unwrap();
+        let result = repository.delete_closed_sessions(&[session.id]).unwrap();
+        assert!(repository.records_overlapping(0, 300).unwrap().is_empty());
+
+        assert_eq!(
+            repository
+                .undo_timeline_edit(result.undo_token.as_deref().unwrap())
+                .unwrap(),
+            1
+        );
+        assert_eq!(repository.records_overlapping(0, 300).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn import_skip_and_merge_policies_are_transactional() {
+        let repository = repository();
+        let records = vec![ImportRecord {
+            state: ActivityState::Active,
+            application_name: Some("Editor".to_owned()),
+            bundle_identifier: Some("example.editor".to_owned()),
+            started_at_ms: 100,
+            ended_at_ms: 200,
+            window_title: None,
+            note: Some("Imported".to_owned()),
+        }];
+        assert_eq!(
+            repository.import_records(&records, false).unwrap(),
+            (1, 0, 0)
+        );
+        assert_eq!(
+            repository.import_records(&records, false).unwrap(),
+            (0, 0, 1)
+        );
+        assert_eq!(
+            repository.import_records(&records, true).unwrap(),
+            (0, 1, 0)
         );
     }
 }

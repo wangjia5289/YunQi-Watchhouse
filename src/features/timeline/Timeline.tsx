@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   dateFromLocalIso,
   formatClock,
@@ -10,7 +10,15 @@ import {
   ActivityState,
   TimelineEntry,
   deleteTimelineSession,
+  deleteTimelineSessions,
   errorMessage,
+  importActivity,
+  ImportPreview,
+  mergeTimelineSessions,
+  previewActivityImport,
+  undoTimelineEdit,
+  updateTimelineSessionCategories,
+  updateTimelineSessionNotes,
   updateTimelineSession,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
@@ -130,6 +138,15 @@ export function Timeline() {
   const [editStart, setEditStart] = useState("");
   const [editEnd, setEditEnd] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(200);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [undoToken, setUndoToken] = useState<string | null>(null);
+  const [operationMessage, setOperationMessage] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importContents, setImportContents] = useState("");
+  const [importFormat, setImportFormat] = useState<"json" | "csv">("json");
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [conflictPolicy, setConflictPolicy] = useState<"skip" | "merge">("skip");
   const filteredEntries = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
     return entries.filter((entry) => {
@@ -141,6 +158,30 @@ export function Timeline() {
     });
   }, [entries, query, stateFilter]);
   const hours = useMemo(() => summarizeByHour(filteredEntries), [filteredEntries]);
+  const visibleEntries = filteredEntries.slice(0, visibleCount);
+
+  useEffect(() => {
+    setVisibleCount(200);
+    setSelectedIds(new Set());
+  }, [date, query, stateFilter]);
+  const selected = [...selectedIds];
+
+  const completeMutation = (message: string, token?: string | null) => {
+    setSelectedIds(new Set());
+    setUndoToken(token ?? null);
+    setOperationMessage(message);
+    notifyActivityDataChanged();
+    refresh();
+  };
+
+  const runOperation = async (operation: () => Promise<void>) => {
+    setEditError(null);
+    try {
+      await operation();
+    } catch (reason) {
+      setEditError(errorMessage(reason));
+    }
+  };
   const dateValue = dateFromLocalIso(date);
   const isToday = date === today;
   const activeTotal = stateTotal(filteredEntries, "ACTIVE");
@@ -221,7 +262,58 @@ export function Timeline() {
             Details
           </button>
         </div>
+        <button className="timeline-import-button" type="button" onClick={() => setImportOpen((open) => !open)}>
+          Import
+        </button>
       </div>
+
+      {importOpen && (
+        <section className="timeline-import" aria-label="Import activity">
+          <div>
+            <strong>Import Watchhouse data</strong>
+            <span>Choose a JSON or CSV export. Nothing is written until you confirm.</span>
+          </div>
+          <input
+            type="file"
+            accept=".json,.csv,application/json,text/csv"
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              if (!file) return;
+              const format = file.name.toLowerCase().endsWith(".csv") ? "csv" : "json";
+              setImportFormat(format);
+              setImportPreview(null);
+              void file.text().then((contents) => {
+                setImportContents(contents);
+                return previewActivityImport(contents, format);
+              }).then(setImportPreview).catch((reason) => setEditError(errorMessage(reason)));
+            }}
+          />
+          {importPreview && (
+            <div className="import-preview">
+              <span>{importPreview.recordCount} valid sessions</span>
+              <span>{importPreview.conflictCount} conflicts</span>
+              <span>{importPreview.invalidCount} invalid</span>
+              {importPreview.startedAtMs !== null && importPreview.endedAtMs !== null && (
+                <span>{new Date(importPreview.startedAtMs).toLocaleDateString()} – {new Date(importPreview.endedAtMs).toLocaleDateString()}</span>
+              )}
+              <select value={conflictPolicy} onChange={(event) => setConflictPolicy(event.currentTarget.value as "skip" | "merge")} aria-label="Import conflict policy">
+                <option value="skip">Skip conflicts</option>
+                <option value="merge">Merge compatible conflicts</option>
+              </select>
+              <button
+                type="button"
+                disabled={importPreview.recordCount === 0 || importPreview.invalidCount > 0}
+                onClick={() => void runOperation(async () => {
+                  const result = await importActivity(importContents, importFormat, conflictPolicy);
+                  setImportOpen(false);
+                  setImportPreview(null);
+                  completeMutation(`Imported ${result.importedCount}; merged ${result.mergedCount}; skipped ${result.skippedCount}.`);
+                })}
+              >Import activity</button>
+            </div>
+          )}
+        </section>
+      )}
 
       <div className="timeline-filters">
         <label>
@@ -252,6 +344,20 @@ export function Timeline() {
         )}
       </div>
       {editError && <div className="error-banner" role="alert">{editError}</div>}
+      {operationMessage && (
+        <div className="timeline-operation-message" role="status">
+          <span>{operationMessage}</span>
+          {undoToken && <button type="button" onClick={() => void runOperation(async () => {
+            const restored = await undoTimelineEdit(undoToken);
+            setUndoToken(null);
+            completeMutation(`Restored ${restored} sessions.`);
+          })}>Undo</button>}
+          <button type="button" aria-label="Dismiss message" onClick={() => {
+            setOperationMessage(null);
+            setUndoToken(null);
+          }}>Close</button>
+        </div>
+      )}
 
       {error && (
         <div className="error-banner" role="alert">
@@ -312,6 +418,52 @@ export function Timeline() {
           })}
         </section>
       ) : (
+      <>
+      {filteredEntries.some((entry) => !entry.isOpen) && (
+        <div className="timeline-selection-bar">
+          <label>
+            <input
+              type="checkbox"
+              checked={selected.length > 0 && selected.length === filteredEntries.filter((entry) => !entry.isOpen).length}
+              onChange={(event) => setSelectedIds(event.currentTarget.checked
+                ? new Set(filteredEntries.filter((entry) => !entry.isOpen).map((entry) => entry.sessionId))
+                : new Set())}
+            />
+            {selected.length ? `${selected.length} selected` : "Select sessions"}
+          </label>
+          {selected.length > 0 && (
+            <div>
+              <button type="button" disabled={selected.length < 2} onClick={() => void runOperation(async () => {
+                const result = await mergeTimelineSessions(selected);
+                completeMutation(`Merged ${result.affectedCount} sessions.`, result.undoToken);
+              })}>Merge</button>
+              <button type="button" onClick={() => {
+                const note = window.prompt("Note for selected sessions (leave empty to clear)");
+                if (note === null) return;
+                void runOperation(async () => {
+                  const count = await updateTimelineSessionNotes(selected, note || null);
+                  completeMutation(`Updated notes on ${count} sessions.`);
+                });
+              }}>Note</button>
+              <button type="button" onClick={() => {
+                const category = window.prompt("Application category");
+                if (!category) return;
+                void runOperation(async () => {
+                  const count = await updateTimelineSessionCategories(selected, category);
+                  completeMutation(`Updated ${count} application categories.`);
+                });
+              }}>Category</button>
+              <button className="danger" type="button" onClick={() => {
+                if (!window.confirm(`Delete ${selected.length} selected sessions?`)) return;
+                void runOperation(async () => {
+                  const result = await deleteTimelineSessions(selected);
+                  completeMutation(`Deleted ${result.affectedCount} sessions.`, result.undoToken);
+                });
+              }}>Delete</button>
+            </div>
+          )}
+        </div>
+      )}
       <section className="timeline-list" aria-label={`${dateTitle} activity sessions`}>
         {loading && entries.length === 0 && (
           <div className="timeline-loading">
@@ -334,15 +486,29 @@ export function Timeline() {
           </div>
         )}
 
-        {filteredEntries.map((entry, index) => {
+        {visibleEntries.map((entry, index) => {
           const idle = entry.state === "IDLE";
           const name = idle ? "Idle" : entry.applicationName ?? "Unknown application";
           return (
             <article className={`timeline-row${idle ? " idle" : ""}`} key={entry.sessionId}>
+              {!entry.isOpen && (
+                <input
+                  className="session-select"
+                  type="checkbox"
+                  checked={selectedIds.has(entry.sessionId)}
+                  aria-label={`Select ${name} session`}
+                  onChange={(event) => setSelectedIds((current) => {
+                    const next = new Set(current);
+                    if (event.currentTarget.checked) next.add(entry.sessionId);
+                    else next.delete(entry.sessionId);
+                    return next;
+                  })}
+                />
+              )}
               <time>{formatClock(entry.startedAtMs)}</time>
               <div className="timeline-rail" aria-hidden="true">
                 <span />
-                {index < filteredEntries.length - 1 && <i />}
+                {index < visibleEntries.length - 1 && <i />}
               </div>
               <div className="session-card">
                 {idle || entry.applicationId === null ? (
@@ -364,6 +530,10 @@ export function Timeline() {
                     {formatClock(entry.startedAtMs)} – {formatClock(entry.endedAtMs)}
                     {entry.isOpen && <i className="open-session">Live</i>}
                   </span>
+                  {entry.windowTitle && (
+                    <small className="session-note">{entry.windowTitle}</small>
+                  )}
+                  {entry.note && <small className="session-note">{entry.note}</small>}
                 </div>
                 {editingId === entry.sessionId && (
                   <div className="session-editor">
@@ -419,8 +589,10 @@ export function Timeline() {
                     aria-label={`Delete ${name} session at ${formatClock(entry.startedAtMs)}`}
                     title="Delete session"
                     onClick={() => {
-                      if (window.confirm(`Delete this ${name} session? This cannot be undone.`)) {
-                        void deleteTimelineSession(entry.sessionId).then(refresh);
+                      if (window.confirm(`Delete this ${name} session? You can undo it afterward.`)) {
+                        void deleteTimelineSession(entry.sessionId).then((result) => {
+                          completeMutation("Deleted 1 session.", result.undoToken);
+                        }).catch((reason) => setEditError(errorMessage(reason)));
                       }
                     }}
                   >
@@ -435,6 +607,16 @@ export function Timeline() {
           );
         })}
 
+        {visibleCount < filteredEntries.length && (
+          <button
+            type="button"
+            className="timeline-load-more"
+            onClick={() => setVisibleCount((count) => count + 200)}
+          >
+            Show 200 more sessions
+          </button>
+        )}
+
         {filteredEntries.length > 0 && (
           <div className="timeline-end">
             <time>
@@ -445,6 +627,7 @@ export function Timeline() {
           </div>
         )}
       </section>
+      </>
       )}
     </div>
   );

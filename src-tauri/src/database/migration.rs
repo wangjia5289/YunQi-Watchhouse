@@ -8,5 +8,10 @@ pub(super) fn migrations() -> Migrations<'static> {
             "../../migrations/0003_application_preferences.sql"
         )),
         M::up(include_str!("../../migrations/0004_data_maintenance.sql")),
+        M::up(include_str!("../../migrations/0005_focus_settings.sql")),
+        M::up(include_str!("../../migrations/0006_timeline_editing.sql")),
+        M::up(include_str!(
+            "../../migrations/0007_window_title_privacy.sql"
+        )),
     ])
 }

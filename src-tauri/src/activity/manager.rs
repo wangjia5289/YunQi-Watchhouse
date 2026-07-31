@@ -273,7 +273,7 @@ impl SessionManager {
                     session: NewSession {
                         state: ActivityState::Active,
                         application_id: Some(application.id),
-                        window_title: None,
+                        window_title: foreground.window_title.clone(),
                         started_at_ms,
                     },
                     application_identity: Some(application.identity_key),
@@ -355,7 +355,17 @@ impl SessionManager {
         }
     }
 
-    pub fn spawn(mut self) -> (SessionManagerHandle, mpsc::UnboundedSender<ActivitySample>) {
+    pub fn spawn(self) -> (SessionManagerHandle, mpsc::UnboundedSender<ActivitySample>) {
+        self.spawn_with_notifier(|| {})
+    }
+
+    pub fn spawn_with_notifier<F>(
+        mut self,
+        notify_data_changed: F,
+    ) -> (SessionManagerHandle, mpsc::UnboundedSender<ActivitySample>)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
         let (sample_sender, mut sample_receiver) = mpsc::unbounded_channel();
         let (control_sender, mut control_receiver) = mpsc::unbounded_channel();
         let (status_sender, status_receiver) = watch::channel(SessionManagerStatus::Running);
@@ -376,8 +386,15 @@ impl SessionManager {
                     },
                     sample = sample_receiver.recv() => {
                         let Some(sample) = sample else { break };
+                        let before = self.current_session().map(session_revision);
                         let status = match self.process_sample(sample) {
-                            Ok(()) => SessionManagerStatus::Running,
+                            Ok(()) => {
+                                let after = self.current_session().map(session_revision);
+                                if before != after {
+                                    notify_data_changed();
+                                }
+                                SessionManagerStatus::Running
+                            }
                             Err(error) => SessionManagerStatus::Degraded {
                                 // Errors contain technical persistence state,
                                 // never input content or window titles.
@@ -393,7 +410,10 @@ impl SessionManager {
                         match control {
                             Some(ManagerControl::Pause(acknowledge)) => {
                                 let status = match self.close_current(ClosedReason::Paused) {
-                                    Ok(()) => SessionManagerStatus::Running,
+                                    Ok(()) => {
+                                        notify_data_changed();
+                                        SessionManagerStatus::Running
+                                    }
                                     Err(error) => SessionManagerStatus::Degraded {
                                         message: error.to_string(),
                                     },
@@ -427,6 +447,15 @@ impl SessionManager {
     }
 }
 
+fn session_revision(session: &ActivitySession) -> (i64, i64, i64, bool) {
+    (
+        session.id,
+        session.updated_at_ms,
+        session.ended_at_ms,
+        session.is_open,
+    )
+}
+
 struct PreparedSession {
     session: NewSession,
     application_identity: Option<String>,
@@ -436,12 +465,18 @@ fn session_matches_sample(current: &ManagedSession, sample: &ActivitySample) -> 
     match (current.session.state, sample.state) {
         (ActivityState::Idle, ActivityState::Idle) => true,
         (ActivityState::Active, ActivityState::Active) => {
-            sample
+            let same_application = sample
                 .foreground_application
                 .as_ref()
                 .map(application_identity)
                 .as_ref()
-                == current.application_identity.as_ref()
+                == current.application_identity.as_ref();
+            let same_title = sample
+                .foreground_application
+                .as_ref()
+                .and_then(|application| application.window_title.as_ref())
+                == current.session.window_title.as_ref();
+            same_application && same_title
         }
         _ => false,
     }
@@ -572,6 +607,8 @@ mod tests {
                 name: name.to_owned(),
                 bundle_identifier: Some(bundle.to_owned()),
                 executable_path: None,
+                process_identifier: None,
+                window_title: None,
             }),
             continuity: SampleContinuity::Continuous,
         }
@@ -639,7 +676,7 @@ mod tests {
             })
             .expect("ignored application should be stored");
         repository
-            .update_application_preferences(ignored.id, "Personal", true)
+            .update_application_preferences(ignored.id, "Personal", true, false)
             .expect("application should be ignored");
 
         manager

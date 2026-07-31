@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use chrono::{DateTime, Utc};
@@ -8,6 +9,50 @@ use chrono::{DateTime, Utc};
 use crate::database::{ActivityRepository, MaintenanceResult};
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceStatus {
+    pub running: bool,
+    pub last_success_at_ms: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Default)]
+pub struct MaintenanceStatusState(Arc<Mutex<MaintenanceStatus>>);
+
+impl MaintenanceStatusState {
+    pub fn snapshot(&self) -> MaintenanceStatus {
+        self.0
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_else(|_| MaintenanceStatus {
+                running: false,
+                last_success_at_ms: None,
+                last_error: Some("maintenance status lock was poisoned".to_owned()),
+            })
+    }
+
+    pub fn start(&self) {
+        if let Ok(mut status) = self.0.lock() {
+            status.running = true;
+            status.last_error = None;
+        }
+    }
+
+    pub fn finish(&self, now_ms: i64, result: &Result<(), String>) {
+        if let Ok(mut status) = self.0.lock() {
+            status.running = false;
+            match result {
+                Ok(()) => {
+                    status.last_success_at_ms = Some(now_ms);
+                    status.last_error = None;
+                }
+                Err(error) => status.last_error = Some(error.clone()),
+            }
+        }
+    }
+}
 
 pub fn run_due(
     repository: &ActivityRepository,

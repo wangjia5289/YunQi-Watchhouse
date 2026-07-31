@@ -19,10 +19,11 @@ pub fn update_application_preferences(
     application_id: i64,
     category: String,
     is_ignored: bool,
+    record_window_titles: bool,
     repository: State<'_, ActivityRepository>,
 ) -> Result<Application, String> {
     repository
-        .update_application_preferences(application_id, &category, is_ignored)
+        .update_application_preferences(application_id, &category, is_ignored, record_window_titles)
         .map_err(|error| error.to_string())
 }
 

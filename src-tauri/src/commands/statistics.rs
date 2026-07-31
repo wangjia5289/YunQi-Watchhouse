@@ -4,8 +4,8 @@ use tauri::State;
 use crate::{
     error::AppError,
     statistics::{
-        AppUsage, CategoryUsage, DailyUsage, StatisticsService, TimeRange, TimelineEntry,
-        TodaySummary,
+        AppUsage, CategoryUsage, DailyUsage, FocusSummary, StatisticsService, TimeRange,
+        TimelineEntry, TodaySummary,
     },
 };
 
@@ -17,6 +17,14 @@ pub async fn get_today_summary(
 ) -> IpcResult<TodaySummary> {
     let statistics = statistics.inner().clone();
     run_blocking(move || statistics.today_summary()).await
+}
+
+#[tauri::command]
+pub async fn get_today_focus_summary(
+    statistics: State<'_, StatisticsService>,
+) -> IpcResult<FocusSummary> {
+    let statistics = statistics.inner().clone();
+    run_blocking(move || statistics.today_focus_summary()).await
 }
 
 #[tauri::command]

@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { TimelineEntry, errorMessage, getTimeline } from "../../lib/ipc";
-import { localIsoDate } from "../../lib/format";
 import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
 
 interface TimelineState {
@@ -15,13 +14,17 @@ export function useTimeline(date: string): TimelineState & { refresh: () => void
     loading: true,
     error: null,
   });
+  const requestRevision = useRef(0);
 
   const load = useCallback(async () => {
+    const revision = ++requestRevision.current;
     setState((current) => ({ ...current, loading: true }));
     try {
       const entries = await getTimeline(date);
+      if (revision !== requestRevision.current) return;
       setState({ entries, loading: false, error: null });
     } catch (error) {
+      if (revision !== requestRevision.current) return;
       setState((current) => ({
         ...current,
         loading: false,
@@ -33,10 +36,7 @@ export function useTimeline(date: string): TimelineState & { refresh: () => void
   useEffect(() => {
     void load();
     window.addEventListener(ACTIVITY_DATA_CHANGED, load);
-    const timer =
-      date === localIsoDate() ? window.setInterval(() => void load(), 10_000) : null;
     return () => {
-      if (timer !== null) window.clearInterval(timer);
       window.removeEventListener(ACTIVITY_DATA_CHANGED, load);
     };
   }, [date, load]);

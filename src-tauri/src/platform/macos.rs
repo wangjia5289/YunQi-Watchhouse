@@ -1,4 +1,5 @@
 use std::{
+    ffi::{c_char, c_void},
     fs,
     hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
@@ -14,6 +15,36 @@ use crate::{
     error::{AppError, AppResult},
     platform::{ForegroundApplication, ForegroundApplicationProvider, IdleTimeProvider},
 };
+
+type AxUiElementRef = *const c_void;
+type CfTypeRef = *const c_void;
+type CfStringRef = *const c_void;
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+    fn AXUIElementCreateApplication(pid: i32) -> AxUiElementRef;
+    fn AXUIElementCopyAttributeValue(
+        element: AxUiElementRef,
+        attribute: CfStringRef,
+        value: *mut CfTypeRef,
+    ) -> i32;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRelease(value: CfTypeRef);
+    fn CFStringGetLength(value: CfStringRef) -> isize;
+    fn CFStringGetMaximumSizeForEncoding(length: isize, encoding: u32) -> isize;
+    fn CFStringGetCString(
+        value: CfStringRef,
+        buffer: *mut c_char,
+        buffer_size: isize,
+        encoding: u32,
+    ) -> bool;
+}
+
+const UTF8_ENCODING: u32 = 0x0800_0100;
 
 /// Reads macOS' aggregate HID idle duration through the public CoreGraphics API.
 ///
@@ -119,16 +150,83 @@ impl ForegroundApplicationProvider for MacOsActivityProvider {
                 .executableURL()
                 .and_then(|url| url.path())
                 .map(|value| value.to_string());
+            let process_identifier = application.processIdentifier();
 
-            normalize_application(name, bundle_identifier, executable_path)
+            normalize_application(
+                name,
+                bundle_identifier,
+                executable_path,
+                Some(process_identifier),
+            )
         })
     }
+
+    fn window_title(&self, application: &ForegroundApplication) -> AppResult<Option<String>> {
+        if accessibility_permission() != crate::platform::AccessibilityPermission::Granted {
+            return Ok(None);
+        }
+        let Some(pid) = application.process_identifier else {
+            return Ok(None);
+        };
+        Ok(read_window_title(pid))
+    }
+}
+
+pub fn accessibility_permission() -> crate::platform::AccessibilityPermission {
+    if unsafe { AXIsProcessTrusted() } {
+        crate::platform::AccessibilityPermission::Granted
+    } else {
+        crate::platform::AccessibilityPermission::Denied
+    }
+}
+
+fn read_window_title(pid: i32) -> Option<String> {
+    autoreleasepool(|_| {
+        let application = unsafe { AXUIElementCreateApplication(pid) };
+        if application.is_null() {
+            return None;
+        }
+        let focused_window = copy_ax_attribute(application, "AXFocusedWindow");
+        unsafe { CFRelease(application) };
+        let window = focused_window?;
+        let title = copy_ax_attribute(window, "AXTitle");
+        unsafe { CFRelease(window) };
+        let title = title?;
+        let result = cf_string_to_string(title);
+        unsafe { CFRelease(title) };
+        result.filter(|value| !value.trim().is_empty())
+    })
+}
+
+fn copy_ax_attribute(element: AxUiElementRef, name: &str) -> Option<CfTypeRef> {
+    let name = NSString::from_str(name);
+    let mut value: CfTypeRef = std::ptr::null();
+    let status = unsafe {
+        AXUIElementCopyAttributeValue(element, (&*name as *const NSString).cast(), &mut value)
+    };
+    (status == 0 && !value.is_null()).then_some(value)
+}
+
+fn cf_string_to_string(value: CfTypeRef) -> Option<String> {
+    let length = unsafe { CFStringGetLength(value) };
+    if length < 0 {
+        return None;
+    }
+    let capacity =
+        unsafe { CFStringGetMaximumSizeForEncoding(length, UTF8_ENCODING) }.checked_add(1)?;
+    let mut buffer = vec![0_u8; usize::try_from(capacity).ok()?];
+    if !unsafe { CFStringGetCString(value, buffer.as_mut_ptr().cast(), capacity, UTF8_ENCODING) } {
+        return None;
+    }
+    let end = buffer.iter().position(|byte| *byte == 0)?;
+    String::from_utf8(buffer[..end].to_vec()).ok()
 }
 
 fn normalize_application(
     name: Option<String>,
     bundle_identifier: Option<String>,
     executable_path: Option<String>,
+    process_identifier: Option<i32>,
 ) -> AppResult<ForegroundApplication> {
     let name = non_empty(name)
         .or_else(|| non_empty(bundle_identifier.clone()))
@@ -147,6 +245,8 @@ fn normalize_application(
         name,
         bundle_identifier: non_empty(bundle_identifier),
         executable_path: non_empty(executable_path),
+        process_identifier,
+        window_title: None,
     })
 }
 
@@ -165,12 +265,15 @@ mod tests {
                 Some("Safari".to_owned()),
                 Some("com.apple.Safari".to_owned()),
                 Some("/Applications/Safari.app/Contents/MacOS/Safari".to_owned()),
+                Some(42),
             )
             .expect("application should normalize"),
             ForegroundApplication {
                 name: "Safari".to_owned(),
                 bundle_identifier: Some("com.apple.Safari".to_owned()),
                 executable_path: Some("/Applications/Safari.app/Contents/MacOS/Safari".to_owned()),
+                process_identifier: Some(42),
+                window_title: None,
             }
         );
     }
@@ -181,6 +284,7 @@ mod tests {
             None,
             Some("com.example.Agent".to_owned()),
             Some("/Applications/Agent".to_owned()),
+            None,
         )
         .expect("bundle identifier should provide a name");
 
@@ -189,9 +293,13 @@ mod tests {
 
     #[test]
     fn falls_back_to_executable_file_name_without_bundle_metadata() {
-        let application =
-            normalize_application(None, None, Some("/usr/local/bin/example-agent".to_owned()))
-                .expect("path should provide a name");
+        let application = normalize_application(
+            None,
+            None,
+            Some("/usr/local/bin/example-agent".to_owned()),
+            None,
+        )
+        .expect("path should provide a name");
 
         assert_eq!(application.name, "example-agent");
     }
@@ -199,7 +307,7 @@ mod tests {
     #[test]
     fn rejects_application_without_any_identity() {
         assert!(matches!(
-            normalize_application(Some(" ".to_owned()), None, None),
+            normalize_application(Some(" ".to_owned()), None, None, None),
             Err(AppError::Platform(_))
         ));
     }

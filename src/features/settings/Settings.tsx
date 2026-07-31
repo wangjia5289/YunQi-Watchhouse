@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   DiagnosticsSummary,
   MaintenancePreview,
+  MaintenanceStatus,
   Settings as SettingsModel,
   backupDatabase,
   chooseBackupDirectory,
@@ -11,8 +12,11 @@ import {
   exportActivity,
   errorMessage,
   getSettings,
+  getAccessibilityPermission,
+  AccessibilityPermission,
   getDiagnosticsSummary,
   getMaintenancePreview,
+  getMaintenanceStatus,
   openDataDirectory,
   openBackupDirectory,
   openLogDirectory,
@@ -56,6 +60,9 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [maintenancePreview, setMaintenancePreview] = useState<MaintenancePreview | null>(null);
+  const [maintenanceStatus, setMaintenanceStatus] = useState<MaintenanceStatus | null>(null);
+  const [accessibilityPermission, setAccessibilityPermission] =
+    useState<AccessibilityPermission>("UNSUPPORTED");
 
   useEffect(() => {
     void getSettings()
@@ -63,6 +70,8 @@ export function Settings() {
       .catch((error) => setMessage(errorMessage(error)));
     void getDiagnosticsSummary().then(setDiagnostics);
     void getMaintenancePreview().then(setMaintenancePreview);
+    void getMaintenanceStatus().then(setMaintenanceStatus);
+    void getAccessibilityPermission().then(setAccessibilityPermission);
   }, []);
 
   useEffect(() => {
@@ -135,9 +144,20 @@ export function Settings() {
             <option value={900}>15 minutes</option>
           </select>
         </label>
-        <div className="setting-row disabled">
-          <div><strong>Record Window Titles</strong><small>Requires a future Accessibility permission module.</small></div>
-          <Toggle checked={false} disabled onChange={() => {}} />
+        <div className="setting-row">
+          <div>
+            <strong>Record Window Titles</strong>
+            <small>
+              {accessibilityPermission === "GRANTED"
+                ? "Off by default for every application; sensitive text is redacted locally."
+                : "Requires macOS Accessibility permission. Enable it in System Settings, then reopen Watchhouse."}
+            </small>
+          </div>
+          <Toggle
+            checked={settings.recordWindowTitles}
+            disabled={saving || accessibilityPermission !== "GRANTED"}
+            onChange={(value) => void save({ ...settings, recordWindowTitles: value })}
+          />
         </div>
       </section>
 
@@ -151,6 +171,83 @@ export function Settings() {
               {value[0] + value.slice(1).toLowerCase()}
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className="settings-card">
+        <div className="list-heading"><div><p className="section-kicker">Focus</p><h2>Goals and breaks</h2></div></div>
+        <label className="setting-row">
+          <div><strong>Daily Focus Goal</strong><small>Progress appears on Today.</small></div>
+          <select
+            value={settings.dailyFocusGoalMinutes}
+            disabled={saving}
+            onChange={(event) => void save({
+              ...settings,
+              dailyFocusGoalMinutes: Number(event.currentTarget.value),
+            })}
+          >
+            <option value={0}>Off</option>
+            <option value={120}>2 hours</option>
+            <option value={240}>4 hours</option>
+            <option value={360}>6 hours</option>
+            <option value={480}>8 hours</option>
+          </select>
+        </label>
+        <label className="setting-row">
+          <div><strong>Focus Block Gap</strong><small>Longer idle periods end a focus block.</small></div>
+          <select
+            value={settings.focusBlockGapMinutes}
+            disabled={saving}
+            onChange={(event) => void save({
+              ...settings,
+              focusBlockGapMinutes: Number(event.currentTarget.value),
+            })}
+          >
+            {[3, 5, 10, 15, 30].map((minutes) => (
+              <option value={minutes} key={minutes}>{minutes} minutes</option>
+            ))}
+          </select>
+        </label>
+        <div className="setting-row">
+          <div><strong>Break Reminders</strong><small>Show a local reminder after continuous focus.</small></div>
+          <Toggle
+            checked={settings.breakRemindersEnabled}
+            disabled={saving}
+            onChange={(value) => void save({ ...settings, breakRemindersEnabled: value })}
+          />
+        </div>
+        <label className="setting-row">
+          <div><strong>Reminder Interval</strong><small>Reminders reset when a new focus block starts.</small></div>
+          <select
+            value={settings.breakReminderMinutes}
+            disabled={saving || !settings.breakRemindersEnabled}
+            onChange={(event) => void save({
+              ...settings,
+              breakReminderMinutes: Number(event.currentTarget.value) as SettingsModel["breakReminderMinutes"],
+            })}
+          >
+            {[30, 45, 60, 90, 120].map((minutes) => (
+              <option value={minutes} key={minutes}>{minutes} minutes</option>
+            ))}
+          </select>
+        </label>
+        <div className="setting-row">
+          <div><strong>Quiet Hours</strong><small>Break reminders stay silent during this period.</small></div>
+          <span className="quiet-hours">
+            <input
+              type="time"
+              value={settings.quietHoursStart}
+              disabled={saving || !settings.breakRemindersEnabled}
+              onChange={(event) => void save({ ...settings, quietHoursStart: event.currentTarget.value })}
+            />
+            <span>to</span>
+            <input
+              type="time"
+              value={settings.quietHoursEnd}
+              disabled={saving || !settings.breakRemindersEnabled}
+              onChange={(event) => void save({ ...settings, quietHoursEnd: event.currentTarget.value })}
+            />
+          </span>
         </div>
       </section>
 
@@ -288,6 +385,12 @@ export function Settings() {
           <p className="settings-note">
             Last cleanup: {formatOptionalDate(settings.lastMaintenanceAtMs)} · Last backup: {formatOptionalDate(settings.lastBackupAtMs)}
           </p>
+          {maintenanceStatus?.running && (
+            <p className="settings-note">Automatic maintenance is running.</p>
+          )}
+          {maintenanceStatus?.lastError && (
+            <p className="maintenance-error">Automatic maintenance failed: {maintenanceStatus.lastError}</p>
+          )}
         </div>
         <button className="danger-button" onClick={() => {
           if (window.confirm("Delete all recorded activity? This cannot be undone.")) {

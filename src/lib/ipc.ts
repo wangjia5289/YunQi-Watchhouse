@@ -48,6 +48,31 @@ export interface TodaySummary {
   lastActivityAtMs: number | null;
 }
 
+export interface FocusBlock {
+  startedAtMs: number;
+  endedAtMs: number;
+  activeDurationMs: number;
+  applicationSwitchCount: number;
+  isOpen: boolean;
+}
+
+export interface FocusSummary {
+  totalFocusDurationMs: number;
+  longestFocusDurationMs: number;
+  applicationSwitchCount: number;
+  goalMinutes: number;
+  breakRemindersEnabled: boolean;
+  breakReminderMinutes: number;
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  blocks: FocusBlock[];
+}
+
+export interface FocusModeStatus {
+  active: boolean;
+  startedAtMs: number | null;
+}
+
 export interface TimelineEntry {
   sessionId: number;
   applicationId: number | null;
@@ -56,6 +81,7 @@ export interface TimelineEntry {
   bundleIdentifier: string | null;
   category: string | null;
   windowTitle: string | null;
+  note: string | null;
   startedAtMs: number;
   endedAtMs: number;
   durationMs: number;
@@ -68,6 +94,7 @@ export interface AppUsage {
   bundleIdentifier: string | null;
   category: string;
   isIgnored: boolean;
+  recordWindowTitles: boolean;
   durationMs: number;
 }
 
@@ -104,6 +131,12 @@ export interface Settings {
   backupDirectory: string | null;
   lastMaintenanceAtMs: number;
   lastBackupAtMs: number;
+  dailyFocusGoalMinutes: number;
+  focusBlockGapMinutes: number;
+  breakRemindersEnabled: boolean;
+  breakReminderMinutes: 30 | 45 | 60 | 90 | 120;
+  quietHoursStart: string;
+  quietHoursEnd: string;
 }
 
 export interface MaintenancePreview {
@@ -114,6 +147,12 @@ export interface MaintenancePreview {
 export interface MaintenanceResult {
   deletedSessionCount: number;
   deletedApplicationIds: number[];
+}
+
+export interface MaintenanceStatus {
+  running: boolean;
+  lastSuccessAtMs: number | null;
+  lastError: string | null;
 }
 
 export interface DiagnosticsSummary {
@@ -141,12 +180,84 @@ export function getTodaySummary(): Promise<TodaySummary> {
   return invoke("get_today_summary");
 }
 
+export function getTodayFocusSummary(): Promise<FocusSummary> {
+  return invoke("get_today_focus_summary");
+}
+
+export function getFocusMode(): Promise<FocusModeStatus> {
+  return invoke("get_focus_mode");
+}
+
+export function setFocusMode(active: boolean): Promise<FocusModeStatus> {
+  return invoke("set_focus_mode", { active });
+}
+
 export function getTimeline(date: string): Promise<TimelineEntry[]> {
   return invoke("get_timeline", { date });
 }
 
-export function deleteTimelineSession(sessionId: number): Promise<void> {
+export interface TimelineMutationResult {
+  affectedCount: number;
+  undoToken: string | null;
+}
+
+export interface ImportPreview {
+  recordCount: number;
+  conflictCount: number;
+  invalidCount: number;
+  startedAtMs: number | null;
+  endedAtMs: number | null;
+}
+
+export interface ImportResult {
+  importedCount: number;
+  mergedCount: number;
+  skippedCount: number;
+}
+
+export function deleteTimelineSession(sessionId: number): Promise<TimelineMutationResult> {
   return invoke("delete_timeline_session", { sessionId });
+}
+
+export function deleteTimelineSessions(sessionIds: number[]): Promise<TimelineMutationResult> {
+  return invoke("delete_timeline_sessions", { sessionIds });
+}
+
+export function mergeTimelineSessions(sessionIds: number[]): Promise<TimelineMutationResult> {
+  return invoke("merge_timeline_sessions", { sessionIds });
+}
+
+export function updateTimelineSessionNotes(
+  sessionIds: number[],
+  note: string | null,
+): Promise<number> {
+  return invoke("update_timeline_session_notes", { sessionIds, note });
+}
+
+export function updateTimelineSessionCategories(
+  sessionIds: number[],
+  category: string,
+): Promise<number> {
+  return invoke("update_timeline_session_categories", { sessionIds, category });
+}
+
+export function undoTimelineEdit(undoToken: string): Promise<number> {
+  return invoke("undo_timeline_edit", { undoToken });
+}
+
+export function previewActivityImport(
+  contents: string,
+  format: "json" | "csv",
+): Promise<ImportPreview> {
+  return invoke("preview_activity_import", { contents, format });
+}
+
+export function importActivity(
+  contents: string,
+  format: "json" | "csv",
+  conflictPolicy: "skip" | "merge",
+): Promise<ImportResult> {
+  return invoke("import_activity", { contents, format, conflictPolicy });
 }
 
 export function updateTimelineSession(
@@ -185,18 +296,27 @@ export interface ApplicationPreferences {
   id: number;
   category: string;
   isIgnored: boolean;
+  recordWindowTitles: boolean;
 }
 
 export function updateApplicationPreferences(
   applicationId: number,
   category: string,
   isIgnored: boolean,
+  recordWindowTitles: boolean,
 ): Promise<ApplicationPreferences> {
   return invoke("update_application_preferences", {
     applicationId,
     category,
     isIgnored,
+    recordWindowTitles,
   });
+}
+
+export type AccessibilityPermission = "GRANTED" | "DENIED" | "UNSUPPORTED";
+
+export function getAccessibilityPermission(): Promise<AccessibilityPermission> {
+  return invoke("get_accessibility_permission");
 }
 
 export function getDailyUsage(
@@ -264,6 +384,10 @@ export function openBackupDirectory(): Promise<void> {
 
 export function getMaintenancePreview(): Promise<MaintenancePreview> {
   return invoke("get_maintenance_preview");
+}
+
+export function getMaintenanceStatus(): Promise<MaintenanceStatus> {
+  return invoke("get_maintenance_status");
 }
 
 export function runDataMaintenance(): Promise<MaintenanceResult> {

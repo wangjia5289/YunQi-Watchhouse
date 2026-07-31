@@ -87,6 +87,7 @@ pub struct Application {
     pub executable_path: Option<String>,
     pub category: String,
     pub is_ignored: bool,
+    pub record_window_titles: bool,
     pub first_seen_at_ms: i64,
     pub last_seen_at_ms: i64,
 }
@@ -122,6 +123,7 @@ pub struct ActivitySession {
     pub state: ActivityState,
     pub application_id: Option<i64>,
     pub window_title: Option<String>,
+    pub note: Option<String>,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub duration_ms: i64,

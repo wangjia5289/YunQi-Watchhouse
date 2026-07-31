@@ -13,6 +13,8 @@ import {
 } from "./lib/ipc";
 import { completeOnboarding, setTrackingPaused } from "./lib/ipc";
 import { PrivacyNotice } from "./features/onboarding/PrivacyNotice";
+import { listen } from "@tauri-apps/api/event";
+import { notifyActivityDataChanged } from "./lib/events";
 
 const navigation = [
   { label: "Today", icon: "today", page: "today", enabled: true },
@@ -75,7 +77,18 @@ function App() {
     const loadTracking = () => void getCurrentActivity().then(setTracking).catch(() => {});
     loadTracking();
     const timer = window.setInterval(loadTracking, 2_000);
-    return () => window.clearInterval(timer);
+    const refreshVisibleData = () => {
+      if (document.visibilityState === "visible") notifyActivityDataChanged();
+    };
+    window.addEventListener("focus", refreshVisibleData);
+    document.addEventListener("visibilitychange", refreshVisibleData);
+    const unlisten = listen("activity-data-changed", notifyActivityDataChanged);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshVisibleData);
+      document.removeEventListener("visibilitychange", refreshVisibleData);
+      void unlisten.then((stop) => stop());
+    };
   }, []);
 
   return (

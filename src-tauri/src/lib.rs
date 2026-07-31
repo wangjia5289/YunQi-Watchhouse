@@ -2,17 +2,19 @@ pub mod activity;
 pub mod commands;
 pub mod database;
 pub mod error;
+pub mod focus;
 pub mod maintenance;
 pub mod platform;
 pub mod statistics;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
 
 pub struct TrackingTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct FocusTrayMenuItem(pub MenuItem<tauri::Wry>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -49,7 +51,10 @@ pub fn run() {
             let settings = repository.settings()?;
             app.manage(statistics::StatisticsService::new(repository.clone()));
             app.manage(repository);
+            app.manage(focus::FocusModeState::default());
 
+            let maintenance_status = maintenance::MaintenanceStatusState::default();
+            app.manage(maintenance_status.clone());
             let maintenance_repository =
                 app.state::<database::ActivityRepository>().inner().clone();
             let maintenance_app_data = app_data.clone();
@@ -59,6 +64,7 @@ pub fn run() {
                     interval.tick().await;
                     let repository = maintenance_repository.clone();
                     let app_data = maintenance_app_data.clone();
+                    maintenance_status.start();
                     let result = tauri::async_runtime::spawn_blocking(move || {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -67,10 +73,17 @@ pub fn run() {
                         maintenance::run_due(&repository, &app_data, now_ms)
                     })
                     .await;
-                    match result {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => log::error!("automatic data maintenance failed: {error}"),
-                        Err(error) => log::error!("automatic maintenance task failed: {error}"),
+                    let completed_at_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as i64)
+                        .unwrap_or_default();
+                    let status_result = match result {
+                        Ok(result) => result,
+                        Err(error) => Err(error.to_string()),
+                    };
+                    maintenance_status.finish(completed_at_ms, &status_result);
+                    if let Err(error) = status_result {
+                        log::error!("automatic data maintenance failed: {error}");
                     }
                 }
             });
@@ -81,7 +94,12 @@ pub fn run() {
                     app.state::<database::ActivityRepository>().inner().clone(),
                     activity::SessionManagerConfig::default(),
                 )?
-                .spawn();
+                .spawn_with_notifier({
+                    let app = app.handle().clone();
+                    move || {
+                        let _ = app.emit("activity-data-changed", ());
+                    }
+                });
                 let monitor = activity::ActivityMonitor::new(
                     platform::MacOsActivityProvider,
                     activity::MonitorConfig {
@@ -91,6 +109,22 @@ pub fn run() {
                         ..activity::MonitorConfig::default()
                     },
                 )?
+                .with_window_title_policy({
+                    let repository = app.state::<database::ActivityRepository>().inner().clone();
+                    move |application| {
+                        let identity =
+                            if let Some(bundle) = application.bundle_identifier.as_deref() {
+                                format!("bundle:{bundle}")
+                            } else if let Some(path) = application.executable_path.as_deref() {
+                                format!("path:{path}")
+                            } else {
+                                format!("name:{}", application.name)
+                            };
+                        repository
+                            .should_record_window_title(&identity)
+                            .unwrap_or(false)
+                    }
+                })
                 .spawn_with_sample_sink(sample_sender);
                 if !settings.start_tracking_automatically || !settings.onboarding_completed {
                     monitor.set_paused(true);
@@ -117,8 +151,10 @@ pub fn run() {
                 None::<&str>,
             )?;
             app.manage(TrackingTrayMenuItem(pause.clone()));
+            let focus = MenuItem::with_id(app, "focus", "Start Focus Mode", true, None::<&str>)?;
+            app.manage(FocusTrayMenuItem(focus.clone()));
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &pause, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &pause, &focus, &quit])?;
             TrayIconBuilder::with_id("watchhouse-tray")
                 .icon(app.default_window_icon().expect("application icon").clone())
                 .tooltip("YunQi-Watchhouse")
@@ -151,6 +187,21 @@ pub fn run() {
                         };
                         let _ = app.state::<TrackingTrayMenuItem>().0.set_text(label);
                     }
+                    "focus" => {
+                        let state = app.state::<focus::FocusModeState>();
+                        let active = !state.snapshot().active;
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_millis() as i64)
+                            .unwrap_or_default();
+                        let status = state.set_active(active, now_ms);
+                        let _ = app.state::<FocusTrayMenuItem>().0.set_text(if active {
+                            "End Focus Mode"
+                        } else {
+                            "Start Focus Mode"
+                        });
+                        let _ = app.emit("focus-mode-changed", status);
+                    }
                     _ => {}
                 })
                 .build(app)?;
@@ -170,20 +221,31 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::focus::get_focus_mode,
+            commands::focus::set_focus_mode,
             commands::activity::get_current_activity,
             commands::activity::set_tracking_paused,
             commands::applications::get_application_icon,
             commands::applications::clear_application_icon_cache,
             commands::applications::update_application_preferences,
             commands::statistics::get_today_summary,
+            commands::statistics::get_today_focus_summary,
             commands::statistics::get_timeline,
             commands::statistics::get_app_usage,
             commands::statistics::get_category_usage,
             commands::statistics::get_daily_usage,
             commands::statistics::get_application_daily_usage,
             commands::timeline::delete_timeline_session,
+            commands::timeline::delete_timeline_sessions,
+            commands::timeline::merge_timeline_sessions,
+            commands::timeline::update_timeline_session_notes,
+            commands::timeline::update_timeline_session_categories,
+            commands::timeline::undo_timeline_edit,
             commands::timeline::update_timeline_session,
+            commands::timeline::preview_activity_import,
+            commands::timeline::import_activity,
             commands::settings::get_settings,
+            commands::settings::get_accessibility_permission,
             commands::settings::complete_onboarding,
             commands::settings::update_settings,
             commands::settings::delete_all_activity,
@@ -195,6 +257,7 @@ pub fn run() {
             commands::settings::choose_backup_directory,
             commands::settings::open_backup_directory,
             commands::settings::get_maintenance_preview,
+            commands::settings::get_maintenance_status,
             commands::settings::run_data_maintenance,
             commands::settings::create_automatic_backup_now,
             commands::settings::restore_database,

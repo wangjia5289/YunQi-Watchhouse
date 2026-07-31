@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppUsage,
   CategoryUsage,
@@ -29,16 +29,20 @@ export function useApplications(
     loading: true,
     error: null,
   });
+  const requestRevision = useRef(0);
 
   const load = useCallback(async () => {
+    const revision = ++requestRevision.current;
     setState((current) => ({ ...current, loading: true }));
     try {
       const [applications, categories] = await Promise.all([
         getAppUsage(range.startMs, range.endMs),
         getCategoryUsage(range.startMs, range.endMs),
       ]);
+      if (revision !== requestRevision.current) return;
       setState({ applications, categories, loading: false, error: null });
     } catch (error) {
+      if (revision !== requestRevision.current) return;
       setState((current) => ({
         ...current,
         loading: false,

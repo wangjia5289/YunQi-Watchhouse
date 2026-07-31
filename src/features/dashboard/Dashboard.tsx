@@ -1,6 +1,13 @@
-import { CSSProperties } from "react";
+import { CSSProperties, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { formatClock, formatDuration, formatLongDate } from "../../lib/format";
-import { TimelineEntry, setTrackingPaused } from "../../lib/ipc";
+import {
+  FocusModeStatus,
+  TimelineEntry,
+  getFocusMode,
+  setFocusMode,
+  setTrackingPaused,
+} from "../../lib/ipc";
 import { useDashboard } from "./useDashboard";
 
 function ActivityDistribution({
@@ -74,7 +81,22 @@ function ActivityDistribution({
 }
 
 export function Dashboard() {
-  const { summary, timeline, current, loading, error, refresh } = useDashboard();
+  const { summary, timeline, current, focus, loading, error, refresh } = useDashboard();
+  const [dismissedBlockStart, setDismissedBlockStart] = useState<number | null>(null);
+  const [focusMode, setFocusModeStatus] = useState<FocusModeStatus | null>(null);
+  const [, setClockRevision] = useState(0);
+
+  useEffect(() => {
+    void getFocusMode().then(setFocusModeStatus);
+    const unlisten = listen<FocusModeStatus>("focus-mode-changed", (event) => {
+      setFocusModeStatus(event.payload);
+    });
+    const timer = window.setInterval(() => setClockRevision((value) => value + 1), 1_000);
+    return () => {
+      window.clearInterval(timer);
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
   const runningSample =
     current?.monitor.status === "RUNNING" ? current.monitor.payload : null;
   const degraded =
@@ -95,6 +117,18 @@ export function Dashboard() {
       : runningSample?.state === "IDLE"
         ? "Away from computer"
         : "Starting activity monitor";
+  const currentFocusBlock = focus?.blocks.find((block) => block.isOpen) ?? null;
+  const focusGoalMs = (focus?.goalMinutes ?? 0) * 60_000;
+  const focusProgress = focusGoalMs > 0
+    ? Math.min(100, ((focus?.totalFocusDurationMs ?? 0) / focusGoalMs) * 100)
+    : 0;
+  const showBreakReminder = Boolean(
+    focus?.breakRemindersEnabled
+      && currentFocusBlock
+      && currentFocusBlock.activeDurationMs >= focus.breakReminderMinutes * 60_000
+      && dismissedBlockStart !== currentFocusBlock.startedAtMs
+      && !isQuietHours(focus.quietHoursStart, focus.quietHoursEnd),
+  );
 
   return (
     <div className="dashboard">
@@ -122,6 +156,18 @@ export function Dashboard() {
           <span>{error}</span>
           <button type="button" onClick={refresh}>
             Try again
+          </button>
+        </div>
+      )}
+
+      {showBreakReminder && currentFocusBlock && (
+        <div className="break-reminder" role="status">
+          <div>
+            <strong>Time for a short break</strong>
+            <span>You have focused for {formatDuration(currentFocusBlock.activeDurationMs)}.</span>
+          </div>
+          <button type="button" onClick={() => setDismissedBlockStart(currentFocusBlock.startedAtMs)}>
+            Dismiss
           </button>
         </div>
       )}
@@ -155,6 +201,30 @@ export function Dashboard() {
         </div>
       </section>
 
+      {focus && (
+        <section className="focus-summary" aria-label="Focus summary">
+          <div className="focus-progress">
+            <span style={{ width: `${focusProgress}%` }} />
+          </div>
+          <article><span>Focused today</span><strong>{formatDuration(focus.totalFocusDurationMs)}</strong></article>
+          <article><span>Longest block</span><strong>{formatDuration(focus.longestFocusDurationMs)}</strong></article>
+          <article><span>App switches</span><strong>{focus.applicationSwitchCount}</strong></article>
+          <article>
+            <span>Daily goal</span>
+            <strong>{focus.goalMinutes ? `${Math.round(focusProgress)}%` : "Off"}</strong>
+          </article>
+          <button
+            type="button"
+            className={`focus-mode-button${focusMode?.active ? " active" : ""}`}
+            onClick={() => void setFocusMode(!focusMode?.active).then(setFocusModeStatus)}
+          >
+            {focusMode?.active
+              ? `End focus · ${formatDuration(Date.now() - (focusMode.startedAtMs ?? Date.now()))}`
+              : "Start focus mode"}
+          </button>
+        </section>
+      )}
+
       {summary && (
         <ActivityDistribution
           timeline={timeline}
@@ -178,4 +248,18 @@ export function Dashboard() {
       </footer>
     </div>
   );
+}
+
+function isQuietHours(start: string, end: string): boolean {
+  const now = new Date();
+  const current = now.getHours() * 60 + now.getMinutes();
+  const parse = (value: string) => {
+    const [hours = 0, minutes = 0] = value.split(":").map(Number);
+    return hours * 60 + minutes;
+  };
+  const startMinutes = parse(start);
+  const endMinutes = parse(end);
+  return startMinutes <= endMinutes
+    ? current >= startMinutes && current < endMinutes
+    : current >= startMinutes || current < endMinutes;
 }

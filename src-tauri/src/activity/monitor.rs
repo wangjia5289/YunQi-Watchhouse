@@ -83,9 +83,12 @@ pub enum MonitorStatus {
     Stopped,
 }
 
+type WindowTitlePolicy = Arc<dyn Fn(&ForegroundApplication) -> bool + Send + Sync + 'static>;
+
 pub struct ActivityMonitor<P> {
     detector: IdleDetector<P>,
     poll_interval: Duration,
+    window_title_policy: Option<WindowTitlePolicy>,
 }
 
 impl<P: ActivityProvider> ActivityMonitor<P> {
@@ -101,7 +104,16 @@ impl<P: ActivityProvider> ActivityMonitor<P> {
         Ok(Self {
             detector: IdleDetector::new(provider, config.idle_threshold)?,
             poll_interval: config.poll_interval,
+            window_title_policy: None,
         })
+    }
+
+    pub fn with_window_title_policy(
+        mut self,
+        policy: impl Fn(&ForegroundApplication) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.window_title_policy = Some(Arc::new(policy));
+        self
     }
 
     pub fn sample_once(&self, observed_at_ms: i64) -> AppResult<ActivitySample> {
@@ -116,14 +128,24 @@ impl<P: ActivityProvider> ActivityMonitor<P> {
         match self.detector.observe(observed_at_ms)? {
             IdleObservation::Active { idle_duration_ms } => {
                 let elapsed_ms = i64::try_from(idle_duration_ms).unwrap_or(i64::MAX);
+                let mut foreground = self.detector.provider().foreground_application()?;
+                if self
+                    .window_title_policy
+                    .as_ref()
+                    .is_some_and(|policy| policy(&foreground))
+                {
+                    foreground.window_title = self
+                        .detector
+                        .provider()
+                        .window_title(&foreground)?
+                        .and_then(|title| redact_window_title(&title));
+                }
                 Ok(ActivitySample {
                     observed_at_ms,
                     state: ActivityState::Active,
                     idle_duration_ms,
                     last_input_at_ms: observed_at_ms.saturating_sub(elapsed_ms),
-                    foreground_application: Some(
-                        self.detector.provider().foreground_application()?,
-                    ),
+                    foreground_application: Some(foreground),
                     continuity,
                 })
             }
@@ -140,6 +162,53 @@ impl<P: ActivityProvider> ActivityMonitor<P> {
             }),
         }
     }
+}
+
+fn redact_window_title(title: &str) -> Option<String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let mut words = Vec::new();
+    for word in title.split_whitespace() {
+        let lower = word.to_ascii_lowercase();
+        let redacted = if word.contains('@') {
+            "[email]".to_owned()
+        } else if let Some(index) = word.find('?') {
+            format!("{}?[redacted]", &word[..index])
+        } else if ["token=", "key=", "password=", "secret="]
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
+            "[secret]".to_owned()
+        } else {
+            redact_long_digit_runs(word)
+        };
+        words.push(redacted);
+    }
+    let result = words.join(" ");
+    Some(result.chars().take(240).collect())
+}
+
+fn redact_long_digit_runs(value: &str) -> String {
+    let mut output = String::new();
+    let mut digits = String::new();
+    for character in value.chars().chain(std::iter::once('\0')) {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else {
+            if digits.len() >= 6 {
+                output.push_str("[number]");
+            } else {
+                output.push_str(&digits);
+            }
+            digits.clear();
+            if character != '\0' {
+                output.push(character);
+            }
+        }
+    }
+    output
 }
 
 impl<P: ActivityProvider + 'static> ActivityMonitor<P> {
@@ -364,8 +433,21 @@ mod tests {
                 name: "Terminal".to_owned(),
                 bundle_identifier: Some("com.apple.Terminal".to_owned()),
                 executable_path: None,
+                process_identifier: None,
+                window_title: None,
             })
         }
+    }
+
+    #[test]
+    fn window_title_redaction_removes_common_sensitive_values() {
+        assert_eq!(
+            redact_window_title(
+                "Inbox user@example.com https://example.test/path?token=abc Account 12345678"
+            ),
+            Some("Inbox [email] https://example.test/path?[redacted] Account [number]".to_owned())
+        );
+        assert_eq!(redact_window_title("   "), None);
     }
 
     fn monitor(
