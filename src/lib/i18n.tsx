@@ -11,8 +11,6 @@ import { setAppLocale } from "./ipc";
 export type Locale = "en" | "zh-CN";
 
 const STORAGE_KEY = "watchhouse.locale";
-const textOriginals = new WeakMap<Node, string>();
-const attributeOriginals = new WeakMap<Element, Map<string, string>>();
 
 const zh: Record<string, string> = {
   Activity: "活动",
@@ -109,6 +107,7 @@ const zh: Record<string, string> = {
   "Active time": "活跃时长",
   "Usage by application": "应用使用情况",
   "No application activity": "没有应用活动",
+  "0h": "0小时",
   "Active applications will appear here as Watchhouse records them.":
     "Watchhouse 记录到活跃应用后会显示在这里。",
   Application: "应用",
@@ -312,6 +311,11 @@ const zh: Record<string, string> = {
   "Repair overlapping and zero-duration closed sessions? Back up first if you may need the original timestamps.":
     "要修复重叠和零时长的已结束会话吗？如果可能需要原始时间戳，请先备份。",
   "Undo Last Repair": "撤销上次修复",
+  "Safety backup:": "安全备份：",
+  "Last cleanup:": "上次清理：",
+  "Last backup:": "上次备份：",
+  "Automatic maintenance failed:": "自动维护失败：",
+  Never: "从未",
   "Automatic maintenance is running.": "自动维护正在运行。",
   "Delete All Activity Data": "删除全部活动数据",
   "Delete all recorded activity? This cannot be undone.": "要删除所有活动记录吗？此操作无法撤销。",
@@ -334,6 +338,8 @@ const zh: Record<string, string> = {
   "Loading settings…": "正在加载设置…",
   "Private by design": "隐私优先设计",
   "Welcome to Watchhouse": "欢迎使用 Watchhouse",
+  "Watchhouse creates a private computer activity timeline on this Mac. No account or network connection is required.":
+    "Watchhouse 会在这台 Mac 上创建私密的电脑活动时间线，无需账户或网络连接。",
   "Privacy in Watchhouse": "Watchhouse 隐私说明",
   "What is recorded": "会记录什么",
   "Application name and identifier": "应用名称和标识符",
@@ -351,6 +357,16 @@ const zh: Record<string, string> = {
   "Accept and Continue": "接受并继续",
   "Selected day summary": "所选日期汇总",
   "Timeline view": "时间线视图",
+  "Timeline date": "时间线日期",
+  "previous day": "前一天",
+  "next day": "后一天",
+  "Hourly overview": "每小时概览",
+  "Activity sessions": "活动会话",
+  "App, title, note, bundle, or category": "应用、标题、备注、标识符或分类",
+  "Unknown application": "未知应用",
+  "Deleted sessions": "已删除的会话",
+  "Merged sessions": "已合并的会话",
+  "Timeline edit": "时间线编辑",
   "Close undo history": "关闭撤销历史",
   "Import conflict policy": "导入冲突处理方式",
   "Dismiss message": "关闭消息",
@@ -382,6 +398,19 @@ const zh: Record<string, string> = {
 
 const replacements: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   [/^(\d+) sessions?$/, (m) => `${m[1]} 个会话`],
+  [/^(\d+) active time blocks$/, (m) => `${m[1]} 个活跃时间块`],
+  [/^(\d+) matching sessions$/, (m) => `${m[1]} 个匹配会话`],
+  [/^(\d+) selected sessions$/, (m) => `已选择 ${m[1]} 个会话`],
+  [/^(\d+)h remaining$/, (m) => `剩余 ${m[1]} 小时`],
+  [/^Undo \((\d+)\)$/, (m) => `撤销（${m[1]}）`],
+  [/^(.+) idle · (\d+) sessions$/, (m) => `${m[1]} 空闲 · ${m[2]} 个会话`],
+  [/^(.+) active$/, (m) => `${m[1]} 活跃`],
+  [/^Select (.+) session$/, (m) => `选择“${m[1]}”会话`],
+  [/^Edit (.+) session$/, (m) => `编辑“${m[1]}”会话`],
+  [/^Split (.+) session$/, (m) => `拆分“${m[1]}”会话`],
+  [/^Delete (.+) session at (.+)$/, (m) => `删除 ${m[2]} 的“${m[1]}”会话`],
+  [/^(\d+) apps?$/, (m) => `${m[1]} 个应用`],
+  [/^(\d+) active periods recorded today$/, (m) => `今天记录了 ${m[1]} 个活跃时段`],
   [/^(\d+) selected$/, (m) => `已选择 ${m[1]} 项`],
   [/^Show more sessions \((\d+) of (\d+)\)$/, (m) => `显示更多会话（${m[1]}/${m[2]}）`],
   [/^Last (\d+) active days$/, (m) => `最近 ${m[1]} 个活跃日`],
@@ -434,6 +463,7 @@ const replacements: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
   [/^([+-]?\d+)% vs previous$/, (m) => `较上一周期 ${m[1]}%`],
   [/^Report saved to (.+)$/, (m) => `报告已保存到 ${m[1]}`],
   [/^(\d+)m planned · (.+) focused$/, (m) => `计划 ${m[1]} 分钟 · 专注 ${m[2]}`],
+  [/^(.+) focused$/, (m) => `专注 ${m[1]}`],
   [/^(\d+)-minute focus plan started\.$/, (m) => `已开始 ${m[1]} 分钟专注计划。`],
   [/^shortcut is unavailable: (.+)$/, (m) => `快捷键不可用：${m[1]}`],
 ];
@@ -491,67 +521,6 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     void setAppLocale(locale).catch(() => {
       // Browser preview does not expose Tauri IPC.
     });
-    const visit = (root: Node) => {
-      const nodes = root.nodeType === Node.TEXT_NODE
-        ? [root]
-        : [...(root as Element).querySelectorAll?.("*") ?? [], root];
-      for (const node of nodes) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          const parent = node.parentElement;
-          if (!parent || ["SCRIPT", "STYLE"].includes(parent.tagName)) continue;
-          const current = node.nodeValue ?? "";
-          const cached = textOriginals.get(node);
-          const original = cached
-            && current !== cached
-            && current !== translateText(cached)
-            ? current
-            : cached ?? current;
-          textOriginals.set(node, original);
-          const next = locale === "zh-CN" ? translateText(original) : original;
-          if (node.nodeValue !== next) node.nodeValue = next;
-          continue;
-        }
-        const element = node as Element;
-        for (const name of ["aria-label", "placeholder", "title"]) {
-          if (!element.hasAttribute?.(name)) continue;
-          let attributes = attributeOriginals.get(element);
-          if (!attributes) {
-            attributes = new Map();
-            attributeOriginals.set(element, attributes);
-          }
-          const current = element.getAttribute(name) ?? "";
-          const cached = attributes.get(name);
-          const original = cached
-            && current !== cached
-            && current !== translateText(cached)
-            ? current
-            : cached ?? current;
-          attributes.set(name, original);
-          const next = locale === "zh-CN" ? translateText(original) : original;
-          if (element.getAttribute(name) !== next) element.setAttribute(name, next);
-        }
-        for (const child of element.childNodes) {
-          if (child.nodeType === Node.TEXT_NODE) visit(child);
-        }
-      }
-    };
-    visit(document.body);
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === "characterData" || mutation.type === "attributes") {
-          visit(mutation.target);
-        }
-        for (const node of mutation.addedNodes) visit(node);
-      }
-    });
-    observer.observe(document.body, {
-      attributes: true,
-      attributeFilter: ["aria-label", "placeholder", "title"],
-      childList: true,
-      characterData: true,
-      subtree: true,
-    });
-    return () => observer.disconnect();
   }, [locale]);
 
   return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>;

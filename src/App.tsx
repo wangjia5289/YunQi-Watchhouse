@@ -104,7 +104,7 @@ function App() {
           <span className="brand-mark" aria-hidden="true">
             <span />
           </span>
-          <span>Watchhouse</span>
+          <span>{t("Watchhouse")}</span>
         </div>
 
         <nav aria-label={t("Main navigation")}>
@@ -125,7 +125,7 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
-          <div className="language-switch" role="group" aria-label="Interface language">
+          <div className="language-switch" role="group" aria-label={t("Interface language")}>
             <button
               type="button"
               className={locale === "zh-CN" ? "active" : ""}
@@ -146,6 +146,7 @@ function App() {
           <button
             className={`global-tracking${tracking?.paused ? " paused" : ""}`}
             type="button"
+            aria-label={t(!tracking ? "Checking status" : tracking.paused ? "Tracking paused" : "Tracking active")}
             disabled={!tracking}
             onClick={() => {
               const paused = !tracking?.paused;
@@ -171,7 +172,7 @@ function App() {
       <main className="main-content">
         {settingsError && (
           <div className="error-banner" role="alert">
-            <span>{settingsError}</span>
+            <span>{t(settingsError)}</span>
             <button type="button" onClick={loadSettings}>{t("Retry")}</button>
           </div>
         )}

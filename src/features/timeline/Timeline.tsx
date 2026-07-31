@@ -25,6 +25,7 @@ import {
   updateTimelineSession,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
+import { useLocale } from "../../lib/i18n";
 import { useTimeline } from "./useTimeline";
 import { ApplicationIcon } from "../applications/ApplicationIcon";
 
@@ -37,11 +38,12 @@ function DayButton({
   disabled?: boolean;
   onClick: () => void;
 }) {
+  const { t } = useLocale();
   return (
     <button
       className="day-arrow"
       type="button"
-      aria-label={`${direction} day`}
+      aria-label={t(`${direction} day`)}
       disabled={disabled}
       onClick={onClick}
     >
@@ -137,6 +139,7 @@ function summarizeByHour(entries: TimelineEntry[]): HourSummary[] {
 }
 
 export function Timeline() {
+  const { locale, t } = useLocale();
   const today = localIsoDate();
   const [date, setDate] = useState(today);
   const [view, setView] = useState<"overview" | "details">("overview");
@@ -273,8 +276,8 @@ export function Timeline() {
     ? stateTotal(filteredEntries, "IDLE")
     : idleDurationMs;
   const dateTitle = isToday
-    ? "Today"
-    : new Intl.DateTimeFormat(undefined, {
+    ? t("Today")
+    : new Intl.DateTimeFormat(locale, {
         weekday: "long",
         month: "long",
         day: "numeric",
@@ -284,8 +287,8 @@ export function Timeline() {
     <div className="timeline-page">
       <header className="timeline-header">
         <div>
-          <p className="date-label">Computer activity</p>
-          <h1>Timeline</h1>
+          <p className="date-label">{t("Computer activity")}</p>
+          <h1>{t("Timeline")}</h1>
         </div>
         <div className="date-controls">
           <DayButton
@@ -301,7 +304,7 @@ export function Timeline() {
               onChange={(event) => {
                 if (event.currentTarget.value) setDate(event.currentTarget.value);
               }}
-              aria-label="Timeline date"
+              aria-label={t("Timeline date")}
             />
           </label>
           <DayButton
@@ -311,45 +314,47 @@ export function Timeline() {
           />
           {!isToday && (
             <button className="today-button" type="button" onClick={() => setDate(today)}>
-              Today
+              {t("Today")}
             </button>
           )}
         </div>
       </header>
 
-      <section className="timeline-summary" aria-label="Selected day summary">
+      <section className="timeline-summary" aria-label={t("Selected day summary")}>
         <div>
           <span className="summary-swatch active" />
-          <p>Active</p>
-          <strong>{formatDuration(activeTotal)}</strong>
+          <p>{t("Active")}</p>
+          <strong>{formatDuration(activeTotal, locale)}</strong>
         </div>
         <div>
           <span className="summary-swatch idle" />
-          <p>Idle</p>
-          <strong>{formatDuration(idleTotal)}</strong>
+          <p>{t("Idle")}</p>
+          <strong>{formatDuration(idleTotal, locale)}</strong>
         </div>
         <div>
           <span className="summary-swatch sessions" />
-          <p>Sessions</p>
+          <p>{t("Sessions")}</p>
           <strong>{hasFilters ? filteredEntries.length : totalCount}</strong>
         </div>
       </section>
 
       <div className="timeline-view-bar">
         <div>
-          <p className="section-kicker">Day structure</p>
-          <strong>{view === "overview" ? `${hours.length} active time blocks` : `${filteredEntries.length} matching sessions`}</strong>
+          <p className="section-kicker">{t("Day structure")}</p>
+          <strong>{view === "overview"
+            ? t(`${hours.length} active time blocks`)
+            : t(`${filteredEntries.length} matching sessions`)}</strong>
         </div>
-        <div className="range-tabs" role="group" aria-label="Timeline view">
+        <div className="range-tabs" role="group" aria-label={t("Timeline view")}>
           <button className={view === "overview" ? "active" : ""} onClick={() => setView("overview")}>
-            Overview
+            {t("Overview")}
           </button>
           <button className={view === "details" ? "active" : ""} onClick={() => setView("details")}>
-            Details
+            {t("Details")}
           </button>
         </div>
         <button className="timeline-import-button" type="button" onClick={() => setImportOpen((open) => !open)}>
-          Import
+          {t("Import")}
         </button>
         <button
           className="timeline-import-button"
@@ -357,23 +362,23 @@ export function Timeline() {
           aria-expanded={undoHistoryOpen}
           onClick={() => setUndoHistoryOpen((open) => !open)}
         >
-          Undo history{undoHistory.length > 0 ? ` (${undoHistory.length})` : ""}
+          {t("Undo history")}{undoHistory.length > 0 ? ` (${undoHistory.length})` : ""}
         </button>
       </div>
 
       {undoHistoryOpen && (
-        <section className="timeline-undo-history" aria-label="Undo history">
+        <section className="timeline-undo-history" aria-label={t("Undo history")}>
           <div className="timeline-undo-heading">
             <div>
-              <strong>Recent timeline edits</strong>
-              <span>Undo snapshots expire after 24 hours.</span>
+              <strong>{t("Recent timeline edits")}</strong>
+              <span>{t("Undo snapshots expire after 24 hours.")}</span>
             </div>
-            <button type="button" aria-label="Close undo history" onClick={() => setUndoHistoryOpen(false)}>
-              Close
+            <button type="button" aria-label={t("Close undo history")} onClick={() => setUndoHistoryOpen(false)}>
+              {t("Close")}
             </button>
           </div>
           {undoHistory.length === 0 ? (
-            <p className="timeline-undo-empty">No timeline edits can be undone.</p>
+            <p className="timeline-undo-empty">{t("No timeline edits can be undone.")}</p>
           ) : (
             <div className="timeline-undo-list">
               {[...undoHistory].reverse().map((entry) => {
@@ -382,18 +387,18 @@ export function Timeline() {
                 return (
                   <div key={entry.token}>
                     <span>
-                      <strong>{entry.operationLabel}</strong>
+                      <strong>{t(entry.operationLabel)}</strong>
                       <small>
-                        {entry.sessionCount} {entry.sessionCount === 1 ? "session" : "sessions"}
-                        {" · "}{new Date(entry.createdAtMs).toLocaleString()}
-                        {" · "}{hoursRemaining}h remaining
+                        {t(`${entry.sessionCount} ${entry.sessionCount === 1 ? "session" : "sessions"}`)}
+                        {" · "}{new Date(entry.createdAtMs).toLocaleString(locale)}
+                        {" · "}{t(`${hoursRemaining}h remaining`)}
                       </small>
                     </span>
                     <button type="button" onClick={() => void runOperation(async () => {
                       const restored = await undoTimelineEdit(entry.token);
                       setUndoHistory((current) => current.filter((item) => item.token !== entry.token));
                       completeMutation(`Restored ${restored} sessions.`);
-                    })}>Undo</button>
+                    })}>{t("Undo")}</button>
                   </div>
                 );
               })}
@@ -403,10 +408,10 @@ export function Timeline() {
       )}
 
       {importOpen && (
-        <section className="timeline-import" aria-label="Import activity">
+        <section className="timeline-import" aria-label={t("Import activity")}>
           <div>
-            <strong>Import Watchhouse data</strong>
-            <span>Choose a JSON or CSV export. Nothing is written until you confirm.</span>
+            <strong>{t("Import Watchhouse data")}</strong>
+            <span>{t("Choose a JSON or CSV export. Nothing is written until you confirm.")}</span>
           </div>
           <input
             type="file"
@@ -425,15 +430,15 @@ export function Timeline() {
           />
           {importPreview && (
             <div className="import-preview">
-              <span>{importPreview.recordCount} valid sessions</span>
-              <span>{importPreview.conflictCount} conflicts</span>
-              <span>{importPreview.invalidCount} invalid</span>
+              <span>{t(`${importPreview.recordCount} valid sessions`)}</span>
+              <span>{t(`${importPreview.conflictCount} conflicts`)}</span>
+              <span>{t(`${importPreview.invalidCount} invalid`)}</span>
               {importPreview.startedAtMs !== null && importPreview.endedAtMs !== null && (
-                <span>{new Date(importPreview.startedAtMs).toLocaleDateString()} – {new Date(importPreview.endedAtMs).toLocaleDateString()}</span>
+                <span>{new Date(importPreview.startedAtMs).toLocaleDateString(locale)} – {new Date(importPreview.endedAtMs).toLocaleDateString(locale)}</span>
               )}
-              <select value={conflictPolicy} onChange={(event) => setConflictPolicy(event.currentTarget.value as "skip" | "merge")} aria-label="Import conflict policy">
-                <option value="skip">Skip conflicts</option>
-                <option value="merge">Merge compatible conflicts</option>
+              <select value={conflictPolicy} onChange={(event) => setConflictPolicy(event.currentTarget.value as "skip" | "merge")} aria-label={t("Import conflict policy")}>
+                <option value="skip">{t("Skip conflicts")}</option>
+                <option value="merge">{t("Merge compatible conflicts")}</option>
               </select>
               <button
                 type="button"
@@ -444,7 +449,7 @@ export function Timeline() {
                   setImportPreview(null);
                   completeMutation(`Imported ${result.importedCount}; merged ${result.mergedCount}; skipped ${result.skippedCount}.`);
                 })}
-              >Import activity</button>
+              >{t("Import activity")}</button>
             </div>
           )}
         </section>
@@ -452,23 +457,23 @@ export function Timeline() {
 
       <div className="timeline-filters">
         <label>
-          <span>Search</span>
+          <span>{t("Search")}</span>
           <input
             type="search"
             value={query}
-            placeholder="App, title, note, bundle, or category"
+            placeholder={t("App, title, note, bundle, or category")}
             onChange={(event) => setQuery(event.currentTarget.value)}
           />
         </label>
         <label>
-          <span>State</span>
+          <span>{t("State")}</span>
           <select
             value={stateFilter}
             onChange={(event) => setStateFilter(event.currentTarget.value as "ALL" | ActivityState)}
           >
-            <option value="ALL">All activity</option>
-            <option value="ACTIVE">Active</option>
-            <option value="IDLE">Idle</option>
+            <option value="ALL">{t("All activity")}</option>
+            <option value="ACTIVE">{t("Active")}</option>
+            <option value="IDLE">{t("Idle")}</option>
           </select>
         </label>
         <button
@@ -476,7 +481,7 @@ export function Timeline() {
           aria-expanded={advancedSearchOpen}
           onClick={() => setAdvancedSearchOpen((open) => !open)}
         >
-          {advancedSearchOpen ? "Hide advanced" : "Advanced"}
+          {t(advancedSearchOpen ? "Hide advanced" : "Advanced")}
         </button>
         {hasFilters && (
           <button type="button" onClick={() => {
@@ -486,56 +491,56 @@ export function Timeline() {
             setMaximumMinutes("");
             setTimeFrom("");
             setTimeTo("");
-          }}>Clear</button>
+          }}>{t("Clear")}</button>
         )}
       </div>
       {advancedSearchOpen && (
         <div className="timeline-advanced-filters">
           <label>
-            <span>Minimum minutes</span>
+            <span>{t("Minimum minutes")}</span>
             <input type="number" min="0" value={minimumMinutes} onChange={(event) => setMinimumMinutes(event.currentTarget.value)} />
           </label>
           <label>
-            <span>Maximum minutes</span>
+            <span>{t("Maximum minutes")}</span>
             <input type="number" min="0" value={maximumMinutes} onChange={(event) => setMaximumMinutes(event.currentTarget.value)} />
           </label>
           <label>
-            <span>From</span>
+            <span>{t("From")}</span>
             <input type="time" value={timeFrom} onChange={(event) => setTimeFrom(event.currentTarget.value)} />
           </label>
           <label>
-            <span>To</span>
+            <span>{t("To")}</span>
             <input type="time" value={timeTo} onChange={(event) => setTimeTo(event.currentTarget.value)} />
           </label>
         </div>
       )}
-      {editError && <div className="error-banner" role="alert">{editError}</div>}
+      {editError && <div className="error-banner" role="alert">{t(editError)}</div>}
       {operationMessage && (
         <div className="timeline-operation-message" role="status">
-          <span>{operationMessage}</span>
+          <span>{t(operationMessage)}</span>
           {undoHistory.length > 0 && <button type="button" onClick={() => void runOperation(async () => {
             const entry = undoHistory[undoHistory.length - 1];
             const restored = await undoTimelineEdit(entry.token);
             setUndoHistory((current) => current.slice(0, -1));
             completeMutation(`Restored ${restored} sessions. ${undoHistory.length - 1} undo steps remain.`);
-          })}>Undo ({undoHistory.length})</button>}
-          <button type="button" aria-label="Dismiss message" onClick={() => {
+          })}>{t(`Undo (${undoHistory.length})`)}</button>}
+          <button type="button" aria-label={t("Dismiss message")} onClick={() => {
             setOperationMessage(null);
-          }}>Close</button>
+          }}>{t("Close")}</button>
         </div>
       )}
 
       {error && (
         <div className="error-banner" role="alert">
-          <span>{error}</span>
+          <span>{t(error)}</span>
           <button type="button" onClick={refresh}>
-            Try again
+            {t("Try again")}
           </button>
         </div>
       )}
 
       {view === "overview" ? (
-        <section className="timeline-overview" aria-label={`${dateTitle} hourly overview`}>
+        <section className="timeline-overview" aria-label={`${dateTitle} ${t("Hourly overview")}`}>
           {loading && entries.length === 0 && (
             <div className="timeline-loading">
               <div className="skeleton timeline-skeleton" />
@@ -544,8 +549,10 @@ export function Timeline() {
           )}
           {!loading && hours.length === 0 && !error && (
             <div className="empty-timeline">
-              <h2>{entries.length ? "No matching activity" : "No activity recorded"}</h2>
-              <p>{entries.length ? "Adjust or clear the filters to see other sessions." : "Watchhouse did not record any computer activity on this day."}</p>
+              <h2>{t(entries.length ? "No matching activity" : "No activity recorded")}</h2>
+              <p>{t(entries.length
+                ? "Adjust or clear the filters to see other sessions."
+                : "Watchhouse did not record any computer activity on this day.")}</p>
             </div>
           )}
           {hours.map((hour) => {
@@ -553,14 +560,14 @@ export function Timeline() {
             const activeShare = recorded ? hour.activeDurationMs / recorded * 100 : 0;
             return (
               <article className="hour-block" key={hour.startedAtMs}>
-                <time>{formatClock(hour.startedAtMs)}</time>
+                <time>{formatClock(hour.startedAtMs, locale)}</time>
                 <div className="hour-content">
                   <div className="hour-heading">
                     <div>
-                      <strong>{formatDuration(hour.activeDurationMs)} active</strong>
-                      <span>{formatDuration(hour.idleDurationMs)} idle · {hour.sessionCount} sessions</span>
+                      <strong>{t(`${formatDuration(hour.activeDurationMs, locale)} active`)}</strong>
+                      <span>{t(`${formatDuration(hour.idleDurationMs, locale)} idle · ${hour.sessionCount} sessions`)}</span>
                     </div>
-                    <span>{Math.round(activeShare)}% active</span>
+                    <span>{t(`${Math.round(activeShare)}% active`)}</span>
                   </div>
                   <div className="hour-track">
                     <i style={{ width: `${activeShare}%` }} />
@@ -573,10 +580,12 @@ export function Timeline() {
                           applicationId={application.id}
                           applicationName={application.name}
                         />
-                        <span>{application.name}</span>
-                        <strong>{formatDuration(application.durationMs)}</strong>
+                        <span>{application.name === "Unknown application"
+                          ? t(application.name)
+                          : application.name}</span>
+                        <strong>{formatDuration(application.durationMs, locale)}</strong>
                       </div>
-                    )) : <small>No active application in this hour.</small>}
+                    )) : <small>{t("No active application in this hour.")}</small>}
                   </div>
                 </div>
               </article>
@@ -595,14 +604,14 @@ export function Timeline() {
                 ? new Set(filteredEntries.filter((entry) => !entry.isOpen).map((entry) => entry.sessionId))
                 : new Set())}
             />
-            {selected.length ? `${selected.length} selected` : "Select sessions"}
+            {t(selected.length ? `${selected.length} selected` : "Select sessions")}
           </label>
           {selected.length > 0 && (
             <div>
               <button type="button" disabled={selected.length < 2} onClick={() => void runOperation(async () => {
                 const result = await mergeTimelineSessions(selected);
                 completeMutation(`Merged ${result.affectedCount} sessions.`, result.undoToken);
-              })}>Merge</button>
+              })}>{t("Merge")}</button>
               <button type="button" onClick={() => {
                 setDialogValue("");
                 setActionDialog({
@@ -610,7 +619,7 @@ export function Timeline() {
                   sessionIds: selected,
                   label: `${selected.length} selected sessions`,
                 });
-              }}>Note</button>
+              }}>{t("Note")}</button>
               <button type="button" onClick={() => {
                 setDialogValue("");
                 setActionDialog({
@@ -618,19 +627,19 @@ export function Timeline() {
                   sessionIds: selected,
                   label: `${selected.length} selected sessions`,
                 });
-              }}>Category</button>
+              }}>{t("Category")}</button>
               <button className="danger" type="button" onClick={() => {
                 setActionDialog({
                   kind: "delete",
                   sessionIds: selected,
                   label: `${selected.length} selected sessions`,
                 });
-              }}>Delete</button>
+              }}>{t("Delete")}</button>
             </div>
           )}
         </div>
       )}
-      <section className="timeline-list" aria-label={`${dateTitle} activity sessions`}>
+      <section className="timeline-list" aria-label={`${dateTitle} ${t("Activity sessions")}`}>
         {loading && entries.length === 0 && (
           <div className="timeline-loading">
             <div className="skeleton timeline-skeleton" />
@@ -647,14 +656,18 @@ export function Timeline() {
                 <path d="M12 7v5l3 2" />
               </svg>
             </span>
-            <h2>{entries.length ? "No matching activity" : "No activity recorded"}</h2>
-            <p>{entries.length ? "Adjust or clear the filters to see other sessions." : "Watchhouse did not record any computer activity on this day."}</p>
+            <h2>{t(entries.length ? "No matching activity" : "No activity recorded")}</h2>
+            <p>{t(entries.length
+              ? "Adjust or clear the filters to see other sessions."
+              : "Watchhouse did not record any computer activity on this day.")}</p>
           </div>
         )}
 
         {visibleEntries.map((entry, index) => {
           const idle = entry.state === "IDLE";
-          const name = idle ? "Idle" : entry.applicationName ?? "Unknown application";
+          const name = idle
+            ? t("Idle")
+            : entry.applicationName ?? t("Unknown application");
           return (
             <article className={`timeline-row${idle ? " idle" : ""}`} key={entry.sessionId}>
               {!entry.isOpen && (
@@ -662,7 +675,7 @@ export function Timeline() {
                   className="session-select"
                   type="checkbox"
                   checked={selectedIds.has(entry.sessionId)}
-                  aria-label={`Select ${name} session`}
+                  aria-label={t(`Select ${name} session`)}
                   onChange={(event) => setSelectedIds((current) => {
                     const next = new Set(current);
                     if (event.currentTarget.checked) next.add(entry.sessionId);
@@ -671,7 +684,7 @@ export function Timeline() {
                   })}
                 />
               )}
-              <time>{formatClock(entry.startedAtMs)}</time>
+              <time>{formatClock(entry.startedAtMs, locale)}</time>
               <div className="timeline-rail" aria-hidden="true">
                 <span />
                 {index < visibleEntries.length - 1 && <i />}
@@ -693,34 +706,34 @@ export function Timeline() {
                 <div className="session-copy">
                   <strong>{name}</strong>
                   <span>
-                    {formatClock(entry.startedAtMs)} – {formatClock(entry.endedAtMs)}
-                    {entry.isOpen && <i className="open-session">Live</i>}
+                    {formatClock(entry.startedAtMs, locale)} – {formatClock(entry.endedAtMs, locale)}
+                    {entry.isOpen && <i className="open-session">{t("Live")}</i>}
                   </span>
                   {entry.windowTitle && (
                     <small className="session-note">{entry.windowTitle}</small>
                   )}
                   {entry.note && <small className="session-note">{entry.note}</small>}
                 </div>
-                <span className="session-duration">{formatDuration(entry.durationMs)}</span>
+                <span className="session-duration">{formatDuration(entry.durationMs, locale)}</span>
                 {!entry.isOpen && (
                   <>
                   <button
                     type="button"
                     className="edit-session"
-                    aria-label={`Edit ${name} session`}
-                    title="Edit session time"
+                    aria-label={t(`Edit ${name} session`)}
+                    title={t("Edit session time")}
                     onClick={() => {
                       setEditingId(entry.sessionId);
                       setEditStart(toLocalDateTimeInput(entry.startedAtMs));
                       setEditEnd(toLocalDateTimeInput(entry.endedAtMs));
                       setEditError(null);
                     }}
-                  >Edit</button>
+                  >{t("Edit")}</button>
                   <button
                     type="button"
                     className="edit-session"
-                    aria-label={`Split ${name} session`}
-                    title="Split session"
+                    aria-label={t(`Split ${name} session`)}
+                    title={t("Split session")}
                     onClick={() => {
                       setSplittingId(entry.sessionId);
                       setSplitAt(toLocalDateTimeInput(
@@ -728,17 +741,17 @@ export function Timeline() {
                       ));
                       setEditError(null);
                     }}
-                  >Split</button>
+                  >{t("Split")}</button>
                   <button
                     type="button"
                     className="delete-session"
-                    aria-label={`Delete ${name} session at ${formatClock(entry.startedAtMs)}`}
-                    title="Delete session"
+                    aria-label={t(`Delete ${name} session at ${formatClock(entry.startedAtMs, locale)}`)}
+                    title={t("Delete session")}
                     onClick={() => {
                       setActionDialog({
                         kind: "delete",
                         sessionIds: [entry.sessionId],
-                        label: `${name}, ${formatClock(entry.startedAtMs)}–${formatClock(entry.endedAtMs)}`,
+                        label: `${name}, ${formatClock(entry.startedAtMs, locale)}–${formatClock(entry.endedAtMs, locale)}`,
                       });
                     }}
                   >
@@ -760,17 +773,17 @@ export function Timeline() {
             disabled={loading}
             onClick={loadMore}
           >
-            {loading ? "Loading…" : `Show more sessions (${entries.length} of ${totalCount})`}
+            {t(loading ? "Loading…" : `Show more sessions (${entries.length} of ${totalCount})`)}
           </button>
         )}
 
         {filteredEntries.length > 0 && (
           <div className="timeline-end">
             <time>
-              {formatClock(filteredEntries[filteredEntries.length - 1]?.endedAtMs ?? null)}
+              {formatClock(filteredEntries[filteredEntries.length - 1]?.endedAtMs ?? null, locale)}
             </time>
             <span />
-            <p>End of recorded activity</p>
+            <p>{t("End of recorded activity")}</p>
           </div>
         )}
       </section>
@@ -783,12 +796,12 @@ export function Timeline() {
             aria-labelledby="edit-session-title"
           >
             <div>
-              <p className="section-kicker">Session</p>
-              <h2 id="edit-session-title">Edit recorded time</h2>
-              <span>Adjust the start and end of this closed session.</span>
+              <p className="section-kicker">{t("Session")}</p>
+              <h2 id="edit-session-title">{t("Edit recorded time")}</h2>
+              <span>{t("Adjust the start and end of this closed session.")}</span>
             </div>
             <label>
-              Start
+              {t("Start")}
               <input
                 type="datetime-local"
                 value={editStart}
@@ -796,7 +809,7 @@ export function Timeline() {
               />
             </label>
             <label>
-              End
+              {t("End")}
               <input
                 type="datetime-local"
                 value={editEnd}
@@ -804,7 +817,7 @@ export function Timeline() {
               />
             </label>
             <div className="timeline-dialog-actions">
-              <button type="button" onClick={() => setEditingId(null)}>Cancel</button>
+              <button type="button" onClick={() => setEditingId(null)}>{t("Cancel")}</button>
               <button className="primary" type="button" onClick={() => {
                 const startedAtMs = new Date(editStart).getTime();
                 const endedAtMs = new Date(editEnd).getTime();
@@ -820,7 +833,7 @@ export function Timeline() {
                     refresh();
                   })
                   .catch((reason) => setEditError(errorMessage(reason)));
-              }}>Save changes</button>
+              }}>{t("Save changes")}</button>
             </div>
           </section>
         </div>
@@ -834,54 +847,54 @@ export function Timeline() {
             aria-labelledby="timeline-action-title"
           >
             <div>
-              <p className="section-kicker">Timeline operation</p>
+              <p className="section-kicker">{t("Timeline operation")}</p>
               <h2 id="timeline-action-title">
-                {actionDialog.kind === "note"
+                {t(actionDialog.kind === "note"
                   ? "Update session notes"
                   : actionDialog.kind === "category"
                     ? "Change application category"
-                    : "Delete recorded sessions"}
+                    : "Delete recorded sessions")}
               </h2>
-              <span>{actionDialog.label}</span>
+              <span>{t(actionDialog.label)}</span>
             </div>
             {actionDialog.kind === "note" && (
               <label>
-                Note
+                {t("Note")}
                 <textarea
                   autoFocus
                   maxLength={500}
                   rows={4}
                   value={dialogValue}
-                  placeholder="Leave empty to clear existing notes"
+                  placeholder={t("Leave empty to clear existing notes")}
                   onChange={(event) => setDialogValue(event.currentTarget.value)}
                 />
               </label>
             )}
             {actionDialog.kind === "category" && (
               <label>
-                Category
+                {t("Category")}
                 <input
                   autoFocus
                   maxLength={40}
                   value={dialogValue}
-                  placeholder="Work, Communication, Learning…"
+                  placeholder={t("Work, Communication, Learning…")}
                   onChange={(event) => setDialogValue(event.currentTarget.value)}
                 />
               </label>
             )}
             {actionDialog.kind === "delete" && (
               <p className="timeline-dialog-warning">
-                These sessions will be removed from the timeline. You can undo this operation afterward.
+                {t("These sessions will be removed from the timeline. You can undo this operation afterward.")}
               </p>
             )}
             <div className="timeline-dialog-actions">
-              <button type="button" onClick={() => setActionDialog(null)}>Cancel</button>
+              <button type="button" onClick={() => setActionDialog(null)}>{t("Cancel")}</button>
               <button
                 className={actionDialog.kind === "delete" ? "danger" : "primary"}
                 type="button"
                 onClick={submitActionDialog}
               >
-                {actionDialog.kind === "delete" ? "Delete sessions" : "Apply changes"}
+                {t(actionDialog.kind === "delete" ? "Delete sessions" : "Apply changes")}
               </button>
             </div>
           </section>
@@ -896,12 +909,12 @@ export function Timeline() {
             aria-labelledby="split-session-title"
           >
             <div>
-              <p className="section-kicker">Session</p>
-              <h2 id="split-session-title">Split recorded session</h2>
-              <span>Create two adjacent sessions at the selected time.</span>
+              <p className="section-kicker">{t("Session")}</p>
+              <h2 id="split-session-title">{t("Split recorded session")}</h2>
+              <span>{t("Create two adjacent sessions at the selected time.")}</span>
             </div>
             <label>
-              Split at
+              {t("Split at")}
               <input
                 type="datetime-local"
                 value={splitAt}
@@ -909,7 +922,7 @@ export function Timeline() {
               />
             </label>
             <div className="timeline-dialog-actions">
-              <button type="button" onClick={() => setSplittingId(null)}>Cancel</button>
+              <button type="button" onClick={() => setSplittingId(null)}>{t("Cancel")}</button>
               <button className="primary" type="button" onClick={() => {
                 const splitAtMs = new Date(splitAt).getTime();
                 if (!Number.isFinite(splitAtMs)) {
@@ -922,7 +935,7 @@ export function Timeline() {
                     completeMutation("Split session into two parts.", result.undoToken);
                   })
                   .catch((reason) => setEditError(errorMessage(reason)));
-              }}>Split session</button>
+              }}>{t("Split session")}</button>
             </div>
           </section>
         </div>

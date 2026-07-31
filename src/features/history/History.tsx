@@ -13,6 +13,7 @@ import {
   getDailyUsage,
 } from "../../lib/ipc";
 import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
+import { useLocale } from "../../lib/i18n";
 
 type Period = "day" | "week" | "month";
 
@@ -49,6 +50,8 @@ function shiftPeriod(period: Period, anchor: string, direction: -1 | 1): string 
 }
 
 export function History() {
+  const { locale, t } = useLocale();
+  const dateLocale = locale === "zh-CN" ? "zh-CN" : "en";
   const today = localIsoDate();
   const [period, setPeriod] = useState<Period>("week");
   const [anchor, setAnchor] = useState(today);
@@ -98,16 +101,16 @@ export function History() {
   );
   const periodTitle =
     period === "day"
-      ? new Intl.DateTimeFormat(undefined, { dateStyle: "long" }).format(
+      ? new Intl.DateTimeFormat(dateLocale, { dateStyle: "long" }).format(
           dateFromLocalIso(range.start),
         )
       : period === "month"
-        ? new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(
+        ? new Intl.DateTimeFormat(dateLocale, { month: "long", year: "numeric" }).format(
             dateFromLocalIso(range.start),
           )
-        : `${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(
+        : `${new Intl.DateTimeFormat(dateLocale, { month: "short", day: "numeric" }).format(
             dateFromLocalIso(range.start),
-          )} – ${new Intl.DateTimeFormat(undefined, {
+          )} – ${new Intl.DateTimeFormat(dateLocale, {
             month: "short",
             day: "numeric",
             year: "numeric",
@@ -117,37 +120,37 @@ export function History() {
   return (
     <div className="history-page">
       <header className="history-header">
-        <div><p className="date-label">Long-term patterns</p><h1>History</h1></div>
+        <div><p className="date-label">{t("Long-term patterns")}</p><h1>{t("History")}</h1></div>
         <div className="range-tabs">
           {(["day", "week", "month"] as const).map((value) => (
             <button key={value} className={period === value ? "active" : ""}
-              onClick={() => setPeriod(value)}>{value[0].toUpperCase() + value.slice(1)}</button>
+              onClick={() => setPeriod(value)}>{t(value[0].toUpperCase() + value.slice(1))}</button>
           ))}
         </div>
       </header>
       <div className="history-controls">
-        <button onClick={() => setAnchor(shiftPeriod(period, anchor, -1))}>← Previous</button>
+        <button onClick={() => setAnchor(shiftPeriod(period, anchor, -1))}>{t("← Previous")}</button>
         <input type="date" value={anchor} max={today}
           onChange={(event) => event.currentTarget.value && setAnchor(event.currentTarget.value)} />
         <strong className="history-period-title">{periodTitle}</strong>
         <button disabled={isCurrentPeriod}
-          onClick={() => setAnchor(shiftPeriod(period, anchor, 1))}>Next →</button>
-        <button disabled={isCurrentPeriod} onClick={() => setAnchor(today)}>Today</button>
+          onClick={() => setAnchor(shiftPeriod(period, anchor, 1))}>{t("Next →")}</button>
+        <button disabled={isCurrentPeriod} onClick={() => setAnchor(today)}>{t("Today")}</button>
       </div>
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner">{t(error)}</div>}
       <section className="applications-overview">
-        <article><p>Average daily active time</p><strong>{formatDuration(average)}</strong></article>
-        <article><p>Total active time</p><strong>{formatDuration(total)}</strong></article>
-        <article><p>Most used app</p><strong>{apps[0]?.applicationName ?? "—"}</strong></article>
+        <article><p>{t("Average daily active time")}</p><strong>{formatDuration(average, locale)}</strong></article>
+        <article><p>{t("Total active time")}</p><strong>{formatDuration(total, locale)}</strong></article>
+        <article><p>{t("Most used app")}</p><strong>{apps[0]?.applicationName ?? "—"}</strong></article>
       </section>
       <section className="history-chart">
-        <div className="list-heading"><div><p className="section-kicker">Active and idle</p><h2>Daily activity</h2></div>
-          <span className="history-legend"><i className="active" />Active <i className="idle" />Idle</span>
+        <div className="list-heading"><div><p className="section-kicker">{t("Active and idle")}</p><h2>{t("Daily activity")}</h2></div>
+          <span className="history-legend"><i className="active" />{t("Active")} <i className="idle" />{t("Idle")}</span>
         </div>
         <div className="history-bars">
           {days.length ? days.map((day) => (
             <div className="history-bar" key={day.date}>
-              <strong>{formatDuration(day.activeDurationMs)}</strong>
+              <strong>{formatDuration(day.activeDurationMs, locale)}</strong>
               <span className="history-bar-stack">
                 <i className="idle" style={{ height: `${day.idleDurationMs / maximum * 100}%` }} />
                 <i className="active" style={{
@@ -156,9 +159,9 @@ export function History() {
                     : "0",
                 }} />
               </span>
-              <small>{new Intl.DateTimeFormat(undefined, { weekday: "short", day: "numeric" }).format(dateFromLocalIso(day.date))}</small>
+              <small>{new Intl.DateTimeFormat(dateLocale, { weekday: "short", day: "numeric" }).format(dateFromLocalIso(day.date))}</small>
             </div>
-          )) : <div className="empty-applications"><h2>No history yet</h2><p>Recorded activity will appear here.</p></div>}
+          )) : <div className="empty-applications"><h2>{t("No history yet")}</h2><p>{t("Recorded activity will appear here.")}</p></div>}
         </div>
       </section>
     </div>

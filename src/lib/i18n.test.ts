@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import ts from "typescript";
+import { formatDuration } from "./format";
 import { translateText } from "./i18n";
 
 describe("translateText", () => {
@@ -10,6 +13,9 @@ describe("translateText", () => {
   it("translates dynamic count patterns", () => {
     expect(translateText("12 sessions")).toBe("12 个会话");
     expect(translateText("3 selected")).toBe("已选择 3 项");
+    expect(translateText("8 active time blocks")).toBe("8 个活跃时间块");
+    expect(translateText("2h remaining")).toBe("剩余 2 小时");
+    expect(translateText("Select Safari session")).toBe("选择“Safari”会话");
     expect(translateText("Show more sessions (200 of 450)")).toBe(
       "显示更多会话（200/450）",
     );
@@ -56,5 +62,92 @@ describe("translateText", () => {
     expect(translateText(
       "Delete all recorded activity? This cannot be undone.",
     )).toBe("要删除所有活动记录吗？此操作无法撤销。");
+  });
+
+  it("formats durations from the requested locale without DOM timing", () => {
+    expect(formatDuration(135 * 60_000, "zh-CN")).toBe("2小时 15分钟");
+    expect(formatDuration(135 * 60_000, "en")).toBe("2h 15m");
+  });
+
+  it("keeps interface source free of raw English JSX copy", () => {
+    const root = new URL("../", import.meta.url);
+    const files = readdirSync(root, { recursive: true })
+      .filter((file): file is string => typeof file === "string" && file.endsWith(".tsx"));
+    for (const file of files) {
+      const source = readFileSync(new URL(file, root), "utf8");
+      const sourceFile = ts.createSourceFile(
+        file,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TSX,
+      );
+      const rawText: string[] = [];
+      const visit = (node: ts.Node) => {
+        if (ts.isJsxText(node)) {
+          const value = node.text.trim();
+          if (/[A-Za-z]/.test(value) && value !== "EN") rawText.push(value);
+        }
+        if (
+          ts.isJsxAttribute(node)
+          && ["aria-label", "placeholder", "title"].includes(node.name.getText())
+          && node.initializer
+          && ts.isStringLiteral(node.initializer)
+          && /[A-Za-z]/.test(node.initializer.text)
+        ) {
+          rawText.push(`${node.name.getText()}="${node.initializer.text}"`);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      expect(rawText, file).toEqual([]);
+    }
+  });
+
+  it("defines translations for literal copy passed to t", () => {
+    const root = new URL("../", import.meta.url);
+    const files = readdirSync(root, { recursive: true })
+      .filter((file): file is string => typeof file === "string" && file.endsWith(".tsx"));
+    const intentionalFallbacks = new Set(["English", "Watchhouse", "YunQi-Watchhouse"]);
+    const untranslated: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(new URL(file, root), "utf8");
+      const sourceFile = ts.createSourceFile(
+        file,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TSX,
+      );
+      const visit = (node: ts.Node) => {
+        if (
+          ts.isCallExpression(node)
+          && ts.isIdentifier(node.expression)
+          && node.expression.text === "t"
+          && node.arguments[0]
+        ) {
+          const inspectArgument = (argumentNode: ts.Node) => {
+            if (
+              ts.isStringLiteralLike(argumentNode)
+              && /[A-Za-z]/.test(argumentNode.text)
+              && !intentionalFallbacks.has(argumentNode.text)
+              && translateText(argumentNode.text) === argumentNode.text
+            ) {
+              untranslated.push(`${file}: ${argumentNode.text}`);
+            }
+            if (ts.isParenthesizedExpression(argumentNode)) {
+              inspectArgument(argumentNode.expression);
+            } else if (ts.isConditionalExpression(argumentNode)) {
+              inspectArgument(argumentNode.whenTrue);
+              inspectArgument(argumentNode.whenFalse);
+            }
+          };
+          inspectArgument(node.arguments[0]);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+    }
+    expect(untranslated).toEqual([]);
   });
 });

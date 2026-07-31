@@ -284,3 +284,32 @@ Decisions:
 - Shortcut persistence is committed only after every enabled shortcut registers successfully.
 - The compatibility translator remains for complex legacy screens while components migrate to the
   explicit `t()` API.
+
+## Phase 14: Complete Explicit Localization
+
+Status: Complete
+
+- [x] Move every application screen and dialog to explicit `t()` lookups.
+- [x] Localize dates, clocks, and durations using the selected interface language.
+- [x] Translate dynamic Timeline editing, import, filtering, and accessibility copy.
+- [x] Add an AST-based source check for raw English JSX text and attributes.
+- [x] Verify literal `t()` calls have a Chinese translation or an intentional fallback.
+- [x] Remove the DOM traversal and MutationObserver compatibility translator.
+
+Decisions:
+
+- User-owned content such as application names, categories, window titles, notes, paths, and
+  diagnostic errors remains unchanged.
+- English source copy remains the runtime fallback, while source tests prevent untranslated
+  literals from entering interface components unnoticed.
+- Locale-sensitive formatting uses `zh-CN` or `en` explicitly instead of depending on the host
+  process locale.
+
+Validation:
+
+- 9 frontend localization and formatting tests passed.
+- Frontend production build passed.
+- 74 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting and Clippy passed with warnings denied.
+- Chinese and English switching was visually checked at desktop and 375 px widths.
+- The macOS application bundle was generated successfully.

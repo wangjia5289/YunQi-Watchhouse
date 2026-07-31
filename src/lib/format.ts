@@ -1,24 +1,36 @@
-export function formatDuration(milliseconds: number): string {
+export function formatDuration(milliseconds: number, locale?: string): string {
   const totalMinutes = Math.max(0, Math.floor(milliseconds / 60_000));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
+  const resolvedLocale = locale ?? (
+    typeof document !== "undefined" ? document.documentElement.lang : undefined
+  );
+  const chinese = resolvedLocale === "zh-CN";
 
+  if (chinese) {
+    if (hours === 0) return `${minutes}分钟`;
+    if (minutes === 0) return `${hours}小时`;
+    return `${hours}小时 ${minutes}分钟`;
+  }
   if (hours === 0) return `${minutes}m`;
   if (minutes === 0) return `${hours}h`;
   return `${hours}h ${minutes}m`;
 }
 
-export function formatClock(timestamp: number | null): string {
+export function formatClock(timestamp: number | null, locale?: string): string {
   if (timestamp === null) return "—";
-  return new Intl.DateTimeFormat(undefined, {
+  const resolvedLocale = locale ?? (
+    typeof document !== "undefined" ? document.documentElement.lang : undefined
+  );
+  return new Intl.DateTimeFormat(resolvedLocale, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   }).format(new Date(timestamp));
 }
 
-export function formatLongDate(date: Date): string {
-  return new Intl.DateTimeFormat(undefined, {
+export function formatLongDate(date: Date, locale?: string): string {
+  return new Intl.DateTimeFormat(locale, {
     weekday: "long",
     month: "long",
     day: "numeric",

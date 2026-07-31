@@ -18,6 +18,7 @@ import {
   updateFocusPlanTemplate,
 } from "../../lib/ipc";
 import { useDashboard } from "./useDashboard";
+import { useLocale } from "../../lib/i18n";
 
 function ActivityDistribution({
   timeline,
@@ -28,6 +29,7 @@ function ActivityDistribution({
   startMs: number;
   endMs: number;
 }) {
+  const { locale, t } = useLocale();
   const dayDuration = endMs - startMs;
   const segments = timeline
     .filter((entry) => entry.state === "ACTIVE" && entry.durationMs > 0)
@@ -47,11 +49,11 @@ function ActivityDistribution({
     <section className="activity-card" aria-labelledby="activity-heading">
       <div className="section-heading">
         <div>
-          <p className="section-kicker">Overview</p>
-          <h2 id="activity-heading">Today&apos;s activity</h2>
+          <p className="section-kicker">{t("Overview")}</p>
+          <h2 id="activity-heading">{t("Today's activity")}</h2>
         </div>
         <span className="session-count">
-          {timeline.filter((entry) => entry.state === "ACTIVE").length} sessions
+          {t(`${timeline.filter((entry) => entry.state === "ACTIVE").length} sessions`)}
         </span>
       </div>
 
@@ -65,7 +67,7 @@ function ActivityDistribution({
       <div
         className="activity-track"
         role="img"
-        aria-label={`${segments.length} active periods recorded today`}
+        aria-label={t(`${segments.length} active periods recorded today`)}
       >
         <div className="track-grid" aria-hidden="true" />
         {segments.map(({ entry, style }) => (
@@ -73,16 +75,16 @@ function ActivityDistribution({
             className="activity-segment"
             style={style}
             key={entry.sessionId}
-            title={`${entry.applicationName ?? "Active"} · ${formatDuration(entry.durationMs)}`}
+            title={`${entry.applicationName ?? t("Active")} · ${formatDuration(entry.durationMs, locale)}`}
           />
         ))}
       </div>
       <div className="activity-legend">
         <span>
-          <i className="legend-dot active" /> Active
+          <i className="legend-dot active" /> {t("Active")}
         </span>
         <span>
-          <i className="legend-dot quiet" /> No activity recorded
+          <i className="legend-dot quiet" /> {t("No activity recorded")}
         </span>
       </div>
     </section>
@@ -90,6 +92,7 @@ function ActivityDistribution({
 }
 
 export function Dashboard() {
+  const { locale, t } = useLocale();
   const { summary, timeline, current, focus, loading, error, refresh } = useDashboard();
   const [dismissedBlockStart, setDismissedBlockStart] = useState<number | null>(null);
   const [focusMode, setFocusModeStatus] = useState<FocusModeStatus | null>(null);
@@ -183,28 +186,28 @@ export function Dashboard() {
     <div className="dashboard">
       <header className="topbar">
         <div>
-          <p className="date-label">{formatLongDate(new Date())}</p>
-          <h1>Today</h1>
+          <p className="date-label">{formatLongDate(new Date(), locale)}</p>
+          <h1>{t("Today")}</h1>
         </div>
         <button
           type="button"
           className={`tracking-pill${degraded ? " degraded" : ""}${current?.paused ? " paused" : ""}`}
           onClick={() => void setTrackingPaused(!current?.paused).then(refresh)}
-          title={current?.paused ? "Resume tracking" : "Pause tracking"}
+          title={t(current?.paused ? "Resume tracking" : "Pause tracking")}
         >
           <span className="tracking-dot" />
           <span>
-            <strong>{trackingLabel}</strong>
-            <small>{currentApp}</small>
+            <strong>{t(trackingLabel)}</strong>
+            <small>{currentApp ? t(currentApp) : "—"}</small>
           </span>
         </button>
       </header>
 
       {error && (
         <div className="error-banner" role="alert">
-          <span>{error}</span>
+          <span>{t(error)}</span>
           <button type="button" onClick={refresh}>
-            Try again
+            {t("Try again")}
           </button>
         </div>
       )}
@@ -213,55 +216,55 @@ export function Dashboard() {
       {showBreakReminder && currentFocusBlock && (
         <div className="break-reminder" role="status">
           <div>
-            <strong>Time for a short break</strong>
-            <span>You have focused for {formatDuration(currentFocusBlock.activeDurationMs)}.</span>
+            <strong>{t("Time for a short break")}</strong>
+            <span>{t(`You have focused for ${formatDuration(currentFocusBlock.activeDurationMs, locale)}.`)}</span>
           </div>
           <button type="button" onClick={() => setDismissedBlockStart(currentFocusBlock.startedAtMs)}>
-            Dismiss
+            {t("Dismiss")}
           </button>
         </div>
       )}
 
-      <section className="summary-grid" aria-label="Today summary">
+      <section className="summary-grid" aria-label={t("Today summary")}>
         <article className="primary-stat">
-          <p>Active time</p>
-          <strong>{loading ? "—" : formatDuration(summary?.activeDurationMs ?? 0)}</strong>
+          <p>{t("Active time")}</p>
+          <strong>{loading ? "—" : formatDuration(summary?.activeDurationMs ?? 0, locale)}</strong>
           <span>
             <i className="live-indicator" />
-            Recorded locally on this Mac
+            {t("Recorded locally on this Mac")}
           </span>
         </article>
 
         <div className="secondary-stats">
           <article>
-            <p>First activity</p>
-            <strong>{formatClock(summary?.firstActivityAtMs ?? null)}</strong>
-            <span>Started today</span>
+            <p>{t("First activity")}</p>
+            <strong>{formatClock(summary?.firstActivityAtMs ?? null, locale)}</strong>
+            <span>{t("Started today")}</span>
           </article>
           <article>
-            <p>Last activity</p>
-            <strong>{formatClock(summary?.lastActivityAtMs ?? null)}</strong>
-            <span>Latest checkpoint</span>
+            <p>{t("Last activity")}</p>
+            <strong>{formatClock(summary?.lastActivityAtMs ?? null, locale)}</strong>
+            <span>{t("Latest checkpoint")}</span>
           </article>
           <article>
-            <p>Idle</p>
-            <strong>{formatDuration(summary?.idleDurationMs ?? 0)}</strong>
-            <span>Away from computer</span>
+            <p>{t("Idle")}</p>
+            <strong>{formatDuration(summary?.idleDurationMs ?? 0, locale)}</strong>
+            <span>{t("Away from computer")}</span>
           </article>
         </div>
       </section>
 
       {focus && (
-        <section className="focus-summary" aria-label="Focus summary">
+        <section className="focus-summary" aria-label={t("Focus summary")}>
           <div className="focus-progress">
             <span style={{ width: `${focusProgress}%` }} />
           </div>
-          <article><span>Focused today</span><strong>{formatDuration(focus.totalFocusDurationMs)}</strong></article>
-          <article><span>Longest block</span><strong>{formatDuration(focus.longestFocusDurationMs)}</strong></article>
-          <article><span>App switches</span><strong>{focus.applicationSwitchCount}</strong></article>
+          <article><span>{t("Focused today")}</span><strong>{formatDuration(focus.totalFocusDurationMs, locale)}</strong></article>
+          <article><span>{t("Longest block")}</span><strong>{formatDuration(focus.longestFocusDurationMs, locale)}</strong></article>
+          <article><span>{t("App switches")}</span><strong>{focus.applicationSwitchCount}</strong></article>
           <article>
-            <span>Daily goal</span>
-            <strong>{focus.goalMinutes ? `${Math.round(focusProgress)}%` : "Off"}</strong>
+            <span>{t("Daily goal")}</span>
+            <strong>{focus.goalMinutes ? `${Math.round(focusProgress)}%` : t("Off")}</strong>
           </article>
           <div className="focus-plan-controls">
             {focusMode?.active ? (
@@ -269,34 +272,34 @@ export function Dashboard() {
                 <div>
                   <strong>
                     {focusMode.paused
-                      ? "Focus paused"
+                      ? t("Focus paused")
                       : focusMode.plannedEndAtMs
-                        ? `${formatDuration(Math.max(0, focusMode.plannedEndAtMs - Date.now()))} remaining`
-                        : `Focused ${formatDuration(Date.now() - (focusMode.startedAtMs ?? Date.now()))}`}
+                        ? t(`${formatDuration(Math.max(0, focusMode.plannedEndAtMs - Date.now()), locale)} remaining`)
+                        : t(`Focused ${formatDuration(Date.now() - (focusMode.startedAtMs ?? Date.now()), locale)}`)}
                   </strong>
                   <small>
                     {focusMode.plannedEndAtMs
-                      ? `Planned until ${formatClock(focusMode.plannedEndAtMs)}`
-                      : "Open-ended focus mode"}
+                      ? t(`Planned until ${formatClock(focusMode.plannedEndAtMs, locale)}`)
+                      : t("Open-ended focus mode")}
                   </small>
                 </div>
                 <button
                   type="button"
                   onClick={() => void setFocusPlanPaused(!focusMode.paused).then(setFocusModeStatus)}
                 >
-                  {focusMode.paused ? "Resume" : "Pause"}
+                  {t(focusMode.paused ? "Resume" : "Pause")}
                 </button>
                 <button
                   type="button"
                   className="focus-plan-end"
                   onClick={() => void endFocusPlan(false).then(setFocusModeStatus)}
                 >
-                  End
+                  {t("End")}
                 </button>
               </>
             ) : (
               <>
-                <div className="focus-template-list" aria-label="Focus plan templates">
+                <div className="focus-template-list" aria-label={t("Focus plan templates")}>
                   {focusTemplates.map((template, index) => (
                     <span key={template.id}>
                       <button
@@ -308,11 +311,11 @@ export function Dashboard() {
                             .catch((reason) => setTemplateError(errorMessage(reason)));
                         }}
                       >
-                        {template.name} · {template.durationMinutes}m
+                        {template.name} · {t(`${template.durationMinutes}m`)}
                       </button>
                       <button
                         type="button"
-                        aria-label={`Edit ${template.name} template`}
+                        aria-label={t(`Edit ${template.name} template`)}
                         onClick={() => {
                           setEditingTemplateId(template.id);
                           setTemplateName(template.name);
@@ -320,27 +323,27 @@ export function Dashboard() {
                           setTemplateOpen(true);
                         }}
                       >
-                        Edit
+                        {t("Edit")}
                       </button>
                       <button
                         type="button"
-                        aria-label={`Move ${template.name} template up`}
+                        aria-label={t(`Move ${template.name} template up`)}
                         disabled={index === 0}
                         onClick={() => void moveTemplate(index, -1)}
                       >
-                        Up
+                        {t("Up")}
                       </button>
                       <button
                         type="button"
-                        aria-label={`Move ${template.name} template down`}
+                        aria-label={t(`Move ${template.name} template down`)}
                         disabled={index === focusTemplates.length - 1}
                         onClick={() => void moveTemplate(index, 1)}
                       >
-                        Down
+                        {t("Down")}
                       </button>
                       <button
                         type="button"
-                        aria-label={`Remove ${template.name} template`}
+                        aria-label={t(`Remove ${template.name} template`)}
                         onClick={() => {
                           setTemplateError(null);
                           void deleteFocusPlanTemplate(template.id).then(() => {
@@ -348,7 +351,7 @@ export function Dashboard() {
                           }).catch((reason) => setTemplateError(errorMessage(reason)));
                         }}
                       >
-                        Remove
+                        {t("Remove")}
                       </button>
                     </span>
                   ))}
@@ -359,17 +362,17 @@ export function Dashboard() {
                       const rate = template.useCount
                         ? Math.round(template.completedCount / template.useCount * 100)
                         : 0;
-                      return `${template.name}: ${template.useCount} starts · ${rate}% complete`;
+                      return t(`${template.name}: ${template.useCount} starts · ${rate}% complete`);
                     }).join(" · ")}
                   </small>
                 )}
                 <select
                   value={focusPlanMinutes}
-                  aria-label="Focus plan duration"
+                  aria-label={t("Focus plan duration")}
                   onChange={(event) => setFocusPlanMinutes(Number(event.currentTarget.value))}
                 >
                   {[25, 45, 50, 60, 90, 120].map((minutes) => (
-                    <option value={minutes} key={minutes}>{minutes} minutes</option>
+                    <option value={minutes} key={minutes}>{t(`${minutes} minutes`)}</option>
                   ))}
                 </select>
                 <button
@@ -377,18 +380,18 @@ export function Dashboard() {
                   className="focus-mode-button"
                   onClick={() => void startFocusPlan(focusPlanMinutes).then(setFocusModeStatus)}
                 >
-                  Start focus plan
+                  {t("Start focus plan")}
                 </button>
                 <button type="button" onClick={() => setTemplateOpen((open) => !open)}>
-                  {templateOpen ? "Close template editor" : "New template"}
+                  {t(templateOpen ? "Close template editor" : "New template")}
                 </button>
                 {templateOpen && (
                   <div className="focus-template-editor">
                     <input
                       value={templateName}
                       maxLength={40}
-                      placeholder="Template name"
-                      aria-label="Template name"
+                      placeholder={t("Template name")}
+                      aria-label={t("Template name")}
                       onChange={(event) => setTemplateName(event.currentTarget.value)}
                     />
                     <input
@@ -396,7 +399,7 @@ export function Dashboard() {
                       min={5}
                       max={240}
                       value={templateMinutes}
-                      aria-label="Template duration in minutes"
+                      aria-label={t("Template duration in minutes")}
                       onChange={(event) => setTemplateMinutes(Number(event.currentTarget.value))}
                     />
                     <button
@@ -423,7 +426,7 @@ export function Dashboard() {
                           .catch((reason) => setTemplateError(errorMessage(reason)));
                       }}
                     >
-                      {editingTemplateId === null ? "Save template" : "Update template"}
+                      {t(editingTemplateId === null ? "Save template" : "Update template")}
                     </button>
                   </div>
                 )}
@@ -442,7 +445,7 @@ export function Dashboard() {
       )}
 
       {!summary && !error && (
-        <section className="activity-card skeleton-card" aria-label="Loading activity">
+        <section className="activity-card skeleton-card" aria-label={t("Loading activity")}>
           <div className="skeleton title" />
           <div className="skeleton chart" />
         </section>
@@ -452,7 +455,7 @@ export function Dashboard() {
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5z" />
         </svg>
-        Activity stays private and is stored only on this Mac.
+        {t("Activity stays private and is stored only on this Mac.")}
       </footer>
     </div>
   );

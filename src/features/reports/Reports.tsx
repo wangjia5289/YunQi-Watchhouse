@@ -9,6 +9,7 @@ import {
   getProductivityReport,
   startFocusPlan,
 } from "../../lib/ipc";
+import { useLocale } from "../../lib/i18n";
 
 type ReportPeriod = "week" | "month" | "custom";
 
@@ -48,6 +49,8 @@ function comparison(current: number, previous: number): string {
 }
 
 export function Reports() {
+  const { locale, t } = useLocale();
+  const dateLocale = locale === "zh-CN" ? "zh-CN" : "en";
   const today = localIsoDate();
   const [period, setPeriod] = useState<ReportPeriod>("week");
   const [customStart, setCustomStart] = useState(shiftLocalDate(today, -6));
@@ -93,18 +96,18 @@ export function Reports() {
     <div className="reports-page">
       <header className="reports-header">
         <div>
-          <p className="date-label">Patterns and progress</p>
-          <h1>Reports</h1>
+          <p className="date-label">{t("Patterns and progress")}</p>
+          <h1>{t("Reports")}</h1>
         </div>
-        <div className="range-tabs" role="group" aria-label="Report period">
+        <div className="range-tabs" role="group" aria-label={t("Report period")}>
           <button className={period === "week" ? "active" : ""} onClick={() => setPeriod("week")}>
-            This week
+            {t("This week")}
           </button>
           <button className={period === "month" ? "active" : ""} onClick={() => setPeriod("month")}>
-            This month
+            {t("This month")}
           </button>
           <button className={period === "custom" ? "active" : ""} onClick={() => setPeriod("custom")}>
-            Custom
+            {t("Custom")}
           </button>
         </div>
       </header>
@@ -112,7 +115,7 @@ export function Reports() {
       {period === "custom" && (
         <div className="report-custom-range">
           <label>
-            <span>From</span>
+            <span>{t("From")}</span>
             <input
               type="date"
               value={customStart}
@@ -123,7 +126,7 @@ export function Reports() {
             />
           </label>
           <label>
-            <span>To</span>
+            <span>{t("To")}</span>
             <input
               type="date"
               value={customEnd}
@@ -144,44 +147,44 @@ export function Reports() {
               if (path) setFocusMessage(`Report saved to ${path}`);
             })
             .catch((reason) => setFocusMessage(errorMessage(reason)));
-        }}>Export CSV</button>
+        }}>{t("Export CSV")}</button>
       </div>
 
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <div className="error-banner" role="alert">{t(error)}</div>}
 
-      <section className="report-metrics" aria-label="Report totals">
+      <section className="report-metrics" aria-label={t("Report totals")}>
         <article>
-          <span>Active time</span>
-          <strong>{formatDuration(report?.activeDurationMs ?? 0)}</strong>
-          <small>{comparison(report?.activeDurationMs ?? 0, report?.previousActiveDurationMs ?? 0)}</small>
+          <span>{t("Active time")}</span>
+          <strong>{formatDuration(report?.activeDurationMs ?? 0, locale)}</strong>
+          <small>{t(comparison(report?.activeDurationMs ?? 0, report?.previousActiveDurationMs ?? 0))}</small>
         </article>
         <article>
-          <span>Idle time</span>
-          <strong>{formatDuration(report?.idleDurationMs ?? 0)}</strong>
-          <small>{comparison(report?.idleDurationMs ?? 0, report?.previousIdleDurationMs ?? 0)}</small>
+          <span>{t("Idle time")}</span>
+          <strong>{formatDuration(report?.idleDurationMs ?? 0, locale)}</strong>
+          <small>{t(comparison(report?.idleDurationMs ?? 0, report?.previousIdleDurationMs ?? 0))}</small>
         </article>
         <article>
-          <span>Daily average</span>
-          <strong>{formatDuration((report?.activeDurationMs ?? 0) / Math.max(1, report?.dailyUsage.length ?? 1))}</strong>
-          <small>{report?.dailyUsage.length ?? 0} recorded days</small>
+          <span>{t("Daily average")}</span>
+          <strong>{formatDuration((report?.activeDurationMs ?? 0) / Math.max(1, report?.dailyUsage.length ?? 1), locale)}</strong>
+          <small>{t(`${report?.dailyUsage.length ?? 0} recorded days`)}</small>
         </article>
       </section>
 
       <section className="report-section focus-history" aria-labelledby="focus-history-title">
         <div className="section-heading">
           <div>
-            <p className="section-kicker">Focus plans</p>
-            <h2 id="focus-history-title">Plan history</h2>
+            <p className="section-kicker">{t("Focus plans")}</p>
+            <h2 id="focus-history-title">{t("Plan history")}</h2>
           </div>
         </div>
         <div className="focus-history-metrics">
-          <div><span>Completion rate</span><strong>{focusCompletionRate}%</strong></div>
-          <div><span>Completed</span><strong>{focusHistory?.completedCount ?? 0}</strong></div>
-          <div><span>Cancelled</span><strong>{focusHistory?.cancelledCount ?? 0}</strong></div>
-          <div><span>Focused time</span><strong>{formatDuration(focusHistory?.totalActualDurationMs ?? 0)}</strong></div>
-          <div><span>Longest streak</span><strong>{focusHistory?.longestCompletedStreakDays ?? 0}d</strong></div>
+          <div><span>{t("Completion rate")}</span><strong>{focusCompletionRate}%</strong></div>
+          <div><span>{t("Completed")}</span><strong>{focusHistory?.completedCount ?? 0}</strong></div>
+          <div><span>{t("Cancelled")}</span><strong>{focusHistory?.cancelledCount ?? 0}</strong></div>
+          <div><span>{t("Focused time")}</span><strong>{formatDuration(focusHistory?.totalActualDurationMs ?? 0, locale)}</strong></div>
+          <div><span>{t("Longest streak")}</span><strong>{t(`${focusHistory?.longestCompletedStreakDays ?? 0}d`)}</strong></div>
         </div>
-        {focusMessage && <p className="focus-history-message" role="status">{focusMessage}</p>}
+        {focusMessage && <p className="focus-history-message" role="status">{t(focusMessage)}</p>}
         {focusHistory?.recentPlans.length ? (
           <div className="focus-history-list">
             {focusHistory.recentPlans.slice(0, 8).map((plan) => {
@@ -195,16 +198,16 @@ export function Reports() {
               return (
                 <div key={plan.id}>
                   <span className={`focus-outcome ${plan.outcome.toLowerCase()}`}>
-                    {plan.outcome === "COMPLETED" ? "Completed" : "Ended early"}
+                    {t(plan.outcome === "COMPLETED" ? "Completed" : "Ended early")}
                   </span>
                   <span>
-                    <strong>{new Date(plan.startedAtMs).toLocaleString(undefined, {
+                    <strong>{new Date(plan.startedAtMs).toLocaleString(dateLocale, {
                       month: "short",
                       day: "numeric",
                       hour: "numeric",
                       minute: "2-digit",
                     })}</strong>
-                    <small>{plannedMinutes ? `${plannedMinutes}m planned · ` : ""}{formatDuration(actualDuration)} focused</small>
+                    <small>{t(`${plannedMinutes ? `${plannedMinutes}m planned · ` : ""}${formatDuration(actualDuration, locale)} focused`)}</small>
                   </span>
                   {plannedMinutes !== null && plannedMinutes >= 5 && plannedMinutes <= 240 && (
                     <button type="button" onClick={() => {
@@ -212,46 +215,46 @@ export function Reports() {
                       void startFocusPlan(plannedMinutes)
                         .then(() => setFocusMessage(`${plannedMinutes}-minute focus plan started.`))
                         .catch((reason) => setFocusMessage(errorMessage(reason)));
-                    }}>Repeat</button>
+                    }}>{t("Repeat")}</button>
                   )}
                 </div>
               );
             })}
           </div>
         ) : (
-          <p className="report-empty">No focus plans ended in this period.</p>
+          <p className="report-empty">{t("No focus plans ended in this period.")}</p>
         )}
       </section>
 
       <section className="report-section" aria-labelledby="daily-report-title">
         <div className="section-heading">
-          <div><p className="section-kicker">Trend</p><h2 id="daily-report-title">Daily active time</h2></div>
+          <div><p className="section-kicker">{t("Trend")}</p><h2 id="daily-report-title">{t("Daily active time")}</h2></div>
         </div>
         {report?.dailyUsage.length ? (
           <div className="report-daily-bars">
             {report.dailyUsage.map((day) => (
             <div key={day.date}>
               <span><i style={{ height: `${Math.max(4, day.activeDurationMs / dailyMaximum * 100)}%` }} /></span>
-              <strong>{new Date(`${day.date}T12:00:00`).toLocaleDateString(undefined, { weekday: "short" })}</strong>
-              <small>{formatDuration(day.activeDurationMs)}</small>
+              <strong>{new Date(`${day.date}T12:00:00`).toLocaleDateString(dateLocale, { weekday: "short" })}</strong>
+              <small>{formatDuration(day.activeDurationMs, locale)}</small>
             </div>
             ))}
           </div>
         ) : (
-          <p className="report-empty">No activity recorded in this period.</p>
+          <p className="report-empty">{t("No activity recorded in this period.")}</p>
         )}
       </section>
 
       <section className="report-section" aria-labelledby="hourly-report-title">
         <div className="section-heading">
-          <div><p className="section-kicker">Rhythm</p><h2 id="hourly-report-title">Active time by hour</h2></div>
+          <div><p className="section-kicker">{t("Rhythm")}</p><h2 id="hourly-report-title">{t("Active time by hour")}</h2></div>
         </div>
         <div className="report-heatmap">
           {report?.hourlyUsage.map((hour) => (
             <span
               key={hour.hour}
               style={{ opacity: 0.18 + hour.activeDurationMs / hourlyMaximum * 0.82 }}
-              title={`${String(hour.hour).padStart(2, "0")}:00 · ${formatDuration(hour.activeDurationMs)}`}
+              title={`${String(hour.hour).padStart(2, "0")}:00 · ${formatDuration(hour.activeDurationMs, locale)}`}
             >
               {hour.hour}
             </span>
@@ -261,17 +264,17 @@ export function Reports() {
 
       <section className="report-section" aria-labelledby="category-report-title">
         <div className="section-heading">
-          <div><p className="section-kicker">Allocation</p><h2 id="category-report-title">Categories</h2></div>
+          <div><p className="section-kicker">{t("Allocation")}</p><h2 id="category-report-title">{t("Categories")}</h2></div>
         </div>
         <div className="report-categories">
           {report?.categoryUsage.map((category) => (
             <div key={category.category}>
               <span>{category.category}</span>
               <i><b style={{ width: `${categoryTotal ? category.durationMs / categoryTotal * 100 : 0}%` }} /></i>
-              <strong>{formatDuration(category.durationMs)}</strong>
+              <strong>{formatDuration(category.durationMs, locale)}</strong>
             </div>
           ))}
-          {!report?.categoryUsage.length && <p>No categorized activity in this period.</p>}
+          {!report?.categoryUsage.length && <p>{t("No categorized activity in this period.")}</p>}
         </div>
       </section>
     </div>

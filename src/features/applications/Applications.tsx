@@ -15,6 +15,7 @@ import {
 import { ACTIVITY_DATA_CHANGED, notifyActivityDataChanged } from "../../lib/events";
 import { ApplicationRange, useApplications } from "./useApplications";
 import { ApplicationIcon } from "./ApplicationIcon";
+import { useLocale } from "../../lib/i18n";
 
 type RangePreset = "today" | "7days" | "30days" | "custom";
 
@@ -60,6 +61,7 @@ function ApplicationRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { locale, t } = useLocale();
   const percentage = total > 0 ? (application.durationMs / total) * 100 : 0;
   const style = {
     "--usage-width": `${percentage}%`,
@@ -80,14 +82,14 @@ function ApplicationRow({
       <span className="application-main">
         <span className="application-copy">
           <strong>{application.applicationName}</strong>
-          <small>{application.bundleIdentifier ?? "Application"}</small>
+          <small>{application.bundleIdentifier ?? t("Application")}</small>
         </span>
         <span className="usage-track">
           <i />
         </span>
       </span>
       <span className="application-duration">
-        <strong>{formatDuration(application.durationMs)}</strong>
+        <strong>{formatDuration(application.durationMs, locale)}</strong>
         <small>{percentage.toFixed(1)}%</small>
       </span>
       <svg className="row-chevron" viewBox="0 0 24 24" aria-hidden="true">
@@ -98,6 +100,7 @@ function ApplicationRow({
 }
 
 export function Applications() {
+  const { locale, t } = useLocale();
   const today = localIsoDate();
   const [preset, setPreset] = useState<RangePreset>("today");
   const [customStart, setCustomStart] = useState(shiftLocalDate(today, -6));
@@ -194,10 +197,10 @@ export function Applications() {
     <div className="applications-page">
       <header className="applications-header">
         <div>
-          <p className="date-label">Time by application</p>
-          <h1>Applications</h1>
+          <p className="date-label">{t("Time by application")}</p>
+          <h1>{t("Applications")}</h1>
         </div>
-        <div className="range-tabs" role="group" aria-label="Application usage range">
+        <div className="range-tabs" role="group" aria-label={t("Application usage range")}>
           {(
             [
               ["today", "Today"],
@@ -212,7 +215,7 @@ export function Applications() {
               onClick={() => setPreset(value)}
               key={value}
             >
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
@@ -221,7 +224,7 @@ export function Applications() {
       {preset === "custom" && (
         <div className="custom-range">
           <label>
-            From
+            {t("From")}
             <input
               type="date"
               value={customStart}
@@ -229,9 +232,9 @@ export function Applications() {
               onChange={(event) => setCustomStart(event.currentTarget.value)}
             />
           </label>
-          <span>to</span>
+          <span>{t("to")}</span>
           <label>
-            Until
+            {t("Until")}
             <input
               type="date"
               value={customEnd}
@@ -245,37 +248,37 @@ export function Applications() {
 
       {error && (
         <div className="error-banner" role="alert">
-          <span>{error}</span>
+          <span>{t(error)}</span>
           <button type="button" onClick={refresh}>
-            Try again
+            {t("Try again")}
           </button>
         </div>
       )}
 
-      <section className="applications-overview" aria-label="Application usage summary">
+      <section className="applications-overview" aria-label={t("Application usage summary")}>
         <article>
-          <p>Total active time</p>
-          <strong>{formatDuration(total)}</strong>
+          <p>{t("Total active time")}</p>
+          <strong>{formatDuration(total, locale)}</strong>
         </article>
         <article>
-          <p>Applications used</p>
+          <p>{t("Applications used")}</p>
           <strong>{visibleApplications.length}</strong>
         </article>
         <article>
-          <p>Most used</p>
+          <p>{t("Most used")}</p>
           <strong>{visibleApplications[0]?.applicationName ?? "—"}</strong>
         </article>
       </section>
 
       {categories.length > 0 && (
-        <section className="category-usage" aria-label="Usage by category">
+        <section className="category-usage" aria-label={t("Usage by category")}>
           <button
             type="button"
             className={categoryFilter === null ? "active" : ""}
             onClick={() => setCategoryFilter(null)}
           >
-            <span>All categories</span>
-            <strong>{formatDuration(categories.reduce((sum, item) => sum + item.durationMs, 0))}</strong>
+            <span>{t("All categories")}</span>
+            <strong>{formatDuration(categories.reduce((sum, item) => sum + item.durationMs, 0), locale)}</strong>
           </button>
           {categories.map((category) => (
             <button
@@ -285,21 +288,21 @@ export function Applications() {
               key={category.category}
             >
               <span>{category.category}</span>
-              <strong>{formatDuration(category.durationMs)}</strong>
-              <small>{category.applicationCount} {category.applicationCount === 1 ? "app" : "apps"}</small>
+              <strong>{formatDuration(category.durationMs, locale)}</strong>
+              <small>{t(`${category.applicationCount} ${category.applicationCount === 1 ? "app" : "apps"}`)}</small>
             </button>
           ))}
         </section>
       )}
 
       <div className="applications-layout">
-        <section className="applications-list-card" aria-label="Applications ranked by usage">
+        <section className="applications-list-card" aria-label={t("Applications ranked by usage")}>
           <div className="list-heading">
             <div>
-              <p className="section-kicker">Active time</p>
-              <h2>Usage by application</h2>
+              <p className="section-kicker">{t("Active time")}</p>
+              <h2>{t("Usage by application")}</h2>
             </div>
-            <span>{visibleApplications.length} apps</span>
+            <span>{t(`${visibleApplications.length} apps`)}</span>
           </div>
 
           {loading && applications.length === 0 && (
@@ -312,9 +315,9 @@ export function Applications() {
 
           {!loading && visibleApplications.length === 0 && !error && (
             <div className="empty-applications">
-              <span>0h</span>
-              <h2>No application activity</h2>
-              <p>Active applications will appear here as Watchhouse records them.</p>
+              <span>{t("0h")}</span>
+              <h2>{t("No application activity")}</h2>
+              <p>{t("Active applications will appear here as Watchhouse records them.")}</p>
             </div>
           )}
 
@@ -338,14 +341,14 @@ export function Applications() {
                 applicationName={selected.applicationName}
                 style={{ "--app-hue": appHue(selected.applicationId) } as CSSProperties}
               />
-              <p className="section-kicker">Application</p>
+              <p className="section-kicker">{t("Application")}</p>
               <h2>{selected.applicationName}</h2>
               <p className="detail-bundle">
-                {selected.bundleIdentifier ?? "No bundle identifier"}
+                {selected.bundleIdentifier ?? t("No bundle identifier")}
               </p>
               <div className="application-preferences">
                 <label>
-                  Category
+                  {t("Category")}
                   <input
                     type="text"
                     list="application-categories"
@@ -378,8 +381,8 @@ export function Applications() {
                     }}
                   />
                   <span>
-                    <strong>Ignore future activity</strong>
-                    <small>Existing history is preserved.</small>
+                    <strong>{t("Ignore future activity")}</strong>
+                    <small>{t("Existing history is preserved.")}</small>
                   </span>
                 </label>
                 <label className="ignore-application">
@@ -396,47 +399,47 @@ export function Applications() {
                     }}
                   />
                   <span>
-                    <strong>Record window titles</strong>
-                    <small>Used only when the global privacy setting is enabled.</small>
+                    <strong>{t("Record window titles")}</strong>
+                    <small>{t("Used only when the global privacy setting is enabled.")}</small>
                   </span>
                 </label>
                 {preferenceError && <small className="preference-error">{preferenceError}</small>}
               </div>
               <dl>
                 <div>
-                  <dt>Active time</dt>
-                  <dd>{formatDuration(selected.durationMs)}</dd>
+                  <dt>{t("Active time")}</dt>
+                  <dd>{formatDuration(selected.durationMs, locale)}</dd>
                 </div>
                 <div>
-                  <dt>Share of time</dt>
+                  <dt>{t("Share of time")}</dt>
                   <dd>{total > 0 ? ((selected.durationMs / total) * 100).toFixed(1) : "0"}%</dd>
                 </div>
                 <div>
-                  <dt>Daily average</dt>
-                  <dd>{formatDuration(selected.durationMs / rangeDays)}</dd>
+                  <dt>{t("Daily average")}</dt>
+                  <dd>{formatDuration(selected.durationMs / rangeDays, locale)}</dd>
                 </div>
               </dl>
               <div className="application-trend">
                 <div>
-                  <p className="section-kicker">Daily trend</p>
-                  <strong>{visibleTrend.length > 1 ? `Last ${visibleTrend.length} active days` : "Selected range"}</strong>
+                  <p className="section-kicker">{t("Daily trend")}</p>
+                  <strong>{t(visibleTrend.length > 1 ? `Last ${visibleTrend.length} active days` : "Selected range")}</strong>
                 </div>
                 {visibleTrend.length ? (
                   <div className="application-trend-bars">
                     {visibleTrend.map((day) => (
-                      <span key={day.date} title={`${day.date} · ${formatDuration(day.activeDurationMs)}`}>
+                      <span key={day.date} title={`${day.date} · ${formatDuration(day.activeDurationMs, locale)}`}>
                         <i style={{ height: `${Math.max(5, day.activeDurationMs / trendMaximum * 100)}%` }} />
                       </span>
                     ))}
                   </div>
                 ) : (
-                  <small>No daily trend in this range.</small>
+                  <small>{t("No daily trend in this range.")}</small>
                 )}
               </div>
             </>
           ) : (
             <div className="detail-placeholder">
-              <p>Application details will appear here.</p>
+              <p>{t("Application details will appear here.")}</p>
             </div>
           )}
         </aside>
