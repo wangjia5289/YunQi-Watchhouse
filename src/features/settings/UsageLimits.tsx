@@ -76,14 +76,10 @@ export function usageLimitInputFromDraft(
 export function formatLimitMinutes(minutes: number, locale: Locale): string {
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
-  if (locale === "zh-CN") {
-    if (hours === 0) return `${remainder} 分钟`;
-    if (remainder === 0) return `${hours} 小时`;
-    return `${hours} 小时 ${remainder} 分钟`;
-  }
-  if (hours === 0) return `${remainder}m`;
+  void locale;
+  if (hours === 0) return `${remainder}min`;
   if (remainder === 0) return `${hours}h`;
-  return `${hours}h ${remainder}m`;
+  return `${hours}h ${remainder}min`;
 }
 
 function draftFromRule(rule: UsageLimitRule): UsageLimitDraft {

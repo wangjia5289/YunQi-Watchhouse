@@ -2,19 +2,10 @@ export function formatDuration(milliseconds: number, locale?: string): string {
   const totalMinutes = Math.max(0, Math.floor(milliseconds / 60_000));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-  const resolvedLocale = locale ?? (
-    typeof document !== "undefined" ? document.documentElement.lang : undefined
-  );
-  const chinese = resolvedLocale === "zh-CN";
-
-  if (chinese) {
-    if (hours === 0) return `${minutes}分钟`;
-    if (minutes === 0) return `${hours}小时`;
-    return `${hours}小时 ${minutes}分钟`;
-  }
-  if (hours === 0) return `${minutes}m`;
+  void locale;
+  if (hours === 0) return `${minutes}min`;
   if (minutes === 0) return `${hours}h`;
-  return `${hours}h ${minutes}m`;
+  return `${hours}h ${minutes}min`;
 }
 
 export function formatClock(timestamp: number | null, locale?: string): string {

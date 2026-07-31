@@ -86,9 +86,10 @@ describe("usageLimitInputFromDraft", () => {
 });
 
 describe("formatLimitMinutes", () => {
-  it("uses compact English and complete Chinese duration labels", () => {
-    expect(formatLimitMinutes(135, "en")).toBe("2h 15m");
-    expect(formatLimitMinutes(135, "zh-CN")).toBe("2 小时 15 分钟");
-    expect(formatLimitMinutes(45, "zh-CN")).toBe("45 分钟");
+  it("uses compact duration labels in every interface language", () => {
+    expect(formatLimitMinutes(135, "en")).toBe("2h 15min");
+    expect(formatLimitMinutes(135, "zh-CN")).toBe("2h 15min");
+    expect(formatLimitMinutes(45, "zh-CN")).toBe("45min");
+    expect(formatLimitMinutes(120, "en")).toBe("2h");
   });
 });

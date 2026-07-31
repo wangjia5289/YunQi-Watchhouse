@@ -64,9 +64,11 @@ describe("translateText", () => {
     )).toBe("要删除所有活动记录吗？此操作无法撤销。");
   });
 
-  it("formats durations from the requested locale without DOM timing", () => {
-    expect(formatDuration(135 * 60_000, "zh-CN")).toBe("2小时 15分钟");
-    expect(formatDuration(135 * 60_000, "en")).toBe("2h 15m");
+  it("formats durations compactly in every interface language", () => {
+    expect(formatDuration(135 * 60_000, "zh-CN")).toBe("2h 15min");
+    expect(formatDuration(135 * 60_000, "en")).toBe("2h 15min");
+    expect(formatDuration(45 * 60_000, "zh-CN")).toBe("45min");
+    expect(formatDuration(2 * 60 * 60_000, "en")).toBe("2h");
   });
 
   it("keeps interface source free of raw English JSX copy", () => {
