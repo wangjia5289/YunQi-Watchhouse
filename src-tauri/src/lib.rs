@@ -12,10 +12,12 @@ use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
 pub struct TrackingTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct FocusTrayMenuItem(pub MenuItem<tauri::Wry>);
+pub struct FocusCountdownTrayMenuItem(pub MenuItem<tauri::Wry>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,6 +41,59 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let toggle =
+                        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyF);
+                    let pause =
+                        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyP);
+                    let template =
+                        Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit1);
+                    let current = app.state::<focus::FocusModeState>().snapshot();
+                    let result = if shortcut == &toggle {
+                        commands::focus::set_focus_mode(
+                            !current.active,
+                            app.clone(),
+                            app.state(),
+                            app.state(),
+                        )
+                    } else if shortcut == &pause && current.active {
+                        commands::focus::set_focus_plan_paused(
+                            !current.paused,
+                            app.clone(),
+                            app.state(),
+                            app.state(),
+                        )
+                    } else if shortcut == &template && !current.active {
+                        app.state::<database::ActivityRepository>()
+                            .focus_plan_templates()
+                            .map_err(|error| error.to_string())
+                            .and_then(|templates| {
+                                templates
+                                    .first()
+                                    .ok_or_else(|| "no focus template is available".to_owned())
+                                    .and_then(|template| {
+                                        commands::focus::start_focus_template(
+                                            template.id,
+                                            app.clone(),
+                                            app.state(),
+                                            app.state(),
+                                        )
+                                    })
+                            })
+                    } else {
+                        return;
+                    };
+                    if let Err(error) = result {
+                        log::warn!("global focus shortcut failed: {error}");
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             log::info!(
@@ -254,8 +309,44 @@ pub fn run() {
                 None::<&str>,
             )?;
             app.manage(FocusTrayMenuItem(focus.clone()));
+            let countdown = MenuItem::with_id(
+                app,
+                "focus-countdown",
+                "No active focus plan",
+                false,
+                None::<&str>,
+            )?;
+            app.manage(FocusCountdownTrayMenuItem(countdown.clone()));
+            let templates = app
+                .state::<database::ActivityRepository>()
+                .focus_plan_templates()
+                .unwrap_or_default();
+            let template_items = templates
+                .iter()
+                .take(5)
+                .map(|template| {
+                    MenuItem::with_id(
+                        app,
+                        format!("focus-template-{}", template.id),
+                        format!(
+                            "Start: {} ({} min)",
+                            template.name, template.duration_minutes
+                        ),
+                        true,
+                        None::<&str>,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &pause, &focus, &quit])?;
+            let mut menu_items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+                vec![&show, &pause, &focus, &countdown];
+            menu_items.extend(
+                template_items
+                    .iter()
+                    .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>),
+            );
+            menu_items.push(&quit);
+            let menu = Menu::with_items(app, &menu_items)?;
             TrayIconBuilder::with_id("watchhouse-tray")
                 .icon(app.default_window_icon().expect("application icon").clone())
                 .tooltip("YunQi-Watchhouse")
@@ -338,9 +429,61 @@ pub fn run() {
                         });
                         let _ = app.emit("focus-mode-changed", status);
                     }
+                    id if id.starts_with("focus-template-") => {
+                        let Ok(template_id) = id["focus-template-".len()..].parse::<i64>() else {
+                            return;
+                        };
+                        if let Err(error) = commands::focus::start_focus_template(
+                            template_id,
+                            app.clone(),
+                            app.state(),
+                            app.state(),
+                        ) {
+                            log::warn!("could not start focus template from tray: {error}");
+                        }
+                    }
                     _ => {}
                 })
                 .build(app)?;
+            for shortcut in [
+                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyF),
+                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyP),
+                Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::Digit1),
+            ] {
+                if let Err(error) = app.global_shortcut().register(shortcut) {
+                    log::warn!("could not register global shortcut: {error}");
+                }
+            }
+            let countdown_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                loop {
+                    interval.tick().await;
+                    let status = countdown_app.state::<focus::FocusModeState>().snapshot();
+                    let label = if !status.active {
+                        "No active focus plan".to_owned()
+                    } else if status.paused {
+                        "Focus paused".to_owned()
+                    } else if let Some(end_at) = status.planned_end_at_ms {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|duration| duration.as_millis() as i64)
+                            .unwrap_or_default();
+                        let remaining = end_at.saturating_sub(now_ms);
+                        format!(
+                            "Focus remaining: {:02}:{:02}",
+                            remaining / 60_000,
+                            (remaining / 1_000) % 60
+                        )
+                    } else {
+                        "Focus active".to_owned()
+                    };
+                    let _ = countdown_app
+                        .state::<FocusCountdownTrayMenuItem>()
+                        .0
+                        .set_text(label);
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

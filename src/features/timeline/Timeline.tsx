@@ -154,6 +154,11 @@ export function Timeline() {
   } = useTimeline(date);
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<"ALL" | ActivityState>("ALL");
+  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
+  const [minimumMinutes, setMinimumMinutes] = useState("");
+  const [maximumMinutes, setMaximumMinutes] = useState("");
+  const [timeFrom, setTimeFrom] = useState("");
+  const [timeTo, setTimeTo] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [splittingId, setSplittingId] = useState<number | null>(null);
   const [splitAt, setSplitAt] = useState("");
@@ -173,23 +178,42 @@ export function Timeline() {
   const [conflictPolicy, setConflictPolicy] = useState<"skip" | "merge">("skip");
   const filteredEntries = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
+    const minimumMs = Number(minimumMinutes || 0) * 60_000;
+    const maximumMs = maximumMinutes ? Number(maximumMinutes) * 60_000 : Infinity;
     return entries.filter((entry) => {
       if (stateFilter !== "ALL" && entry.state !== stateFilter) return false;
+      if (entry.durationMs < minimumMs || entry.durationMs > maximumMs) return false;
+      const clockMinutes = new Date(entry.startedAtMs).getHours() * 60
+        + new Date(entry.startedAtMs).getMinutes();
+      const parseClock = (value: string) => {
+        const [hours, minutes] = value.split(":").map(Number);
+        return hours * 60 + minutes;
+      };
+      if (timeFrom && clockMinutes < parseClock(timeFrom)) return false;
+      if (timeTo && clockMinutes > parseClock(timeTo)) return false;
       if (!normalized) return true;
-      return [entry.applicationName, entry.bundleIdentifier, entry.category]
+      return [
+        entry.applicationName,
+        entry.bundleIdentifier,
+        entry.category,
+        entry.windowTitle,
+        entry.note,
+      ]
         .filter(Boolean)
         .some((value) => value!.toLocaleLowerCase().includes(normalized));
     });
-  }, [entries, query, stateFilter]);
+  }, [entries, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo]);
   const hours = useMemo(() => summarizeByHour(filteredEntries), [filteredEntries]);
   const visibleEntries = filteredEntries;
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [date, query, stateFilter]);
+  }, [date, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo]);
   useEffect(() => {
-    if ((view === "overview" || query || stateFilter !== "ALL") && hasMore && !loading) loadAll();
-  }, [hasMore, loadAll, loading, query, stateFilter, view]);
+    const filtering = query || stateFilter !== "ALL" || minimumMinutes
+      || maximumMinutes || timeFrom || timeTo;
+    if ((view === "overview" || filtering) && hasMore && !loading) loadAll();
+  }, [hasMore, loadAll, loading, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo, view]);
   useEffect(() => {
     void getTimelineUndoHistory().then(setUndoHistory).catch(() => {});
   }, []);
@@ -239,10 +263,13 @@ export function Timeline() {
   };
   const dateValue = dateFromLocalIso(date);
   const isToday = date === today;
-  const activeTotal = query || stateFilter !== "ALL"
+  const hasFilters = Boolean(
+    query || stateFilter !== "ALL" || minimumMinutes || maximumMinutes || timeFrom || timeTo,
+  );
+  const activeTotal = hasFilters
     ? stateTotal(filteredEntries, "ACTIVE")
     : activeDurationMs;
-  const idleTotal = query || stateFilter !== "ALL"
+  const idleTotal = hasFilters
     ? stateTotal(filteredEntries, "IDLE")
     : idleDurationMs;
   const dateTitle = isToday
@@ -304,7 +331,7 @@ export function Timeline() {
         <div>
           <span className="summary-swatch sessions" />
           <p>Sessions</p>
-          <strong>{query || stateFilter !== "ALL" ? filteredEntries.length : totalCount}</strong>
+          <strong>{hasFilters ? filteredEntries.length : totalCount}</strong>
         </div>
       </section>
 
@@ -429,7 +456,7 @@ export function Timeline() {
           <input
             type="search"
             value={query}
-            placeholder="Application, bundle, or category"
+            placeholder="App, title, note, bundle, or category"
             onChange={(event) => setQuery(event.currentTarget.value)}
           />
         </label>
@@ -444,13 +471,44 @@ export function Timeline() {
             <option value="IDLE">Idle</option>
           </select>
         </label>
-        {(query || stateFilter !== "ALL") && (
+        <button
+          type="button"
+          aria-expanded={advancedSearchOpen}
+          onClick={() => setAdvancedSearchOpen((open) => !open)}
+        >
+          {advancedSearchOpen ? "Hide advanced" : "Advanced"}
+        </button>
+        {hasFilters && (
           <button type="button" onClick={() => {
             setQuery("");
             setStateFilter("ALL");
+            setMinimumMinutes("");
+            setMaximumMinutes("");
+            setTimeFrom("");
+            setTimeTo("");
           }}>Clear</button>
         )}
       </div>
+      {advancedSearchOpen && (
+        <div className="timeline-advanced-filters">
+          <label>
+            <span>Minimum minutes</span>
+            <input type="number" min="0" value={minimumMinutes} onChange={(event) => setMinimumMinutes(event.currentTarget.value)} />
+          </label>
+          <label>
+            <span>Maximum minutes</span>
+            <input type="number" min="0" value={maximumMinutes} onChange={(event) => setMaximumMinutes(event.currentTarget.value)} />
+          </label>
+          <label>
+            <span>From</span>
+            <input type="time" value={timeFrom} onChange={(event) => setTimeFrom(event.currentTarget.value)} />
+          </label>
+          <label>
+            <span>To</span>
+            <input type="time" value={timeTo} onChange={(event) => setTimeTo(event.currentTarget.value)} />
+          </label>
+        </div>
+      )}
       {editError && <div className="error-banner" role="alert">{editError}</div>}
       {operationMessage && (
         <div className="timeline-operation-message" role="status">

@@ -2688,4 +2688,61 @@ mod tests {
             (0, 1, 0)
         );
     }
+
+    #[test]
+    #[ignore = "deterministic one-year performance baseline"]
+    fn benchmark_one_year_timeline_queries() {
+        let repository = repository();
+        let application = application(&repository, 0);
+        let session_count = 365 * 96;
+        {
+            let mut connection = repository.database.lock().unwrap();
+            let transaction = connection.transaction().unwrap();
+            {
+                let mut insert = transaction
+                    .prepare(
+                        "INSERT INTO activity_sessions(
+                            state, application_id, started_at_ms, ended_at_ms, duration_ms,
+                            is_open, closed_reason, created_at_ms, updated_at_ms
+                         ) VALUES ('ACTIVE', ?1, ?2, ?3, ?4, 0, 'APP_CHANGED', ?2, ?3)",
+                    )
+                    .unwrap();
+                for index in 0..session_count {
+                    let started_at_ms = index as i64 * 15 * 60_000;
+                    let ended_at_ms = started_at_ms + 10 * 60_000;
+                    insert
+                        .execute(params![
+                            application.id,
+                            started_at_ms,
+                            ended_at_ms,
+                            ended_at_ms - started_at_ms
+                        ])
+                        .unwrap();
+                }
+            }
+            transaction.commit().unwrap();
+        }
+
+        let day_start_ms = 180 * 24 * 60 * 60_000_i64;
+        let day_end_ms = day_start_ms + 24 * 60 * 60_000_i64;
+        let page_started = std::time::Instant::now();
+        let page = repository
+            .records_overlapping_page(day_start_ms, day_end_ms, 0, 200)
+            .unwrap();
+        let page_elapsed = page_started.elapsed();
+
+        let year_started = std::time::Instant::now();
+        let totals = repository
+            .timeline_page_totals(0, 365 * 24 * 60 * 60_000_i64)
+            .unwrap();
+        let year_elapsed = year_started.elapsed();
+
+        eprintln!(
+            "one-year baseline: {session_count} sessions, day page {page_elapsed:?}, year totals {year_elapsed:?}"
+        );
+        assert_eq!(page.len(), 96);
+        assert_eq!(totals.0, session_count);
+        assert!(page_elapsed < std::time::Duration::from_secs(2));
+        assert!(year_elapsed < std::time::Duration::from_secs(2));
+    }
 }

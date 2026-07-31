@@ -226,3 +226,22 @@ Decisions:
   retained separately in the local backups directory.
 - Timeline pages contain at most 1,000 sessions and expose exact total count and durations.
 - Template statistics use a persisted template ID rather than matching plans by name or duration.
+
+## Phase 11: Fast Control, Search And Performance
+
+Status: Complete
+
+- [x] Add global shortcuts to toggle, pause, and start Focus Plans.
+- [x] Show Focus Plan countdown and template launch actions in the tray menu.
+- [x] Search Timeline notes and redacted window titles.
+- [x] Filter Timeline sessions by duration and local time of day.
+- [x] Add a deterministic one-year SQLite performance baseline.
+
+Decisions:
+
+- Global shortcuts use the official Tauri plugin and default to `Cmd+Shift+F`,
+  `Cmd+Shift+P`, and `Cmd+Shift+1`.
+- Advanced Timeline filters complete the selected day's pagination before filtering so results
+  are exact.
+- The performance baseline creates 35,040 deterministic sessions and measures day pagination and
+  full-year totals independently.
