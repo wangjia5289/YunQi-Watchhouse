@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { AppUsage, errorMessage, getAppUsage } from "../../lib/ipc";
+import {
+  AppUsage,
+  CategoryUsage,
+  errorMessage,
+  getAppUsage,
+  getCategoryUsage,
+} from "../../lib/ipc";
 import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
 
 export interface ApplicationRange {
@@ -9,6 +15,7 @@ export interface ApplicationRange {
 
 interface ApplicationsState {
   applications: AppUsage[];
+  categories: CategoryUsage[];
   loading: boolean;
   error: string | null;
 }
@@ -18,6 +25,7 @@ export function useApplications(
 ): ApplicationsState & { refresh: () => void } {
   const [state, setState] = useState<ApplicationsState>({
     applications: [],
+    categories: [],
     loading: true,
     error: null,
   });
@@ -25,8 +33,11 @@ export function useApplications(
   const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true }));
     try {
-      const applications = await getAppUsage(range.startMs, range.endMs);
-      setState({ applications, loading: false, error: null });
+      const [applications, categories] = await Promise.all([
+        getAppUsage(range.startMs, range.endMs),
+        getCategoryUsage(range.startMs, range.endMs),
+      ]);
+      setState({ applications, categories, loading: false, error: null });
     } catch (error) {
       setState((current) => ({
         ...current,

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{Local, LocalResult, NaiveDate, NaiveTime, TimeZone};
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,14 @@ pub struct AppUsage {
     pub category: String,
     pub is_ignored: bool,
     pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryUsage {
+    pub category: String,
+    pub duration_ms: i64,
+    pub application_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +208,44 @@ impl StatisticsService {
                 .duration_ms
                 .cmp(&left.duration_ms)
                 .then_with(|| left.application_name.cmp(&right.application_name))
+        });
+        Ok(usage)
+    }
+
+    pub fn category_usage(&self, range: TimeRange) -> AppResult<Vec<CategoryUsage>> {
+        let records = self
+            .repository
+            .records_overlapping(range.start_ms, range.end_ms)?;
+        let mut usage: HashMap<String, (i64, HashSet<i64>)> = HashMap::new();
+
+        for record in records {
+            if record.session.state != ActivityState::Active {
+                continue;
+            }
+            let Some((start, end)) = clipped_bounds(&record, range) else {
+                continue;
+            };
+            let Some(application) = record.application else {
+                continue;
+            };
+            let item = usage.entry(application.category).or_default();
+            item.0 += end - start;
+            item.1.insert(application.id);
+        }
+
+        let mut usage = usage
+            .into_iter()
+            .map(|(category, (duration_ms, applications))| CategoryUsage {
+                category,
+                duration_ms,
+                application_count: applications.len(),
+            })
+            .collect::<Vec<_>>();
+        usage.sort_by(|left, right| {
+            right
+                .duration_ms
+                .cmp(&left.duration_ms)
+                .then_with(|| left.category.cmp(&right.category))
         });
         Ok(usage)
     }
@@ -412,6 +458,58 @@ mod tests {
             .expect("usage should succeed");
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].duration_ms, 250);
+    }
+
+    #[test]
+    fn category_usage_aggregates_duration_and_unique_applications() {
+        let (service, repository, application_id) = setup();
+        repository
+            .update_application_preferences(application_id, "Work", false)
+            .expect("first application category should update");
+        let second = repository
+            .upsert_application(&NewApplication {
+                name: "Terminal".to_owned(),
+                bundle_id: Some("example.terminal".to_owned()),
+                executable_path: None,
+                seen_at_ms: 0,
+            })
+            .expect("second application should be stored");
+        repository
+            .update_application_preferences(second.id, "Work", false)
+            .expect("second application category should update");
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            100,
+            250,
+        );
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            300,
+            400,
+        );
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(second.id),
+            450,
+            650,
+        );
+
+        let usage = service
+            .category_usage(TimeRange::new(0, 1_000).expect("range should be valid"))
+            .expect("category usage should succeed");
+        assert_eq!(
+            usage,
+            vec![CategoryUsage {
+                category: "Work".to_owned(),
+                duration_ms: 450,
+                application_count: 2,
+            }]
+        );
     }
 
     #[test]

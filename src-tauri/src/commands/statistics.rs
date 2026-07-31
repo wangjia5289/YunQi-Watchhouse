@@ -3,7 +3,10 @@ use tauri::State;
 
 use crate::{
     error::AppError,
-    statistics::{AppUsage, DailyUsage, StatisticsService, TimeRange, TimelineEntry, TodaySummary},
+    statistics::{
+        AppUsage, CategoryUsage, DailyUsage, StatisticsService, TimeRange, TimelineEntry,
+        TodaySummary,
+    },
 };
 
 use super::{IpcResult, run_blocking};
@@ -35,6 +38,17 @@ pub async fn get_app_usage(
     let range = TimeRange::new(range_start_ms, range_end_ms)?;
     let statistics = statistics.inner().clone();
     run_blocking(move || statistics.app_usage(range)).await
+}
+
+#[tauri::command]
+pub async fn get_category_usage(
+    range_start_ms: i64,
+    range_end_ms: i64,
+    statistics: State<'_, StatisticsService>,
+) -> IpcResult<Vec<CategoryUsage>> {
+    let range = TimeRange::new(range_start_ms, range_end_ms)?;
+    let statistics = statistics.inner().clone();
+    run_blocking(move || statistics.category_usage(range)).await
 }
 
 #[tauri::command]

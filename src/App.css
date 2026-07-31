@@ -368,6 +368,54 @@ button {
   background: rgba(255, 255, 255, 0.45);
 }
 
+.category-usage {
+  margin: 16px 0;
+  padding-bottom: 3px;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.category-usage button {
+  min-width: 142px;
+  height: 64px;
+  padding: 9px 11px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-content: center;
+  gap: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.52);
+  text-align: left;
+  cursor: pointer;
+}
+
+.category-usage button.active {
+  border-color: rgba(63, 115, 98, 0.3);
+  color: var(--green-900);
+  background: var(--green-100);
+}
+
+.category-usage span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-usage strong {
+  font-size: 12px;
+}
+
+.category-usage small {
+  grid-column: 1 / -1;
+  font-size: 10px;
+}
+
 .ignore-application {
   display: flex;
   align-items: flex-start;

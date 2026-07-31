@@ -106,12 +106,19 @@ export function Applications() {
     () => rangeForPreset(preset, customStart, customEnd),
     [customEnd, customStart, preset],
   );
-  const { applications, loading, error, refresh } = useApplications(range);
+  const { applications, categories, loading, error, refresh } = useApplications(range);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const total = applications.reduce((sum, application) => sum + application.durationMs, 0);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const visibleApplications = categoryFilter
+    ? applications.filter((application) => application.category === categoryFilter)
+    : applications;
+  const total = visibleApplications.reduce(
+    (sum, application) => sum + application.durationMs,
+    0,
+  );
   const selected =
-    applications.find((application) => application.applicationId === selectedId) ??
-    applications[0] ??
+    visibleApplications.find((application) => application.applicationId === selectedId) ??
+    visibleApplications[0] ??
     null;
   const [trend, setTrend] = useState<DailyUsage[]>([]);
   const [dataRevision, setDataRevision] = useState(0);
@@ -162,6 +169,9 @@ export function Applications() {
     setPreferenceError(null);
     try {
       await updateApplicationPreferences(selected.applicationId, category, isIgnored);
+      if (categoryFilter === selected.category && category !== selected.category) {
+        setCategoryFilter(category);
+      }
       notifyActivityDataChanged();
       refresh();
     } catch (reason) {
@@ -240,13 +250,38 @@ export function Applications() {
         </article>
         <article>
           <p>Applications used</p>
-          <strong>{applications.length}</strong>
+          <strong>{visibleApplications.length}</strong>
         </article>
         <article>
           <p>Most used</p>
-          <strong>{applications[0]?.applicationName ?? "—"}</strong>
+          <strong>{visibleApplications[0]?.applicationName ?? "—"}</strong>
         </article>
       </section>
+
+      {categories.length > 0 && (
+        <section className="category-usage" aria-label="Usage by category">
+          <button
+            type="button"
+            className={categoryFilter === null ? "active" : ""}
+            onClick={() => setCategoryFilter(null)}
+          >
+            <span>All categories</span>
+            <strong>{formatDuration(categories.reduce((sum, item) => sum + item.durationMs, 0))}</strong>
+          </button>
+          {categories.map((category) => (
+            <button
+              type="button"
+              className={categoryFilter === category.category ? "active" : ""}
+              onClick={() => setCategoryFilter(category.category)}
+              key={category.category}
+            >
+              <span>{category.category}</span>
+              <strong>{formatDuration(category.durationMs)}</strong>
+              <small>{category.applicationCount} {category.applicationCount === 1 ? "app" : "apps"}</small>
+            </button>
+          ))}
+        </section>
+      )}
 
       <div className="applications-layout">
         <section className="applications-list-card" aria-label="Applications ranked by usage">
@@ -255,7 +290,7 @@ export function Applications() {
               <p className="section-kicker">Active time</p>
               <h2>Usage by application</h2>
             </div>
-            <span>{applications.length} apps</span>
+            <span>{visibleApplications.length} apps</span>
           </div>
 
           {loading && applications.length === 0 && (
@@ -266,7 +301,7 @@ export function Applications() {
             </div>
           )}
 
-          {!loading && applications.length === 0 && !error && (
+          {!loading && visibleApplications.length === 0 && !error && (
             <div className="empty-applications">
               <span>0h</span>
               <h2>No application activity</h2>
@@ -274,7 +309,7 @@ export function Applications() {
             </div>
           )}
 
-          {applications.map((application) => (
+          {visibleApplications.map((application) => (
             <ApplicationRow
               application={application}
               total={total}

@@ -14,7 +14,8 @@ pub use settings::{
     optimize_database, restore_database, update_settings,
 };
 pub use statistics::{
-    get_app_usage, get_application_daily_usage, get_daily_usage, get_timeline, get_today_summary,
+    get_app_usage, get_application_daily_usage, get_category_usage, get_daily_usage, get_timeline,
+    get_today_summary,
 };
 pub use timeline::{delete_timeline_session, update_timeline_session};
 

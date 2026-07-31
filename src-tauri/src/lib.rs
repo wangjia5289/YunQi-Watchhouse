@@ -151,6 +151,7 @@ pub fn run() {
             commands::statistics::get_today_summary,
             commands::statistics::get_timeline,
             commands::statistics::get_app_usage,
+            commands::statistics::get_category_usage,
             commands::statistics::get_daily_usage,
             commands::statistics::get_application_daily_usage,
             commands::timeline::delete_timeline_session,

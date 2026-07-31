@@ -71,6 +71,12 @@ export interface AppUsage {
   durationMs: number;
 }
 
+export interface CategoryUsage {
+  category: string;
+  durationMs: number;
+  applicationCount: number;
+}
+
 export interface ApplicationIcon {
   mimeType: string;
   bytes: number[];
@@ -137,6 +143,13 @@ export function getAppUsage(
   rangeEndMs: number,
 ): Promise<AppUsage[]> {
   return invoke("get_app_usage", { rangeStartMs, rangeEndMs });
+}
+
+export function getCategoryUsage(
+  rangeStartMs: number,
+  rangeEndMs: number,
+): Promise<CategoryUsage[]> {
+  return invoke("get_category_usage", { rangeStartMs, rangeEndMs });
 }
 
 export function getApplicationIcon(

@@ -1,5 +1,5 @@
 mod service;
 
 pub use service::{
-    AppUsage, DailyUsage, StatisticsService, TimeRange, TimelineEntry, TodaySummary,
+    AppUsage, CategoryUsage, DailyUsage, StatisticsService, TimeRange, TimelineEntry, TodaySummary,
 };
