@@ -97,6 +97,23 @@ export interface Settings {
   recordWindowTitles: boolean;
   appearance: "SYSTEM" | "LIGHT" | "DARK";
   onboardingCompleted: boolean;
+  retentionDays: 0 | 30 | 90 | 180 | 365;
+  automaticBackupEnabled: boolean;
+  backupInterval: "DAILY" | "WEEKLY";
+  backupKeepCount: number;
+  backupDirectory: string | null;
+  lastMaintenanceAtMs: number;
+  lastBackupAtMs: number;
+}
+
+export interface MaintenancePreview {
+  cutoffAtMs: number | null;
+  expiredSessionCount: number;
+}
+
+export interface MaintenanceResult {
+  deletedSessionCount: number;
+  deletedApplicationIds: number[];
 }
 
 export interface DiagnosticsSummary {
@@ -106,6 +123,8 @@ export interface DiagnosticsSummary {
   walBytes: number;
   iconCacheBytes: number;
   logBytes: number;
+  automaticBackupBytes: number;
+  automaticBackupCount: number;
   applicationCount: number;
   sessionCount: number;
 }
@@ -233,6 +252,26 @@ export function getDiagnosticsSummary(): Promise<DiagnosticsSummary> {
 
 export function backupDatabase(): Promise<string | null> {
   return invoke("backup_database");
+}
+
+export function chooseBackupDirectory(): Promise<string | null> {
+  return invoke("choose_backup_directory");
+}
+
+export function openBackupDirectory(): Promise<void> {
+  return invoke("open_backup_directory");
+}
+
+export function getMaintenancePreview(): Promise<MaintenancePreview> {
+  return invoke("get_maintenance_preview");
+}
+
+export function runDataMaintenance(): Promise<MaintenanceResult> {
+  return invoke("run_data_maintenance");
+}
+
+export function createAutomaticBackupNow(): Promise<string> {
+  return invoke("create_automatic_backup_now");
 }
 
 export function restoreDatabase(): Promise<boolean> {

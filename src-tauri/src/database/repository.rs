@@ -21,6 +21,27 @@ pub struct Settings {
     pub record_window_titles: bool,
     pub appearance: String,
     pub onboarding_completed: bool,
+    pub retention_days: i64,
+    pub automatic_backup_enabled: bool,
+    pub backup_interval: String,
+    pub backup_keep_count: i64,
+    pub backup_directory: Option<String>,
+    pub last_maintenance_at_ms: i64,
+    pub last_backup_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenancePreview {
+    pub cutoff_at_ms: Option<i64>,
+    pub expired_session_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceResult {
+    pub deleted_session_count: usize,
+    pub deleted_application_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +166,10 @@ impl ActivityRepository {
             .query_row(
                 "SELECT idle_threshold_seconds, launch_at_login,
                         start_tracking_automatically, hide_to_tray_on_close,
-                        record_window_titles, appearance, onboarding_completed
+                        record_window_titles, appearance, onboarding_completed,
+                        retention_days, automatic_backup_enabled, backup_interval,
+                        backup_keep_count, backup_directory, last_maintenance_at_ms,
+                        last_backup_at_ms
                  FROM settings WHERE singleton_id = 1",
                 [],
                 |row| {
@@ -157,6 +181,13 @@ impl ActivityRepository {
                         record_window_titles: row.get(4)?,
                         appearance: row.get(5)?,
                         onboarding_completed: row.get(6)?,
+                        retention_days: row.get(7)?,
+                        automatic_backup_enabled: row.get(8)?,
+                        backup_interval: row.get(9)?,
+                        backup_keep_count: row.get(10)?,
+                        backup_directory: row.get(11)?,
+                        last_maintenance_at_ms: row.get(12)?,
+                        last_backup_at_ms: row.get(13)?,
                     })
                 },
             )
@@ -174,11 +205,29 @@ impl ActivityRepository {
                 "appearance must be SYSTEM, LIGHT, or DARK".to_owned(),
             ));
         }
+        if !matches!(settings.retention_days, 0 | 30 | 90 | 180 | 365) {
+            return Err(AppError::InvalidMonitorConfiguration(
+                "retention days must be 0, 30, 90, 180, or 365".to_owned(),
+            ));
+        }
+        if !matches!(settings.backup_interval.as_str(), "DAILY" | "WEEKLY") {
+            return Err(AppError::InvalidMonitorConfiguration(
+                "backup interval must be DAILY or WEEKLY".to_owned(),
+            ));
+        }
+        if !(1..=20).contains(&settings.backup_keep_count) {
+            return Err(AppError::InvalidMonitorConfiguration(
+                "backup keep count must be between 1 and 20".to_owned(),
+            ));
+        }
         let connection = self.database.lock()?;
         connection.execute(
             "UPDATE settings SET idle_threshold_seconds = ?1, launch_at_login = ?2,
                 start_tracking_automatically = ?3, hide_to_tray_on_close = ?4,
-                record_window_titles = ?5, appearance = ?6, updated_at_ms = ?7
+                record_window_titles = ?5, appearance = ?6,
+                retention_days = ?7, automatic_backup_enabled = ?8,
+                backup_interval = ?9, backup_keep_count = ?10,
+                backup_directory = ?11, updated_at_ms = ?12
              WHERE singleton_id = 1",
             params![
                 settings.idle_threshold_seconds,
@@ -187,6 +236,11 @@ impl ActivityRepository {
                 settings.hide_to_tray_on_close,
                 settings.record_window_titles,
                 settings.appearance,
+                settings.retention_days,
+                settings.automatic_backup_enabled,
+                settings.backup_interval,
+                settings.backup_keep_count,
+                settings.backup_directory,
                 updated_at_ms,
             ],
         )?;
@@ -211,6 +265,84 @@ impl ActivityRepository {
         transaction.execute("DELETE FROM activity_sessions", [])?;
         transaction.execute("DELETE FROM applications", [])?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn maintenance_preview(
+        &self,
+        now_ms: i64,
+        retention_days: i64,
+    ) -> AppResult<MaintenancePreview> {
+        let cutoff_at_ms = retention_cutoff(now_ms, retention_days);
+        let expired_session_count = if let Some(cutoff) = cutoff_at_ms {
+            let connection = self.database.lock()?;
+            connection.query_row(
+                "SELECT COUNT(*) FROM activity_sessions
+                 WHERE is_open = 0 AND ended_at_ms < ?1",
+                [cutoff],
+                |row| row.get(0),
+            )?
+        } else {
+            0
+        };
+        Ok(MaintenancePreview {
+            cutoff_at_ms,
+            expired_session_count,
+        })
+    }
+
+    pub fn run_maintenance(
+        &self,
+        now_ms: i64,
+        retention_days: i64,
+    ) -> AppResult<MaintenanceResult> {
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let deleted_session_count = if let Some(cutoff) = retention_cutoff(now_ms, retention_days) {
+            transaction.execute(
+                "DELETE FROM activity_sessions WHERE is_open = 0 AND ended_at_ms < ?1",
+                [cutoff],
+            )?
+        } else {
+            0
+        };
+        let deleted_application_ids = {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM applications
+                 WHERE is_ignored = 0 AND NOT EXISTS (
+                    SELECT 1 FROM activity_sessions
+                    WHERE application_id = applications.id
+                 )",
+            )?;
+            statement
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<i64>>>()?
+        };
+        transaction.execute(
+            "DELETE FROM applications
+             WHERE is_ignored = 0 AND NOT EXISTS (
+                SELECT 1 FROM activity_sessions
+                WHERE application_id = applications.id
+             )",
+            [],
+        )?;
+        transaction.execute(
+            "UPDATE settings SET last_maintenance_at_ms = ?1 WHERE singleton_id = 1",
+            [now_ms],
+        )?;
+        transaction.commit()?;
+        Ok(MaintenanceResult {
+            deleted_session_count,
+            deleted_application_ids,
+        })
+    }
+
+    pub fn mark_backup_completed(&self, completed_at_ms: i64) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        connection.execute(
+            "UPDATE settings SET last_backup_at_ms = ?1 WHERE singleton_id = 1",
+            [completed_at_ms],
+        )?;
         Ok(())
     }
 
@@ -575,6 +707,14 @@ fn validate_new_session(session: &NewSession) -> AppResult<()> {
     }
 }
 
+fn retention_cutoff(now_ms: i64, retention_days: i64) -> Option<i64> {
+    if retention_days == 0 {
+        None
+    } else {
+        Some(now_ms.saturating_sub(retention_days.saturating_mul(24 * 60 * 60 * 1_000)))
+    }
+}
+
 fn find_session(
     connection: &rusqlite::Connection,
     session_id: i64,
@@ -773,6 +913,96 @@ mod tests {
             .expect("closed session should update");
         assert_eq!((updated.started_at_ms, updated.ended_at_ms), (90, 210));
         assert_eq!(updated.duration_ms, 120);
+    }
+
+    #[test]
+    fn maintenance_deletes_only_expired_closed_sessions_and_preserves_ignore_rules() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let old = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: None,
+                started_at_ms: 100,
+            })
+            .expect("old session should open");
+        repository
+            .close_session(old.id, 200, ClosedReason::AppChanged)
+            .expect("old session should close");
+        let recent = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: None,
+                started_at_ms: 9_000,
+            })
+            .expect("recent session should open");
+        repository
+            .close_session(recent.id, 9_500, ClosedReason::AppChanged)
+            .expect("recent session should close");
+
+        let ignored = repository
+            .upsert_application(&NewApplication {
+                name: "Private".to_owned(),
+                bundle_id: Some("example.private".to_owned()),
+                executable_path: None,
+                seen_at_ms: 0,
+            })
+            .expect("ignored application should be stored");
+        repository
+            .update_application_preferences(ignored.id, "Personal", true)
+            .expect("ignore rule should be stored");
+
+        let preview = repository
+            .maintenance_preview(10_000, 1)
+            .expect("preview should succeed");
+        assert_eq!(preview.expired_session_count, 0);
+
+        let result = repository
+            .run_maintenance(10_000, 30)
+            .expect("maintenance should succeed");
+        assert_eq!(result.deleted_session_count, 0);
+        assert!(
+            repository
+                .application(ignored.id)
+                .expect("ignored application should load")
+                .is_some()
+        );
+
+        let result = repository
+            .run_maintenance(100 * 24 * 60 * 60 * 1_000, 30)
+            .expect("expired maintenance should succeed");
+        assert_eq!(result.deleted_session_count, 2);
+        assert!(
+            repository
+                .application(ignored.id)
+                .expect("ignored application should load")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn permanent_retention_never_marks_sessions_for_deletion() {
+        let repository = repository();
+        let app = application(&repository, 0);
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: None,
+                started_at_ms: 0,
+            })
+            .expect("session should open");
+        repository
+            .close_session(session.id, 100, ClosedReason::AppChanged)
+            .expect("session should close");
+
+        let preview = repository
+            .maintenance_preview(i64::MAX, 0)
+            .expect("preview should succeed");
+        assert_eq!(preview.cutoff_at_ms, None);
+        assert_eq!(preview.expired_session_count, 0);
     }
 
     #[test]

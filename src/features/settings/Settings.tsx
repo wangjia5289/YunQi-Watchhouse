@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DiagnosticsSummary,
+  MaintenancePreview,
   Settings as SettingsModel,
   backupDatabase,
+  chooseBackupDirectory,
   clearApplicationIconCache,
+  createAutomaticBackupNow,
   deleteAllActivity,
   exportActivity,
   errorMessage,
   getSettings,
   getDiagnosticsSummary,
+  getMaintenancePreview,
   openDataDirectory,
+  openBackupDirectory,
   openLogDirectory,
   optimizeDatabase,
   restoreDatabase,
+  runDataMaintenance,
   updateSettings,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
@@ -49,12 +55,14 @@ export function Settings() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsSummary | null>(null);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const [maintenancePreview, setMaintenancePreview] = useState<MaintenancePreview | null>(null);
 
   useEffect(() => {
     void getSettings()
       .then(setSettings)
       .catch((error) => setMessage(errorMessage(error)));
     void getDiagnosticsSummary().then(setDiagnostics);
+    void getMaintenancePreview().then(setMaintenancePreview);
   }, []);
 
   useEffect(() => {
@@ -62,6 +70,10 @@ export function Settings() {
       document.documentElement.dataset.theme = settings.appearance.toLowerCase();
     }
   }, [settings?.appearance]);
+
+  useEffect(() => {
+    if (settings) void getMaintenancePreview().then(setMaintenancePreview);
+  }, [settings?.retentionDays]);
 
   async function save(next: SettingsModel) {
     if (savingRef.current) return;
@@ -174,6 +186,109 @@ export function Settings() {
             void getDiagnosticsSummary().then(setDiagnostics);
           }).catch((error) => setMessage(errorMessage(error)));
         }}>Refresh Application Icons</button>
+        <div className="maintenance-settings">
+          <div className="list-heading">
+            <div><p className="section-kicker">Maintenance</p><h2>Retention and backups</h2></div>
+          </div>
+          <label className="setting-row">
+            <div>
+              <strong>Keep Activity</strong>
+              <small>
+                {maintenancePreview?.expiredSessionCount
+                  ? `${maintenancePreview.expiredSessionCount} old sessions are eligible for cleanup.`
+                  : "No sessions currently need cleanup."}
+              </small>
+            </div>
+            <select
+              value={settings.retentionDays}
+              disabled={saving}
+              onChange={(event) => void save({
+                ...settings,
+                retentionDays: Number(event.currentTarget.value) as SettingsModel["retentionDays"],
+              })}
+            >
+              <option value={0}>Forever</option>
+              <option value={30}>30 days</option>
+              <option value={90}>90 days</option>
+              <option value={180}>180 days</option>
+              <option value={365}>1 year</option>
+            </select>
+          </label>
+          <div className="setting-row">
+            <div><strong>Automatic Backups</strong><small>Create local SQLite backups on schedule.</small></div>
+            <Toggle
+              checked={settings.automaticBackupEnabled}
+              disabled={saving}
+              onChange={(value) => void save({ ...settings, automaticBackupEnabled: value })}
+            />
+          </div>
+          <label className="setting-row">
+            <div><strong>Backup Schedule</strong><small>Old automatic backups are rotated.</small></div>
+            <span className="maintenance-inline">
+              <select
+                value={settings.backupInterval}
+                disabled={saving || !settings.automaticBackupEnabled}
+                onChange={(event) => void save({
+                  ...settings,
+                  backupInterval: event.currentTarget.value as "DAILY" | "WEEKLY",
+                })}
+              >
+                <option value="DAILY">Daily</option>
+                <option value="WEEKLY">Weekly</option>
+              </select>
+              <select
+                value={settings.backupKeepCount}
+                disabled={saving || !settings.automaticBackupEnabled}
+                onChange={(event) => void save({
+                  ...settings,
+                  backupKeepCount: Number(event.currentTarget.value),
+                })}
+                aria-label="Automatic backups to keep"
+              >
+                {[3, 5, 10, 20].map((count) => (
+                  <option value={count} key={count}>Keep {count}</option>
+                ))}
+              </select>
+            </span>
+          </label>
+          <p className="settings-path">
+            {settings.backupDirectory ?? "Default application data / backups"}
+          </p>
+          <div className="data-actions">
+            <button onClick={() => void chooseBackupDirectory().then((directory) => {
+              if (directory) void save({ ...settings, backupDirectory: directory });
+            })}>Choose Backup Folder</button>
+            <button onClick={() => void openBackupDirectory()}>Show Backup Folder</button>
+            <button onClick={() => void createAutomaticBackupNow()
+              .then((path) => {
+                setMessage(`Backup saved to ${path}`);
+                void getSettings().then(setSettings);
+                void getDiagnosticsSummary().then(setDiagnostics);
+              })
+              .catch((error) => setMessage(errorMessage(error)))}>Back Up Now</button>
+            <button onClick={() => {
+              const count = maintenancePreview?.expiredSessionCount ?? 0;
+              if (window.confirm(
+                count
+                  ? `Delete ${count} expired sessions and unused application data?`
+                  : "Clean unused application data and optimize retention metadata?",
+              )) {
+                void runDataMaintenance().then((result) => {
+                  setMessage(
+                    `Maintenance complete: ${result.deletedSessionCount} sessions and ${result.deletedApplicationIds.length} unused applications removed.`,
+                  );
+                  notifyActivityDataChanged();
+                  void getSettings().then(setSettings);
+                  void getMaintenancePreview().then(setMaintenancePreview);
+                  void getDiagnosticsSummary().then(setDiagnostics);
+                }).catch((error) => setMessage(errorMessage(error)));
+              }
+            }}>Clean Up Now</button>
+          </div>
+          <p className="settings-note">
+            Last cleanup: {formatOptionalDate(settings.lastMaintenanceAtMs)} · Last backup: {formatOptionalDate(settings.lastBackupAtMs)}
+          </p>
+        </div>
         <button className="danger-button" onClick={() => {
           if (window.confirm("Delete all recorded activity? This cannot be undone.")) {
             void deleteAllActivity().then(() => {
@@ -207,6 +322,7 @@ export function Settings() {
             <div><span>WAL</span><strong>{formatBytes(diagnostics.walBytes)}</strong></div>
             <div><span>Icons</span><strong>{formatBytes(diagnostics.iconCacheBytes)}</strong></div>
             <div><span>Logs</span><strong>{formatBytes(diagnostics.logBytes)}</strong></div>
+            <div><span>Backups</span><strong>{diagnostics.automaticBackupCount} · {formatBytes(diagnostics.automaticBackupBytes)}</strong></div>
           </div>
         )}
       </section>
@@ -219,4 +335,11 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatOptionalDate(timestamp: number): string {
+  return timestamp > 0
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" })
+      .format(timestamp)
+    : "Never";
 }

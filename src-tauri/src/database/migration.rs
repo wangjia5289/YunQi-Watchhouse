@@ -7,5 +7,6 @@ pub(super) fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/0003_application_preferences.sql"
         )),
+        M::up(include_str!("../../migrations/0004_data_maintenance.sql")),
     ])
 }

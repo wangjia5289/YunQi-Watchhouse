@@ -9,9 +9,10 @@ pub use applications::{
     clear_application_icon_cache, get_application_icon, update_application_preferences,
 };
 pub use settings::{
-    backup_database, complete_onboarding, delete_all_activity, export_activity,
-    get_diagnostics_summary, get_settings, open_data_directory, open_log_directory,
-    optimize_database, restore_database, update_settings,
+    backup_database, choose_backup_directory, complete_onboarding, create_automatic_backup_now,
+    delete_all_activity, export_activity, get_diagnostics_summary, get_maintenance_preview,
+    get_settings, open_backup_directory, open_data_directory, open_log_directory,
+    optimize_database, restore_database, run_data_maintenance, update_settings,
 };
 pub use statistics::{
     get_app_usage, get_application_daily_usage, get_category_usage, get_daily_usage, get_timeline,

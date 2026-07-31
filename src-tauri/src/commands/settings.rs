@@ -12,6 +12,7 @@ use tauri_plugin_opener::OpenerExt;
 use crate::TrackingTrayMenuItem;
 use crate::activity::{MonitorHandle, SessionManagerHandle};
 use crate::database::{ActivityRepository, Settings};
+use crate::database::{MaintenancePreview, MaintenanceResult};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +31,8 @@ pub struct DiagnosticsSummary {
     wal_bytes: u64,
     icon_cache_bytes: u64,
     log_bytes: u64,
+    automatic_backup_bytes: u64,
+    automatic_backup_count: usize,
     application_count: i64,
     session_count: i64,
 }
@@ -84,6 +87,15 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
     }
     if !matches!(settings.appearance.as_str(), "SYSTEM" | "LIGHT" | "DARK") {
         return Err("appearance must be SYSTEM, LIGHT, or DARK".to_owned());
+    }
+    if !matches!(settings.retention_days, 0 | 30 | 90 | 180 | 365) {
+        return Err("retention days must be 0, 30, 90, 180, or 365".to_owned());
+    }
+    if !matches!(settings.backup_interval.as_str(), "DAILY" | "WEEKLY") {
+        return Err("backup interval must be DAILY or WEEKLY".to_owned());
+    }
+    if !(1..=20).contains(&settings.backup_keep_count) {
+        return Err("backup keep count must be between 1 and 20".to_owned());
     }
     Ok(())
 }
@@ -244,6 +256,12 @@ pub fn get_diagnostics_summary(
         .path()
         .app_log_dir()
         .map_err(|error| error.to_string())?;
+    let settings = repository.settings().map_err(|error| error.to_string())?;
+    let backups = settings
+        .backup_directory
+        .filter(|path| !path.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| app_data.join("backups"));
     let (application_count, session_count) = repository
         .record_counts()
         .map_err(|error| error.to_string())?;
@@ -254,6 +272,8 @@ pub fn get_diagnostics_summary(
         wal_bytes: file_size(&wal),
         icon_cache_bytes: directory_size(&icons),
         log_bytes: directory_size(&logs),
+        automatic_backup_bytes: directory_size(&backups),
+        automatic_backup_count: file_count(&backups),
         application_count,
         session_count,
     })
@@ -282,6 +302,16 @@ fn directory_size(path: &std::path::Path) -> u64 {
         .sum()
 }
 
+fn file_count(path: &std::path::Path) -> usize {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_file())
+        .count()
+}
+
 #[tauri::command]
 pub async fn backup_database(
     app: AppHandle,
@@ -303,6 +333,88 @@ pub async fn backup_database(
             .map_err(|error| error.to_string())?;
         log::info!("database backup completed");
         Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn choose_backup_directory(app: AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(app
+            .dialog()
+            .file()
+            .blocking_pick_folder()
+            .and_then(|path| path.into_path().ok())
+            .map(|path| path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn open_backup_directory(
+    app: AppHandle,
+    repository: State<'_, ActivityRepository>,
+) -> Result<(), String> {
+    let settings = repository.settings().map_err(|error| error.to_string())?;
+    let directory = settings
+        .backup_directory
+        .filter(|path| !path.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or(
+            app.path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?
+                .join("backups"),
+        );
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    app.opener()
+        .open_path(directory.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_maintenance_preview(
+    repository: State<'_, ActivityRepository>,
+) -> Result<MaintenancePreview, String> {
+    let settings = repository.settings().map_err(|error| error.to_string())?;
+    repository
+        .maintenance_preview(now_ms()?, settings.retention_days)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn run_data_maintenance(
+    app: AppHandle,
+    repository: State<'_, ActivityRepository>,
+) -> Result<MaintenanceResult, String> {
+    let repository = repository.inner().clone();
+    let settings = repository.settings().map_err(|error| error.to_string())?;
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::maintenance::run_cleanup(&repository, &app_data, now_ms()?, settings.retention_days)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn create_automatic_backup_now(
+    app: AppHandle,
+    repository: State<'_, ActivityRepository>,
+) -> Result<String, String> {
+    let repository = repository.inner().clone();
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::maintenance::create_automatic_backup(&repository, &app_data, now_ms()?)
+            .map(|path| path.to_string_lossy().into_owned())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -403,6 +515,13 @@ mod tests {
             record_window_titles: false,
             appearance: "SYSTEM".to_owned(),
             onboarding_completed: true,
+            retention_days: 0,
+            automatic_backup_enabled: false,
+            backup_interval: "WEEKLY".to_owned(),
+            backup_keep_count: 5,
+            backup_directory: None,
+            last_maintenance_at_ms: 0,
+            last_backup_at_ms: 0,
         };
         assert!(validate_settings(&invalid_threshold).is_err());
 

@@ -2,6 +2,7 @@ pub mod activity;
 pub mod commands;
 pub mod database;
 pub mod error;
+pub mod maintenance;
 pub mod platform;
 pub mod statistics;
 
@@ -40,13 +41,39 @@ pub fn run() {
                 "YunQi-Watchhouse {} starting; local diagnostics enabled",
                 app.package_info().version
             );
-            let database_path = app.path().app_data_dir()?.join("watchhouse.sqlite3");
+            let app_data = app.path().app_data_dir()?;
+            let database_path = app_data.join("watchhouse.sqlite3");
             let database = database::Database::open(&database_path)?;
             let repository = database::ActivityRepository::new(database);
             repository.recover_open_session()?;
             let settings = repository.settings()?;
             app.manage(statistics::StatisticsService::new(repository.clone()));
             app.manage(repository);
+
+            let maintenance_repository =
+                app.state::<database::ActivityRepository>().inner().clone();
+            let maintenance_app_data = app_data.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+                loop {
+                    interval.tick().await;
+                    let repository = maintenance_repository.clone();
+                    let app_data = maintenance_app_data.clone();
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|error| error.to_string())?
+                            .as_millis() as i64;
+                        maintenance::run_due(&repository, &app_data, now_ms)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => log::error!("automatic data maintenance failed: {error}"),
+                        Err(error) => log::error!("automatic maintenance task failed: {error}"),
+                    }
+                }
+            });
 
             #[cfg(target_os = "macos")]
             {
@@ -165,6 +192,11 @@ pub fn run() {
             commands::settings::open_log_directory,
             commands::settings::get_diagnostics_summary,
             commands::settings::backup_database,
+            commands::settings::choose_backup_directory,
+            commands::settings::open_backup_directory,
+            commands::settings::get_maintenance_preview,
+            commands::settings::run_data_maintenance,
+            commands::settings::create_automatic_backup_now,
             commands::settings::restore_database,
             commands::settings::optimize_database,
         ])
