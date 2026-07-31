@@ -1,0 +1,384 @@
+import { CSSProperties, useEffect, useMemo, useState } from "react";
+import {
+  dateFromLocalIso,
+  formatDuration,
+  localIsoDate,
+  shiftLocalDate,
+} from "../../lib/format";
+import {
+  AppUsage,
+  DailyUsage,
+  errorMessage,
+  getApplicationDailyUsage,
+  updateApplicationPreferences,
+} from "../../lib/ipc";
+import { ACTIVITY_DATA_CHANGED, notifyActivityDataChanged } from "../../lib/events";
+import { ApplicationRange, useApplications } from "./useApplications";
+import { ApplicationIcon } from "./ApplicationIcon";
+
+type RangePreset = "today" | "7days" | "30days" | "custom";
+
+function startOfLocalDay(date: string): number {
+  const value = dateFromLocalIso(date);
+  value.setHours(0, 0, 0, 0);
+  return value.getTime();
+}
+
+function rangeForPreset(
+  preset: RangePreset,
+  customStart: string,
+  customEnd: string,
+): ApplicationRange {
+  const today = localIsoDate();
+  const startDate =
+    preset === "today"
+      ? today
+      : preset === "7days"
+        ? shiftLocalDate(today, -6)
+        : preset === "30days"
+          ? shiftLocalDate(today, -29)
+          : customStart;
+  const endDate = preset === "custom" ? customEnd : today;
+  return {
+    startMs: startOfLocalDay(startDate),
+    endMs: startOfLocalDay(shiftLocalDate(endDate, 1)),
+  };
+}
+
+function appHue(applicationId: number): number {
+  return 135 + ((applicationId * 37) % 90);
+}
+
+function ApplicationRow({
+  application,
+  total,
+  selected,
+  onSelect,
+}: {
+  application: AppUsage;
+  total: number;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const percentage = total > 0 ? (application.durationMs / total) * 100 : 0;
+  const style = {
+    "--usage-width": `${percentage}%`,
+    "--app-hue": appHue(application.applicationId),
+  } as CSSProperties;
+
+  return (
+    <button
+      type="button"
+      className={`application-row${selected ? " selected" : ""}`}
+      onClick={onSelect}
+      style={style}
+    >
+      <ApplicationIcon
+        applicationId={application.applicationId}
+        applicationName={application.applicationName}
+      />
+      <span className="application-main">
+        <span className="application-copy">
+          <strong>{application.applicationName}</strong>
+          <small>{application.bundleIdentifier ?? "Application"}</small>
+        </span>
+        <span className="usage-track">
+          <i />
+        </span>
+      </span>
+      <span className="application-duration">
+        <strong>{formatDuration(application.durationMs)}</strong>
+        <small>{percentage.toFixed(1)}%</small>
+      </span>
+      <svg className="row-chevron" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m9 5 7 7-7 7" />
+      </svg>
+    </button>
+  );
+}
+
+export function Applications() {
+  const today = localIsoDate();
+  const [preset, setPreset] = useState<RangePreset>("today");
+  const [customStart, setCustomStart] = useState(shiftLocalDate(today, -6));
+  const [customEnd, setCustomEnd] = useState(today);
+  const range = useMemo(
+    () => rangeForPreset(preset, customStart, customEnd),
+    [customEnd, customStart, preset],
+  );
+  const { applications, loading, error, refresh } = useApplications(range);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const total = applications.reduce((sum, application) => sum + application.durationMs, 0);
+  const selected =
+    applications.find((application) => application.applicationId === selectedId) ??
+    applications[0] ??
+    null;
+  const [trend, setTrend] = useState<DailyUsage[]>([]);
+  const [dataRevision, setDataRevision] = useState(0);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [savingPreferences, setSavingPreferences] = useState(false);
+  const [categoryDraft, setCategoryDraft] = useState("");
+  const rangeDays = Math.max(
+    1,
+    Math.round((range.endMs - range.startMs) / (24 * 60 * 60 * 1_000)),
+  );
+
+  useEffect(() => {
+    const refreshTrend = () => setDataRevision((revision) => revision + 1);
+    window.addEventListener(ACTIVITY_DATA_CHANGED, refreshTrend);
+    return () => window.removeEventListener(ACTIVITY_DATA_CHANGED, refreshTrend);
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setTrend([]);
+      return;
+    }
+    let active = true;
+    void getApplicationDailyUsage(
+      selected.applicationId,
+      range.startMs,
+      range.endMs,
+    ).then((usage) => {
+      if (active) setTrend(usage);
+    }).catch(() => {
+      if (active) setTrend([]);
+    });
+    return () => {
+      active = false;
+    };
+  }, [dataRevision, range.endMs, range.startMs, selected?.applicationId]);
+
+  const visibleTrend = trend.slice(-14);
+  const trendMaximum = Math.max(1, ...visibleTrend.map((day) => day.activeDurationMs));
+
+  useEffect(() => {
+    setCategoryDraft(selected?.category ?? "");
+  }, [selected?.applicationId, selected?.category]);
+
+  async function savePreferences(category: string, isIgnored: boolean) {
+    if (!selected || savingPreferences) return;
+    setSavingPreferences(true);
+    setPreferenceError(null);
+    try {
+      await updateApplicationPreferences(selected.applicationId, category, isIgnored);
+      notifyActivityDataChanged();
+      refresh();
+    } catch (reason) {
+      setPreferenceError(errorMessage(reason));
+    } finally {
+      setSavingPreferences(false);
+    }
+  }
+
+  return (
+    <div className="applications-page">
+      <header className="applications-header">
+        <div>
+          <p className="date-label">Time by application</p>
+          <h1>Applications</h1>
+        </div>
+        <div className="range-tabs" role="group" aria-label="Application usage range">
+          {(
+            [
+              ["today", "Today"],
+              ["7days", "7 Days"],
+              ["30days", "30 Days"],
+              ["custom", "Custom"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              type="button"
+              className={preset === value ? "active" : ""}
+              onClick={() => setPreset(value)}
+              key={value}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      {preset === "custom" && (
+        <div className="custom-range">
+          <label>
+            From
+            <input
+              type="date"
+              value={customStart}
+              max={customEnd}
+              onChange={(event) => setCustomStart(event.currentTarget.value)}
+            />
+          </label>
+          <span>to</span>
+          <label>
+            Until
+            <input
+              type="date"
+              value={customEnd}
+              min={customStart}
+              max={today}
+              onChange={(event) => setCustomEnd(event.currentTarget.value)}
+            />
+          </label>
+        </div>
+      )}
+
+      {error && (
+        <div className="error-banner" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={refresh}>
+            Try again
+          </button>
+        </div>
+      )}
+
+      <section className="applications-overview" aria-label="Application usage summary">
+        <article>
+          <p>Total active time</p>
+          <strong>{formatDuration(total)}</strong>
+        </article>
+        <article>
+          <p>Applications used</p>
+          <strong>{applications.length}</strong>
+        </article>
+        <article>
+          <p>Most used</p>
+          <strong>{applications[0]?.applicationName ?? "—"}</strong>
+        </article>
+      </section>
+
+      <div className="applications-layout">
+        <section className="applications-list-card" aria-label="Applications ranked by usage">
+          <div className="list-heading">
+            <div>
+              <p className="section-kicker">Active time</p>
+              <h2>Usage by application</h2>
+            </div>
+            <span>{applications.length} apps</span>
+          </div>
+
+          {loading && applications.length === 0 && (
+            <div className="applications-loading">
+              <div className="skeleton app-row-skeleton" />
+              <div className="skeleton app-row-skeleton" />
+              <div className="skeleton app-row-skeleton short" />
+            </div>
+          )}
+
+          {!loading && applications.length === 0 && !error && (
+            <div className="empty-applications">
+              <span>0h</span>
+              <h2>No application activity</h2>
+              <p>Active applications will appear here as Watchhouse records them.</p>
+            </div>
+          )}
+
+          {applications.map((application) => (
+            <ApplicationRow
+              application={application}
+              total={total}
+              selected={selected?.applicationId === application.applicationId}
+              onSelect={() => setSelectedId(application.applicationId)}
+              key={application.applicationId}
+            />
+          ))}
+        </section>
+
+        <aside className="application-detail">
+          {selected ? (
+            <>
+              <ApplicationIcon
+                className="detail-app-icon"
+                applicationId={selected.applicationId}
+                applicationName={selected.applicationName}
+                style={{ "--app-hue": appHue(selected.applicationId) } as CSSProperties}
+              />
+              <p className="section-kicker">Application</p>
+              <h2>{selected.applicationName}</h2>
+              <p className="detail-bundle">
+                {selected.bundleIdentifier ?? "No bundle identifier"}
+              </p>
+              <div className="application-preferences">
+                <label>
+                  Category
+                  <input
+                    type="text"
+                    list="application-categories"
+                    maxLength={40}
+                    value={categoryDraft}
+                    disabled={savingPreferences}
+                    onChange={(event) => setCategoryDraft(event.currentTarget.value)}
+                    onBlur={() => {
+                      if (categoryDraft.trim() && categoryDraft.trim() !== selected.category) {
+                        void savePreferences(categoryDraft.trim(), selected.isIgnored);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                  />
+                  <datalist id="application-categories">
+                    {["Uncategorized", "Work", "Communication", "Learning", "Creative", "Entertainment"].map((category) => (
+                      <option value={category} key={category} />
+                    ))}
+                  </datalist>
+                </label>
+                <label className="ignore-application">
+                  <input
+                    type="checkbox"
+                    checked={selected.isIgnored}
+                    disabled={savingPreferences}
+                    onChange={(event) => {
+                      void savePreferences(selected.category, event.currentTarget.checked);
+                    }}
+                  />
+                  <span>
+                    <strong>Ignore future activity</strong>
+                    <small>Existing history is preserved.</small>
+                  </span>
+                </label>
+                {preferenceError && <small className="preference-error">{preferenceError}</small>}
+              </div>
+              <dl>
+                <div>
+                  <dt>Active time</dt>
+                  <dd>{formatDuration(selected.durationMs)}</dd>
+                </div>
+                <div>
+                  <dt>Share of time</dt>
+                  <dd>{total > 0 ? ((selected.durationMs / total) * 100).toFixed(1) : "0"}%</dd>
+                </div>
+                <div>
+                  <dt>Daily average</dt>
+                  <dd>{formatDuration(selected.durationMs / rangeDays)}</dd>
+                </div>
+              </dl>
+              <div className="application-trend">
+                <div>
+                  <p className="section-kicker">Daily trend</p>
+                  <strong>{visibleTrend.length > 1 ? `Last ${visibleTrend.length} active days` : "Selected range"}</strong>
+                </div>
+                {visibleTrend.length ? (
+                  <div className="application-trend-bars">
+                    {visibleTrend.map((day) => (
+                      <span key={day.date} title={`${day.date} · ${formatDuration(day.activeDurationMs)}`}>
+                        <i style={{ height: `${Math.max(5, day.activeDurationMs / trendMaximum * 100)}%` }} />
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <small>No daily trend in this range.</small>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="detail-placeholder">
+              <p>Application details will appear here.</p>
+            </div>
+          )}
+        </aside>
+      </div>
+    </div>
+  );
+}
