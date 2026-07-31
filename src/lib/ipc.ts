@@ -92,6 +92,7 @@ export interface FocusPlanHistorySummary {
   totalPlannedDurationMs: number;
   totalActualDurationMs: number;
   totalPausedDurationMs: number;
+  longestCompletedStreakDays: number;
   recentPlans: FocusPlanHistoryEntry[];
 }
 
@@ -312,6 +313,7 @@ export interface TimelineUndoEntry {
   token: string;
   createdAtMs: number;
   sessionCount: number;
+  operationLabel: string;
 }
 
 export function getTimelineUndoHistory(): Promise<TimelineUndoEntry[]> {

@@ -117,6 +117,7 @@ export function Reports() {
           <div><span>Completed</span><strong>{focusHistory?.completedCount ?? 0}</strong></div>
           <div><span>Cancelled</span><strong>{focusHistory?.cancelledCount ?? 0}</strong></div>
           <div><span>Focused time</span><strong>{formatDuration(focusHistory?.totalActualDurationMs ?? 0)}</strong></div>
+          <div><span>Longest streak</span><strong>{focusHistory?.longestCompletedStreakDays ?? 0}d</strong></div>
         </div>
         {focusMessage && <p className="focus-history-message" role="status">{focusMessage}</p>}
         {focusHistory?.recentPlans.length ? (

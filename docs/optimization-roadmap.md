@@ -174,3 +174,19 @@ Validation:
 - 67 Rust tests passed.
 - Clippy passed for all targets with warnings denied.
 - Reports and Timeline were visually checked in the browser at desktop width.
+
+## Phase 8: History Context And Focus Consistency
+
+Status: Complete
+
+- [x] Label undo entries by operation type for delete, merge, and split edits.
+- [x] Keep legacy unlabeled undo snapshots readable.
+- [x] Show the longest completed Focus Plan streak in weekly and monthly reports.
+- [x] Deduplicate multiple completed plans on the same day when calculating streaks.
+
+Decisions:
+
+- Operation labels live inside the existing undo snapshot JSON, avoiding a database migration.
+- Legacy snapshots fall back to a generic Timeline edit label.
+- A streak is the longest run of consecutive local calendar days with at least one completed plan
+  inside the selected report period.

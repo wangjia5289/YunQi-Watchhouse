@@ -87,6 +87,7 @@ pub struct TimelineUndoEntry {
     pub token: String,
     pub created_at_ms: i64,
     pub session_count: usize,
+    pub operation_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -116,6 +117,8 @@ type OverlappingSession = (i64, String, Option<i64>, Option<String>, i64, i64);
 struct TimelineUndoSnapshot {
     sessions: Vec<ActivitySession>,
     delete_session_ids: Vec<i64>,
+    #[serde(default)]
+    operation_label: Option<String>,
 }
 
 #[derive(Clone)]
@@ -681,7 +684,7 @@ impl ActivityRepository {
     }
 
     pub fn delete_closed_sessions(&self, session_ids: &[i64]) -> AppResult<TimelineMutationResult> {
-        self.destructive_session_edit(session_ids, |transaction, ids| {
+        self.destructive_session_edit(session_ids, "Deleted sessions", |transaction, ids| {
             let mut affected = 0;
             for id in ids {
                 affected += transaction.execute(
@@ -694,7 +697,7 @@ impl ActivityRepository {
     }
 
     pub fn merge_closed_sessions(&self, session_ids: &[i64]) -> AppResult<TimelineMutationResult> {
-        self.destructive_session_edit(session_ids, |transaction, ids| {
+        self.destructive_session_edit(session_ids, "Merged sessions", |transaction, ids| {
             if ids.len() < 2 {
                 return Err(AppError::InvalidSession(
                     "select at least two sessions to merge".to_owned(),
@@ -812,6 +815,7 @@ impl ActivityRepository {
         let snapshot = TimelineUndoSnapshot {
             sessions: vec![original],
             delete_session_ids: vec![session_id, new_id],
+            operation_label: Some("Split session".to_owned()),
         };
         transaction.execute(
             "INSERT INTO timeline_undo(token, snapshot_json, created_at_ms) VALUES (?1, ?2, ?3)",
@@ -833,6 +837,7 @@ impl ActivityRepository {
     fn destructive_session_edit<F>(
         &self,
         session_ids: &[i64],
+        operation_label: &str,
         operation: F,
     ) -> AppResult<TimelineMutationResult>
     where
@@ -872,6 +877,7 @@ impl ActivityRepository {
                 serde_json::to_string(&TimelineUndoSnapshot {
                     sessions: snapshot,
                     delete_session_ids: ids.clone(),
+                    operation_label: Some(operation_label.to_owned()),
                 })
                 .map_err(|error| {
                     AppError::InvalidSession(format!("could not create undo snapshot: {error}"))
@@ -903,6 +909,7 @@ impl ActivityRepository {
                     TimelineUndoSnapshot {
                         delete_session_ids: sessions.iter().map(|session| session.id).collect(),
                         sessions,
+                        operation_label: None,
                     }
                 })
             })
@@ -973,6 +980,7 @@ impl ActivityRepository {
                                     .map(|session| session.id)
                                     .collect(),
                                 sessions,
+                                operation_label: None,
                             },
                         )
                     })
@@ -983,6 +991,9 @@ impl ActivityRepository {
                     token,
                     created_at_ms,
                     session_count: snapshot.sessions.len(),
+                    operation_label: snapshot
+                        .operation_label
+                        .unwrap_or_else(|| "Timeline edit".to_owned()),
                 })
             })
             .collect()
@@ -2086,6 +2097,10 @@ mod tests {
             .unwrap();
         let result = repository.delete_closed_sessions(&[session.id]).unwrap();
         assert!(repository.records_overlapping(0, 300).unwrap().is_empty());
+        let history = repository.timeline_undo_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].operation_label, "Deleted sessions");
+        assert_eq!(history[0].session_count, 1);
 
         assert_eq!(
             repository
@@ -2112,6 +2127,10 @@ mod tests {
             .unwrap();
 
         let result = repository.split_closed_session(session.id, 200).unwrap();
+        assert_eq!(
+            repository.timeline_undo_history().unwrap()[0].operation_label,
+            "Split session"
+        );
         let split = repository.records_overlapping(0, 400).unwrap();
         assert_eq!(split.len(), 2);
         assert_eq!(split[0].session.ended_at_ms, 200);
@@ -2124,6 +2143,13 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].session.started_at_ms, 100);
         assert_eq!(restored[0].session.ended_at_ms, 300);
+    }
+
+    #[test]
+    fn legacy_undo_snapshots_without_a_label_remain_readable() {
+        let snapshot: TimelineUndoSnapshot =
+            serde_json::from_str(r#"{"sessions":[],"delete_session_ids":[]}"#).unwrap();
+        assert_eq!(snapshot.operation_label, None);
     }
 
     #[test]

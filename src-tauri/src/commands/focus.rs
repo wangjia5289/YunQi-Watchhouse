@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::{Local, TimeZone};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
@@ -16,6 +17,7 @@ pub struct FocusPlanHistorySummary {
     total_planned_duration_ms: i64,
     total_actual_duration_ms: i64,
     total_paused_duration_ms: i64,
+    longest_completed_streak_days: usize,
     recent_plans: Vec<crate::database::FocusPlanHistoryEntry>,
 }
 
@@ -63,6 +65,17 @@ pub fn get_focus_plan_history(
         .iter()
         .map(|entry| entry.paused_duration_ms.max(0))
         .sum();
+    let completed_dates = recent_plans
+        .iter()
+        .filter(|entry| entry.outcome == "COMPLETED")
+        .filter_map(|entry| {
+            Local
+                .timestamp_millis_opt(entry.ended_at_ms)
+                .single()
+                .map(|ended_at| ended_at.date_naive())
+        })
+        .collect::<Vec<_>>();
+    let longest_completed_streak_days = longest_completed_streak(&completed_dates);
     recent_plans.truncate(30);
     Ok(FocusPlanHistorySummary {
         completed_count,
@@ -70,8 +83,27 @@ pub fn get_focus_plan_history(
         total_planned_duration_ms,
         total_actual_duration_ms,
         total_paused_duration_ms,
+        longest_completed_streak_days,
         recent_plans,
     })
+}
+
+fn longest_completed_streak(dates: &[chrono::NaiveDate]) -> usize {
+    let mut dates = dates.to_vec();
+    dates.sort_unstable();
+    dates.dedup();
+    let mut longest = 0;
+    let mut current = 0;
+    let mut previous = None;
+    for date in dates {
+        current = match previous {
+            Some(previous) if date.signed_duration_since(previous).num_days() == 1 => current + 1,
+            _ => 1,
+        };
+        longest = longest.max(current);
+        previous = Some(date);
+    }
+    longest
 }
 
 #[tauri::command]
@@ -204,5 +236,29 @@ fn persisted(status: &FocusModeStatus) -> PersistedFocusMode {
         paused: status.paused,
         paused_at_ms: status.paused_at_ms,
         total_paused_ms: status.total_paused_ms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::NaiveDate;
+
+    use super::longest_completed_streak;
+
+    #[test]
+    fn completed_streak_deduplicates_days_and_keeps_the_longest_run() {
+        let date = |value| NaiveDate::parse_from_str(value, "%Y-%m-%d").unwrap();
+        assert_eq!(
+            longest_completed_streak(&[
+                date("2026-07-03"),
+                date("2026-07-01"),
+                date("2026-07-02"),
+                date("2026-07-02"),
+                date("2026-07-06"),
+                date("2026-07-07"),
+            ]),
+            3
+        );
+        assert_eq!(longest_completed_streak(&[]), 0);
     }
 }

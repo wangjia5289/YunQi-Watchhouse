@@ -339,8 +339,12 @@ export function Timeline() {
                 return (
                   <div key={entry.token}>
                     <span>
-                      <strong>{entry.sessionCount} {entry.sessionCount === 1 ? "session" : "sessions"}</strong>
-                      <small>{new Date(entry.createdAtMs).toLocaleString()} · {hoursRemaining}h remaining</small>
+                      <strong>{entry.operationLabel}</strong>
+                      <small>
+                        {entry.sessionCount} {entry.sessionCount === 1 ? "session" : "sessions"}
+                        {" · "}{new Date(entry.createdAtMs).toLocaleString()}
+                        {" · "}{hoursRemaining}h remaining
+                      </small>
                     </span>
                     <button type="button" onClick={() => void runOperation(async () => {
                       const restored = await undoTimelineEdit(entry.token);
