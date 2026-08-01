@@ -29,6 +29,12 @@ pub struct Settings {
     pub backup_directory: Option<String>,
     pub last_maintenance_at_ms: i64,
     pub last_backup_at_ms: i64,
+    pub automatic_encrypted_backup_enabled: bool,
+    pub last_encrypted_backup_at_ms: i64,
+    pub weekly_report_auto_archive_enabled: bool,
+    pub weekly_report_notification_enabled: bool,
+    pub weekly_report_notification_weekday: i64,
+    pub weekly_report_notification_time: String,
     pub daily_focus_goal_minutes: i64,
     pub focus_block_gap_minutes: i64,
     pub break_reminders_enabled: bool,
@@ -163,6 +169,46 @@ pub struct CategoryRulePreview {
     pub shadowed_session_count: usize,
     pub conflicts: Vec<CategoryRuleConflict>,
     pub samples: Vec<CategoryRulePreviewSample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRulesReapplyPreviewSample {
+    pub application_name: String,
+    pub window_title: Option<String>,
+    pub previous_category: String,
+    pub next_category: String,
+    pub previous_is_override: bool,
+    pub next_is_override: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRulesReapplyPreview {
+    pub scanned_session_count: usize,
+    pub affected_session_count: usize,
+    pub category_change_count: usize,
+    pub assigned_session_count: usize,
+    pub cleared_session_count: usize,
+    pub samples: Vec<CategoryRulesReapplyPreviewSample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRulesReapplyResult {
+    pub affected_count: usize,
+    pub undo_token: Option<String>,
+    pub undo_created_at_ms: Option<i64>,
+    pub undo_expires_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRulesReapplyUndoStatus {
+    pub token: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub affected_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -379,12 +425,35 @@ pub struct PersistedFocusMode {
 
 type OverlappingSession = (i64, String, Option<i64>, Option<String>, i64, i64);
 
+const CATEGORY_RULES_REAPPLY_UNDO_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TimelineUndoSnapshot {
     sessions: Vec<ActivitySession>,
     delete_session_ids: Vec<i64>,
     #[serde(default)]
     operation_label: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CategoryRulesReapplyUndoSnapshot {
+    changes: Vec<CategoryRulesReapplyUndoChange>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CategoryRulesReapplyUndoChange {
+    session_id: i64,
+    previous_category_override: Option<String>,
+    applied_category_override: Option<String>,
+}
+
+struct CategoryRulesReapplyChange {
+    session_id: i64,
+    application_name: String,
+    window_title: Option<String>,
+    application_category: String,
+    previous_category_override: Option<String>,
+    next_category_override: Option<String>,
 }
 
 #[derive(Clone)]
@@ -498,13 +567,45 @@ impl ActivityRepository {
 
     pub fn category_rules(&self) -> AppResult<Vec<CategoryRule>> {
         let connection = self.database.lock()?;
-        let mut statement = connection.prepare(
-            "SELECT id, match_field, pattern, category, priority, enabled
-             FROM category_rules ORDER BY priority, id",
-        )?;
-        Ok(statement
-            .query_map([], map_category_rule)?
-            .collect::<rusqlite::Result<Vec<_>>>()?)
+        category_rules_from_connection(&connection)
+    }
+
+    pub fn reorder_category_rules(&self, rule_ids: &[i64]) -> AppResult<Vec<CategoryRule>> {
+        if rule_ids.len() > 10_000 {
+            return Err(AppError::InvalidSession(
+                "no more than 10000 category rules can be ordered".to_owned(),
+            ));
+        }
+        let requested_ids = rule_ids.iter().copied().collect::<HashSet<_>>();
+        if requested_ids.len() != rule_ids.len() {
+            return Err(AppError::InvalidSession(
+                "category rule order contains duplicate rules".to_owned(),
+            ));
+        }
+
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let existing_rules = category_rules_from_connection(&transaction)?;
+        let existing_ids = existing_rules
+            .iter()
+            .map(|rule| rule.id)
+            .collect::<HashSet<_>>();
+        if requested_ids != existing_ids {
+            return Err(AppError::InvalidSession(
+                "category rule order must contain every rule exactly once".to_owned(),
+            ));
+        }
+
+        let updated_at_ms = now_millis();
+        for (priority, rule_id) in rule_ids.iter().enumerate() {
+            transaction.execute(
+                "UPDATE category_rules SET priority = ?2, updated_at_ms = ?3 WHERE id = ?1",
+                params![rule_id, priority as i64, updated_at_ms],
+            )?;
+        }
+        let reordered = category_rules_from_connection(&transaction)?;
+        transaction.commit()?;
+        Ok(reordered)
     }
 
     pub fn create_category_rule(&self, input: &CategoryRuleInput) -> AppResult<CategoryRule> {
@@ -701,43 +802,193 @@ impl ActivityRepository {
         })
     }
 
-    pub fn reapply_category_rules(&self) -> AppResult<usize> {
+    pub fn preview_category_rules_reapply(&self) -> AppResult<CategoryRulesReapplyPreview> {
+        const SAMPLE_LIMIT: usize = 5;
+
+        let connection = self.database.lock()?;
+        let rules = enabled_category_rules(&connection)?;
+        let (scanned_session_count, changes) = category_rules_reapply_changes(&connection, &rules)?;
+        let category_change_count = changes
+            .iter()
+            .filter(|change| change.previous_category() != change.next_category())
+            .count();
+        let assigned_session_count = changes
+            .iter()
+            .filter(|change| change.next_category_override.is_some())
+            .count();
+        let cleared_session_count = changes
+            .iter()
+            .filter(|change| change.next_category_override.is_none())
+            .count();
+        let samples = changes
+            .iter()
+            .take(SAMPLE_LIMIT)
+            .map(|change| CategoryRulesReapplyPreviewSample {
+                application_name: truncate_preview_text(&change.application_name),
+                window_title: change.window_title.as_deref().map(truncate_preview_text),
+                previous_category: truncate_preview_text(change.previous_category()),
+                next_category: truncate_preview_text(change.next_category()),
+                previous_is_override: change.previous_category_override.is_some(),
+                next_is_override: change.next_category_override.is_some(),
+            })
+            .collect();
+        Ok(CategoryRulesReapplyPreview {
+            scanned_session_count,
+            affected_session_count: changes.len(),
+            category_change_count,
+            assigned_session_count,
+            cleared_session_count,
+            samples,
+        })
+    }
+
+    pub fn reapply_category_rules(&self) -> AppResult<CategoryRulesReapplyResult> {
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
         let rules = enabled_category_rules(&transaction)?;
-        let sessions = {
-            let mut statement = transaction.prepare(
-                "SELECT s.id, a.name, a.bundle_id, s.window_title, s.category_override
-                 FROM activity_sessions s
-                 JOIN applications a ON a.id = s.application_id
-                 WHERE s.state = 'ACTIVE'",
-            )?;
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?
+        let (_, changes) = category_rules_reapply_changes(&transaction, &rules)?;
+        if changes.is_empty() {
+            transaction.commit()?;
+            return Ok(CategoryRulesReapplyResult {
+                affected_count: 0,
+                undo_token: None,
+                undo_created_at_ms: None,
+                undo_expires_at_ms: None,
+            });
+        }
+
+        let now_ms = now_millis();
+        let token = transaction.query_row("SELECT lower(hex(randomblob(16)))", [], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let snapshot = CategoryRulesReapplyUndoSnapshot {
+            changes: changes
+                .iter()
+                .map(|change| CategoryRulesReapplyUndoChange {
+                    session_id: change.session_id,
+                    previous_category_override: change.previous_category_override.clone(),
+                    applied_category_override: change.next_category_override.clone(),
+                })
+                .collect(),
         };
-        let mut changed = 0;
-        for (session_id, name, bundle_id, title, previous) in sessions {
-            let next =
-                resolve_category_from_rules(&rules, &name, bundle_id.as_deref(), title.as_deref());
-            if next != previous {
-                transaction.execute(
-                    "UPDATE activity_sessions SET category_override = ?2 WHERE id = ?1",
-                    params![session_id, next],
-                )?;
-                changed += 1;
-            }
+        transaction.execute("DELETE FROM category_rule_reapply_undo", [])?;
+        transaction.execute(
+            "INSERT INTO category_rule_reapply_undo(token, snapshot_json, created_at_ms)
+             VALUES (?1, ?2, ?3)",
+            params![
+                token,
+                serde_json::to_string(&snapshot).map_err(|error| {
+                    AppError::InvalidSession(format!(
+                        "could not create category reclassification undo snapshot: {error}"
+                    ))
+                })?,
+                now_ms,
+            ],
+        )?;
+        for change in &changes {
+            transaction.execute(
+                "UPDATE activity_sessions SET category_override = ?2 WHERE id = ?1",
+                params![change.session_id, change.next_category_override],
+            )?;
         }
         transaction.commit()?;
-        Ok(changed)
+        Ok(CategoryRulesReapplyResult {
+            affected_count: changes.len(),
+            undo_token: Some(token),
+            undo_created_at_ms: Some(now_ms),
+            undo_expires_at_ms: Some(now_ms.saturating_add(CATEGORY_RULES_REAPPLY_UNDO_TTL_MS)),
+        })
+    }
+
+    pub fn category_rules_reapply_undo_status(
+        &self,
+    ) -> AppResult<Option<CategoryRulesReapplyUndoStatus>> {
+        let connection = self.database.lock()?;
+        let now_ms = now_millis();
+        connection.execute(
+            "DELETE FROM category_rule_reapply_undo WHERE created_at_ms < ?1",
+            [now_ms.saturating_sub(CATEGORY_RULES_REAPPLY_UNDO_TTL_MS)],
+        )?;
+        let row = connection
+            .query_row(
+                "SELECT token, snapshot_json, created_at_ms
+                 FROM category_rule_reapply_undo ORDER BY created_at_ms DESC LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(token, snapshot_json, created_at_ms)| {
+            let snapshot: CategoryRulesReapplyUndoSnapshot = serde_json::from_str(&snapshot_json)
+                .map_err(|error| {
+                AppError::InvalidSession(format!(
+                    "invalid category reclassification undo snapshot: {error}"
+                ))
+            })?;
+            Ok(CategoryRulesReapplyUndoStatus {
+                token,
+                created_at_ms,
+                expires_at_ms: created_at_ms.saturating_add(CATEGORY_RULES_REAPPLY_UNDO_TTL_MS),
+                affected_count: snapshot.changes.len(),
+            })
+        })
+        .transpose()
+    }
+
+    pub fn undo_category_rules_reapply(&self, token: &str) -> AppResult<usize> {
+        if token.is_empty() || token.len() > 128 {
+            return Err(AppError::InvalidSession(
+                "invalid category reclassification undo token".to_owned(),
+            ));
+        }
+        let mut connection = self.database.lock()?;
+        let transaction = connection.transaction()?;
+        let now_ms = now_millis();
+        transaction.execute(
+            "DELETE FROM category_rule_reapply_undo WHERE created_at_ms < ?1",
+            [now_ms.saturating_sub(CATEGORY_RULES_REAPPLY_UNDO_TTL_MS)],
+        )?;
+        let snapshot_json = transaction
+            .query_row(
+                "SELECT snapshot_json FROM category_rule_reapply_undo WHERE token = ?1",
+                [token],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                AppError::InvalidSession(
+                    "category reclassification undo is no longer available".to_owned(),
+                )
+            })?;
+        let snapshot: CategoryRulesReapplyUndoSnapshot = serde_json::from_str(&snapshot_json)
+            .map_err(|error| {
+                AppError::InvalidSession(format!(
+                    "invalid category reclassification undo snapshot: {error}"
+                ))
+            })?;
+        let mut restored_count = 0;
+        for change in &snapshot.changes {
+            restored_count += transaction.execute(
+                "UPDATE activity_sessions SET category_override = ?2
+                 WHERE id = ?1 AND category_override IS ?3",
+                params![
+                    change.session_id,
+                    change.previous_category_override,
+                    change.applied_category_override,
+                ],
+            )?;
+        }
+        transaction.execute(
+            "DELETE FROM category_rule_reapply_undo WHERE token = ?1",
+            [token],
+        )?;
+        transaction.commit()?;
+        Ok(restored_count)
     }
 
     pub fn should_record_window_title(&self, identity_key: &str) -> AppResult<bool> {
@@ -765,7 +1016,13 @@ impl ActivityRepository {
                         backup_keep_count, backup_directory, last_maintenance_at_ms,
                         last_backup_at_ms, daily_focus_goal_minutes,
                         focus_block_gap_minutes, break_reminders_enabled,
-                        break_reminder_minutes, quiet_hours_start, quiet_hours_end
+                        break_reminder_minutes, quiet_hours_start, quiet_hours_end,
+                        automatic_encrypted_backup_enabled,
+                        last_encrypted_backup_at_ms,
+                        weekly_report_auto_archive_enabled,
+                        weekly_report_notification_enabled,
+                        weekly_report_notification_weekday,
+                        weekly_report_notification_time
                  FROM settings WHERE singleton_id = 1",
                 [],
                 |row| {
@@ -790,6 +1047,12 @@ impl ActivityRepository {
                         break_reminder_minutes: row.get(17)?,
                         quiet_hours_start: row.get(18)?,
                         quiet_hours_end: row.get(19)?,
+                        automatic_encrypted_backup_enabled: row.get(20)?,
+                        last_encrypted_backup_at_ms: row.get(21)?,
+                        weekly_report_auto_archive_enabled: row.get(22)?,
+                        weekly_report_notification_enabled: row.get(23)?,
+                        weekly_report_notification_weekday: row.get(24)?,
+                        weekly_report_notification_time: row.get(25)?,
                     })
                 },
             )
@@ -1729,6 +1992,12 @@ impl ActivityRepository {
         }
         validate_clock_time(&settings.quiet_hours_start)?;
         validate_clock_time(&settings.quiet_hours_end)?;
+        validate_clock_time(&settings.weekly_report_notification_time)?;
+        if !(1..=7).contains(&settings.weekly_report_notification_weekday) {
+            return Err(AppError::InvalidMonitorConfiguration(
+                "weekly report notification weekday must be between 1 and 7".to_owned(),
+            ));
+        }
         let connection = self.database.lock()?;
         connection.execute(
             "UPDATE settings SET idle_threshold_seconds = ?1, launch_at_login = ?2,
@@ -1739,7 +2008,11 @@ impl ActivityRepository {
                 backup_directory = ?11, daily_focus_goal_minutes = ?12,
                 focus_block_gap_minutes = ?13, break_reminders_enabled = ?14,
                 break_reminder_minutes = ?15, quiet_hours_start = ?16,
-                quiet_hours_end = ?17, updated_at_ms = ?18
+                quiet_hours_end = ?17, automatic_encrypted_backup_enabled = ?18,
+                weekly_report_auto_archive_enabled = ?19,
+                weekly_report_notification_enabled = ?20,
+                weekly_report_notification_weekday = ?21,
+                weekly_report_notification_time = ?22, updated_at_ms = ?23
              WHERE singleton_id = 1",
             params![
                 settings.idle_threshold_seconds,
@@ -1759,6 +2032,11 @@ impl ActivityRepository {
                 settings.break_reminder_minutes,
                 settings.quiet_hours_start,
                 settings.quiet_hours_end,
+                settings.automatic_encrypted_backup_enabled,
+                settings.weekly_report_auto_archive_enabled,
+                settings.weekly_report_notification_enabled,
+                settings.weekly_report_notification_weekday,
+                settings.weekly_report_notification_time,
                 updated_at_ms,
             ],
         )?;
@@ -1875,6 +2153,15 @@ impl ActivityRepository {
         let connection = self.database.lock()?;
         connection.execute(
             "UPDATE settings SET last_backup_at_ms = ?1 WHERE singleton_id = 1",
+            [completed_at_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_encrypted_backup_completed(&self, completed_at_ms: i64) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        connection.execute(
+            "UPDATE settings SET last_encrypted_backup_at_ms = ?1 WHERE singleton_id = 1",
             [completed_at_ms],
         )?;
         Ok(())
@@ -3387,6 +3674,16 @@ fn map_category_rule(row: &Row<'_>) -> rusqlite::Result<CategoryRule> {
     })
 }
 
+fn category_rules_from_connection(connection: &Connection) -> AppResult<Vec<CategoryRule>> {
+    let mut statement = connection.prepare(
+        "SELECT id, match_field, pattern, category, priority, enabled
+         FROM category_rules ORDER BY priority, id",
+    )?;
+    Ok(statement
+        .query_map([], map_category_rule)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 fn find_category_rule(
     connection: &rusqlite::Connection,
     rule_id: i64,
@@ -3410,6 +3707,63 @@ fn enabled_category_rules(connection: &Connection) -> AppResult<Vec<CategoryRule
     Ok(statement
         .query_map([], map_category_rule)?
         .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+impl CategoryRulesReapplyChange {
+    fn previous_category(&self) -> &str {
+        self.previous_category_override
+            .as_deref()
+            .unwrap_or(&self.application_category)
+    }
+
+    fn next_category(&self) -> &str {
+        self.next_category_override
+            .as_deref()
+            .unwrap_or(&self.application_category)
+    }
+}
+
+fn category_rules_reapply_changes(
+    connection: &Connection,
+    rules: &[CategoryRule],
+) -> AppResult<(usize, Vec<CategoryRulesReapplyChange>)> {
+    let mut statement = connection.prepare(
+        "SELECT s.id, a.name, a.bundle_id, s.window_title, a.category,
+                s.category_override
+         FROM activity_sessions s
+         JOIN applications a ON a.id = s.application_id
+         WHERE s.state = 'ACTIVE'
+         ORDER BY s.started_at_ms DESC, s.id DESC",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut scanned_session_count = 0;
+    let mut changes = Vec::new();
+    while let Some(row) = rows.next()? {
+        scanned_session_count += 1;
+        let session_id = row.get::<_, i64>(0)?;
+        let application_name = row.get::<_, String>(1)?;
+        let bundle_id = row.get::<_, Option<String>>(2)?;
+        let window_title = row.get::<_, Option<String>>(3)?;
+        let application_category = row.get::<_, String>(4)?;
+        let previous_category_override = row.get::<_, Option<String>>(5)?;
+        let next_category_override = resolve_category_from_rules(
+            rules,
+            &application_name,
+            bundle_id.as_deref(),
+            window_title.as_deref(),
+        );
+        if next_category_override != previous_category_override {
+            changes.push(CategoryRulesReapplyChange {
+                session_id,
+                application_name,
+                window_title,
+                application_category,
+                previous_category_override,
+                next_category_override,
+            });
+        }
+    }
+    Ok((scanned_session_count, changes))
 }
 
 fn normalize_category_rule(input: &CategoryRuleInput) -> AppResult<CategoryRuleInput> {
@@ -3811,7 +4165,9 @@ mod tests {
                 .as_deref(),
             Some("Development")
         );
-        assert_eq!(repository.reapply_category_rules().unwrap(), 2);
+        let result = repository.reapply_category_rules().unwrap();
+        assert_eq!(result.affected_count, 2);
+        assert!(result.undo_token.is_some());
 
         let records = repository.records_overlapping(0, 400).unwrap();
         assert_eq!(
@@ -3830,7 +4186,10 @@ mod tests {
             records[1].effective_category.as_deref(),
             Some("Uncategorized")
         );
-        assert_eq!(repository.reapply_category_rules().unwrap(), 0);
+        assert_eq!(
+            repository.reapply_category_rules().unwrap().affected_count,
+            0
+        );
     }
 
     #[test]
@@ -3998,6 +4357,169 @@ mod tests {
         assert_eq!(creating.effective_session_count, 0);
         assert_eq!(creating.shadowed_session_count, 1);
         assert_eq!(creating.conflicts[0].rule_id, first.id);
+    }
+
+    #[test]
+    fn category_rules_reorder_transactionally_and_reject_invalid_id_sets() {
+        let repository = repository();
+        let first = repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "first".to_owned(),
+                category: "First".to_owned(),
+                priority: 100,
+                enabled: true,
+            })
+            .unwrap();
+        let second = repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "second".to_owned(),
+                category: "Second".to_owned(),
+                priority: 10,
+                enabled: true,
+            })
+            .unwrap();
+        let third = repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "third".to_owned(),
+                category: "Third".to_owned(),
+                priority: 50,
+                enabled: true,
+            })
+            .unwrap();
+
+        let reordered = repository
+            .reorder_category_rules(&[first.id, second.id, third.id])
+            .unwrap();
+        assert_eq!(
+            reordered.iter().map(|rule| rule.id).collect::<Vec<_>>(),
+            vec![first.id, second.id, third.id]
+        );
+        assert_eq!(
+            reordered
+                .iter()
+                .map(|rule| rule.priority)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+
+        assert!(
+            repository
+                .reorder_category_rules(&[first.id, first.id, third.id])
+                .is_err()
+        );
+        assert!(
+            repository
+                .reorder_category_rules(&[first.id, second.id])
+                .is_err()
+        );
+        assert_eq!(repository.category_rules().unwrap(), reordered);
+    }
+
+    #[test]
+    fn category_rules_reapply_preview_and_undo_preserve_later_changes() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let first = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: Some("übersicht · code".to_owned()),
+                category_override: None,
+                started_at_ms: 100,
+            })
+            .unwrap();
+        repository
+            .close_session(first.id, 150, ClosedReason::AppChanged)
+            .unwrap();
+        let second = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: Some("Break".to_owned()),
+                category_override: Some("Old".to_owned()),
+                started_at_ms: 200,
+            })
+            .unwrap();
+        repository
+            .close_session(second.id, 250, ClosedReason::AppChanged)
+            .unwrap();
+        repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::WindowTitle,
+                pattern: "ÜBERSICHT".to_owned(),
+                category: "Development".to_owned(),
+                priority: 0,
+                enabled: true,
+            })
+            .unwrap();
+
+        let preview = repository.preview_category_rules_reapply().unwrap();
+        assert_eq!(preview.scanned_session_count, 2);
+        assert_eq!(preview.affected_session_count, 2);
+        assert_eq!(preview.category_change_count, 2);
+        assert_eq!(preview.assigned_session_count, 1);
+        assert_eq!(preview.cleared_session_count, 1);
+        assert_eq!(preview.samples.len(), 2);
+
+        let result = repository.reapply_category_rules().unwrap();
+        assert_eq!(result.affected_count, preview.affected_session_count);
+        let token = result.undo_token.unwrap();
+        let status = repository
+            .category_rules_reapply_undo_status()
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.token, token);
+        assert_eq!(status.affected_count, 2);
+        assert!(status.expires_at_ms > status.created_at_ms);
+
+        repository
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE activity_sessions SET category_override = 'Manual later' WHERE id = ?1",
+                [first.id],
+            )
+            .unwrap();
+        assert_eq!(repository.undo_category_rules_reapply(&token).unwrap(), 1);
+        let records = repository.records_overlapping(0, 300).unwrap();
+        assert_eq!(
+            records[0].effective_category.as_deref(),
+            Some("Manual later")
+        );
+        assert_eq!(records[1].effective_category.as_deref(), Some("Old"));
+        assert!(
+            repository
+                .category_rules_reapply_undo_status()
+                .unwrap()
+                .is_none()
+        );
+
+        let expired = repository.reapply_category_rules().unwrap();
+        let expired_token = expired.undo_token.unwrap();
+        repository
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE category_rule_reapply_undo SET created_at_ms = 0",
+                [],
+            )
+            .unwrap();
+        assert!(
+            repository
+                .category_rules_reapply_undo_status()
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            repository
+                .undo_category_rules_reapply(&expired_token)
+                .is_err()
+        );
     }
 
     #[test]

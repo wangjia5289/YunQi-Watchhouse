@@ -41,6 +41,14 @@ pub async fn send_weekly_report_notification(
     app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<(), String> {
+    notify_weekly_report_archive(app, repository.inner().clone(), week_start_date).await
+}
+
+pub(crate) async fn notify_weekly_report_archive(
+    app: AppHandle,
+    repository: ActivityRepository,
+    week_start_date: String,
+) -> Result<(), String> {
     if app
         .notification()
         .permission_state()
@@ -49,7 +57,7 @@ pub async fn send_weekly_report_notification(
     {
         return Err("notification permission has not been granted".to_owned());
     }
-    let archive_repository = repository.inner().clone();
+    let archive_repository = repository.clone();
     let lookup_date = week_start_date.clone();
     let archive = tauri::async_runtime::spawn_blocking(move || {
         archive_repository.weekly_report_archive(&lookup_date)

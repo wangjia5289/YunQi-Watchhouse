@@ -28,5 +28,11 @@ pub(super) fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/0016_weekly_report_archives.sql"
         )),
+        M::up(include_str!(
+            "../../migrations/0017_automatic_reports_and_encrypted_backups.sql"
+        )),
+        M::up(include_str!(
+            "../../migrations/0018_category_rule_reapply_undo.sql"
+        )),
     ])
 }

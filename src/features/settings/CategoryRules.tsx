@@ -1,21 +1,28 @@
-import { FormEvent, useEffect, useState } from "react";
+import { DragEvent, FormEvent, useEffect, useState } from "react";
 import {
   CategoryRule,
   CategoryRuleInput,
   CategoryRuleMatchField,
   CategoryRulePreview,
   CategoryRulePreviewSample,
+  CategoryRulesReapplyPreview,
+  CategoryRulesReapplyUndoStatus,
   createCategoryRule,
   deleteCategoryRule,
   errorMessage,
   getCategoryRules,
+  getCategoryRulesReapplyUndoStatus,
   previewCategoryRule,
+  previewCategoryRulesReapply,
   reapplyCategoryRules,
+  reorderCategoryRules,
+  undoCategoryRulesReapply,
   updateCategoryRule,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { useLocale } from "../../lib/i18n";
 import { categoryRulePreviewState } from "./categoryRulePreviewModel";
+import { moveCategoryRuleId, offsetCategoryRuleId } from "./categoryRuleOrderModel";
 import "./CategoryRules.css";
 
 interface CategoryRuleDraft {
@@ -126,10 +133,19 @@ export function CategoryRules() {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [reapplying, setReapplying] = useState(false);
+  const [reapplyPreview, setReapplyPreview] = useState<CategoryRulesReapplyPreview | null>(null);
+  const [reapplyPreviewing, setReapplyPreviewing] = useState(false);
+  const [reapplyUndo, setReapplyUndo] = useState<CategoryRulesReapplyUndoStatus | null>(null);
+  const [undoingReapply, setUndoingReapply] = useState(false);
+  const [draggedRuleId, setDraggedRuleId] = useState<number | null>(null);
+  const [dragOverRuleId, setDragOverRuleId] = useState<number | null>(null);
   const [preview, setPreview] = useState<CategoryRulePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const actionsLocked = categoryRuleActionsLocked(saving, busyId, reapplying);
+  const actionsLocked = categoryRuleActionsLocked(saving, busyId, reapplying)
+    || reapplyPreviewing
+    || undoingReapply;
+  const orderingLocked = actionsLocked || editorOpen;
 
   async function loadRules() {
     setLoading(true);
@@ -145,7 +161,21 @@ export function CategoryRules() {
 
   useEffect(() => {
     void loadRules();
+    void getCategoryRulesReapplyUndoStatus()
+      .then(setReapplyUndo)
+      .catch(() => setReapplyUndo(null));
   }, []);
+
+  useEffect(() => {
+    if (!reapplyUndo) return undefined;
+    const remainingMs = reapplyUndo.expiresAtMs - Date.now();
+    if (remainingMs <= 0) {
+      setReapplyUndo(null);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setReapplyUndo(null), remainingMs);
+    return () => window.clearTimeout(timer);
+  }, [reapplyUndo]);
 
   useEffect(() => {
     const input = categoryRuleInputFromDraft(draft);
@@ -186,6 +216,10 @@ export function CategoryRules() {
     setEditorOpen(true);
   }
 
+  function invalidateReapplyPreview() {
+    setReapplyPreview(null);
+  }
+
   function openEditEditor(rule: CategoryRule) {
     setEditingId(rule.id);
     setDraft(draftFromRule(rule));
@@ -218,6 +252,7 @@ export function CategoryRules() {
         : current.map((rule) => rule.id === editingId ? saved : rule))
         .sort((left, right) => left.priority - right.priority || left.id - right.id));
       setNotice(editingId === null ? "Classification rule added." : "Classification rule updated.");
+      invalidateReapplyPreview();
       setEditorOpen(false);
       setEditingId(null);
       setDraft(EMPTY_DRAFT);
@@ -235,6 +270,7 @@ export function CategoryRules() {
       const updated = await updateCategoryRule(rule.id, { ...rule, enabled });
       setRules((current) => current.map((item) => item.id === rule.id ? updated : item));
       setNotice("Classification rule updated.");
+      invalidateReapplyPreview();
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
@@ -251,6 +287,7 @@ export function CategoryRules() {
       setRules((current) => current.filter((item) => item.id !== rule.id));
       if (editingId === rule.id) closeEditor();
       setNotice("Classification rule deleted.");
+      invalidateReapplyPreview();
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
@@ -258,17 +295,103 @@ export function CategoryRules() {
     }
   }
 
+  async function applyRuleOrder(ruleIds: number[], movingRuleId: number) {
+    if (ruleIds.every((ruleId, index) => ruleId === rules[index]?.id)) return;
+    setBusyId(movingRuleId);
+    setNotice(null);
+    try {
+      setRules(await reorderCategoryRules(ruleIds));
+      invalidateReapplyPreview();
+      setNotice("Classification rule order updated.");
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusyId(null);
+      setDraggedRuleId(null);
+      setDragOverRuleId(null);
+    }
+  }
+
+  function moveRule(ruleId: number, offset: -1 | 1) {
+    const nextIds = offsetCategoryRuleId(rules.map((rule) => rule.id), ruleId, offset);
+    void applyRuleOrder(nextIds, ruleId);
+  }
+
+  function startRuleDrag(event: DragEvent<HTMLButtonElement>, ruleId: number) {
+    if (orderingLocked) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(ruleId));
+    setDraggedRuleId(ruleId);
+  }
+
+  function dropRule(event: DragEvent<HTMLElement>, targetRuleId: number) {
+    event.preventDefault();
+    const sourceRuleId = draggedRuleId ?? Number(event.dataTransfer.getData("text/plain"));
+    if (!Number.isInteger(sourceRuleId)) return;
+    const nextIds = moveCategoryRuleId(
+      rules.map((rule) => rule.id),
+      sourceRuleId,
+      targetRuleId,
+    );
+    void applyRuleOrder(nextIds, sourceRuleId);
+  }
+
+  async function previewReapply() {
+    setReapplyPreviewing(true);
+    setNotice(null);
+    try {
+      setReapplyPreview(await previewCategoryRulesReapply());
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setReapplyPreviewing(false);
+    }
+  }
+
   async function reapply() {
     setReapplying(true);
     setNotice(null);
     try {
-      const changed = await reapplyCategoryRules();
-      setNotice(`${changed} sessions reclassified.`);
+      const result = await reapplyCategoryRules();
+      setNotice(`${result.affectedCount} sessions reclassified.`);
+      setReapplyPreview(null);
+      setReapplyUndo(
+        result.undoToken !== null
+        && result.undoCreatedAtMs !== null
+        && result.undoExpiresAtMs !== null
+          ? {
+            token: result.undoToken,
+            createdAtMs: result.undoCreatedAtMs,
+            expiresAtMs: result.undoExpiresAtMs,
+            affectedCount: result.affectedCount,
+          }
+          : null,
+      );
       notifyActivityDataChanged();
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
       setReapplying(false);
+    }
+  }
+
+  async function undoReapply() {
+    if (!reapplyUndo) return;
+    setUndoingReapply(true);
+    setNotice(null);
+    try {
+      const restored = await undoCategoryRulesReapply(reapplyUndo.token);
+      setReapplyUndo(null);
+      setReapplyPreview(null);
+      setNotice(`${restored} reclassified sessions restored.`);
+      notifyActivityDataChanged();
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setUndoingReapply(false);
     }
   }
 
@@ -290,6 +413,9 @@ export function CategoryRules() {
       </div>
       <p className="settings-note">
         {t("The first enabled rule by priority assigns a category to each activity session.")}
+      </p>
+      <p className="settings-note category-rule-order-note">
+        {t("Drag rules or use the arrow buttons to change which rule runs first.")}
       </p>
 
       {loadError && !loading && (
@@ -464,8 +590,34 @@ export function CategoryRules() {
         </div>
       ) : (
         <div className="category-rules-list">
-          {rules.map((rule) => (
-            <article className={`category-rule${rule.enabled ? "" : " disabled"}`} key={rule.id}>
+          {rules.map((rule, index) => (
+            <article
+              className={`category-rule${rule.enabled ? "" : " disabled"}${dragOverRuleId === rule.id ? " drag-over" : ""}`}
+              key={rule.id}
+              onDragOver={(event) => {
+                if (orderingLocked || draggedRuleId === rule.id) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDragOverRuleId(rule.id);
+              }}
+              onDragLeave={() => setDragOverRuleId((current) => current === rule.id ? null : current)}
+              onDrop={(event) => dropRule(event, rule.id)}
+            >
+              <button
+                type="button"
+                className="category-rule-drag-handle"
+                draggable={!orderingLocked}
+                disabled={orderingLocked}
+                aria-label={t("Drag to reorder rule")}
+                title={t("Drag to reorder rule")}
+                onDragStart={(event) => startRuleDrag(event, rule.id)}
+                onDragEnd={() => {
+                  setDraggedRuleId(null);
+                  setDragOverRuleId(null);
+                }}
+              >
+                <span aria-hidden="true">⋮⋮</span>
+              </button>
               <div className="category-rule-main">
                 <div className="category-rule-title">
                   <span>{t(MATCH_FIELD_LABELS[rule.matchField])}</span>
@@ -476,6 +628,26 @@ export function CategoryRules() {
                 <small>{t("Priority")} {rule.priority}</small>
               </div>
               <div className="category-rule-controls">
+                <button
+                  type="button"
+                  className="category-rule-order-button"
+                  disabled={orderingLocked || index === 0}
+                  aria-label={t("Move rule up")}
+                  title={t("Move rule up")}
+                  onClick={() => moveRule(rule.id, -1)}
+                >
+                  <span aria-hidden="true">↑</span>
+                </button>
+                <button
+                  type="button"
+                  className="category-rule-order-button"
+                  disabled={orderingLocked || index === rules.length - 1}
+                  aria-label={t("Move rule down")}
+                  title={t("Move rule down")}
+                  onClick={() => moveRule(rule.id, 1)}
+                >
+                  <span aria-hidden="true">↓</span>
+                </button>
                 <Toggle
                   checked={rule.enabled}
                   disabled={actionsLocked}
@@ -503,14 +675,99 @@ export function CategoryRules() {
           <strong>{t("Reclassify history")}</strong>
           <small>{t("Apply current rules to existing active sessions. Manual application categories remain unchanged.")}</small>
         </div>
-        <button
-          type="button"
-          disabled={loading || loadError !== null || actionsLocked}
-          onClick={() => void reapply()}
-        >
-          {t(reapplying ? "Reclassifying…" : "Apply to history")}
-        </button>
+        <div className="category-rule-history-actions">
+          <button
+            type="button"
+            disabled={loading || loadError !== null || actionsLocked}
+            onClick={() => void previewReapply()}
+          >
+            {t(reapplyPreviewing ? "Previewing…" : "Preview changes")}
+          </button>
+          <button
+            type="button"
+            className="primary"
+            disabled={
+              loading
+              || loadError !== null
+              || actionsLocked
+              || reapplyPreview === null
+              || reapplyPreview.affectedSessionCount === 0
+            }
+            onClick={() => void reapply()}
+          >
+            {t(reapplying ? "Reclassifying…" : "Apply to history")}
+          </button>
+        </div>
       </div>
+
+      {reapplyPreview && (
+        <div className="category-rule-reapply-preview" aria-live="polite">
+          <div className="category-rule-preview-heading">
+            <strong>{t("Reclassification impact")}</strong>
+            <small>{reapplyPreview.scannedSessionCount} {t("active sessions scanned")}</small>
+          </div>
+          <div className="category-rule-preview-metrics">
+            <span>
+              <strong>{reapplyPreview.affectedSessionCount}</strong>
+              <small>{t("Sessions updated")}</small>
+            </span>
+            <span>
+              <strong>{reapplyPreview.categoryChangeCount}</strong>
+              <small>{t("Visible category changes")}</small>
+            </span>
+            <span>
+              <strong>{reapplyPreview.assignedSessionCount}</strong>
+              <small>{t("Assigned by rules")}</small>
+            </span>
+            <span>
+              <strong>{reapplyPreview.clearedSessionCount}</strong>
+              <small>{t("Reset to app default")}</small>
+            </span>
+          </div>
+          {reapplyPreview.affectedSessionCount === 0 ? (
+            <p>{t("History already matches the current rules.")}</p>
+          ) : reapplyPreview.samples.length > 0 ? (
+            <div className="category-rule-reapply-samples">
+              <strong>{t("Recent changes")}</strong>
+              {reapplyPreview.samples.map((sample, index) => (
+                <div key={`${sample.applicationName}-${index}`}>
+                  <span className="category-rule-reapply-app">
+                    <b>{sample.applicationName}</b>
+                    {sample.windowTitle && <small title={sample.windowTitle}>{sample.windowTitle}</small>}
+                  </span>
+                  <span className="category-rule-reapply-change">
+                    <span>
+                      <small>{t(sample.previousIsOverride ? "Rule" : "App default")}</small>
+                      <b>{t(sample.previousCategory)}</b>
+                    </span>
+                    <i aria-hidden="true">→</i>
+                    <span>
+                      <small>{t(sample.nextIsOverride ? "Rule" : "App default")}</small>
+                      <b>{t(sample.nextCategory)}</b>
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {reapplyUndo && reapplyUndo.expiresAtMs > Date.now() && (
+        <div className="category-rule-undo" role="status">
+          <div>
+            <strong>{t("Reclassification can be undone")}</strong>
+            <small>{reapplyUndo.affectedCount} {t("sessions can be restored for 24 hours.")}</small>
+          </div>
+          <button
+            type="button"
+            disabled={actionsLocked}
+            onClick={() => void undoReapply()}
+          >
+            {t(undoingReapply ? "Restoring…" : "Undo reclassification")}
+          </button>
+        </div>
+      )}
     </section>
   );
 }

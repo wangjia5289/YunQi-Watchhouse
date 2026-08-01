@@ -4,11 +4,19 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, Timelike, Utc};
 
-use crate::database::{ActivityRepository, MaintenanceResult};
+use crate::{
+    database::{ActivityRepository, MaintenanceResult, WeeklyReportArchiveInput},
+    statistics::{StatisticsService, TimeRange},
+};
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Debug, Clone)]
+pub struct WeeklyArchiveNotification {
+    pub week_start_date: String,
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +24,116 @@ pub struct MaintenanceStatus {
     pub running: bool,
     pub last_success_at_ms: Option<i64>,
     pub last_error: Option<String>,
+}
+
+pub fn archive_due_weekly_report(
+    repository: &ActivityRepository,
+    statistics: &StatisticsService,
+    now_ms: i64,
+) -> Result<Option<WeeklyArchiveNotification>, String> {
+    let settings = repository.settings().map_err(|error| error.to_string())?;
+    if !settings.weekly_report_auto_archive_enabled {
+        return Ok(None);
+    }
+    let now = DateTime::<Utc>::from_timestamp_millis(now_ms)
+        .ok_or_else(|| "weekly report timestamp is outside the supported range".to_owned())?
+        .with_timezone(&Local);
+    let current_monday = now
+        .date_naive()
+        .checked_sub_signed(ChronoDuration::days(
+            now.weekday().num_days_from_monday() as i64
+        ))
+        .ok_or_else(|| "weekly report date is outside the supported range".to_owned())?;
+    let week_start = current_monday
+        .checked_sub_signed(ChronoDuration::days(7))
+        .ok_or_else(|| "weekly report date is outside the supported range".to_owned())?;
+    let week_end = current_monday
+        .checked_sub_signed(ChronoDuration::days(1))
+        .ok_or_else(|| "weekly report date is outside the supported range".to_owned())?;
+    let week_start_text = week_start.format("%Y-%m-%d").to_string();
+
+    let existing = repository
+        .weekly_report_archive(&week_start_text)
+        .map_err(|error| error.to_string())?;
+    let archive = if let Some(existing) = existing {
+        existing
+    } else {
+        let start_range =
+            crate::statistics::local_day_range(week_start).map_err(|error| error.to_string())?;
+        let end_range =
+            crate::statistics::local_day_range(week_end).map_err(|error| error.to_string())?;
+        let range = TimeRange::new(start_range.start_ms, end_range.end_ms)
+            .map_err(|error| error.to_string())?;
+        let report = statistics
+            .productivity_report(range)
+            .map_err(|error| error.to_string())?;
+        let strongest_day_date = report
+            .daily_usage
+            .iter()
+            .max_by_key(|day| day.active_duration_ms)
+            .filter(|day| day.active_duration_ms > 0)
+            .map(|day| day.date.clone());
+        let peak_hour = report
+            .hourly_usage
+            .iter()
+            .max_by_key(|hour| hour.active_duration_ms)
+            .filter(|hour| hour.active_duration_ms > 0)
+            .map(|hour| hour.hour as i64);
+        let leading_category = report
+            .category_usage
+            .iter()
+            .max_by_key(|category| category.duration_ms)
+            .filter(|category| category.duration_ms > 0)
+            .map(|category| category.category.clone());
+        let plans = repository
+            .focus_plan_history(range.start_ms, range.end_ms)
+            .map_err(|error| error.to_string())?;
+        let completed = plans
+            .iter()
+            .filter(|plan| plan.outcome == "COMPLETED")
+            .count();
+        let focus_completion_rate =
+            (!plans.is_empty()).then_some((completed.saturating_mul(100) / plans.len()) as i64);
+        let input = WeeklyReportArchiveInput {
+            week_start_date: week_start_text.clone(),
+            week_end_date: week_end.format("%Y-%m-%d").to_string(),
+            generated_at_ms: now_ms,
+            active_duration_ms: report.active_duration_ms,
+            idle_duration_ms: report.idle_duration_ms,
+            previous_week_active_duration_ms: report.previous_active_duration_ms,
+            strongest_day_date,
+            peak_hour,
+            leading_category,
+            focus_completion_rate,
+            payload_json: serde_json::to_string(&report).map_err(|error| error.to_string())?,
+        };
+        repository
+            .archive_weekly_report(&input)
+            .map_err(|error| error.to_string())?
+    };
+
+    let scheduled_minutes = parse_clock_minutes(&settings.weekly_report_notification_time)?;
+    let current_minutes = now.hour() as i64 * 60 + now.minute() as i64;
+    let should_notify = settings.weekly_report_notification_enabled
+        && archive.notified_at_ms.is_none()
+        && now.weekday().number_from_monday() as i64 == settings.weekly_report_notification_weekday
+        && current_minutes >= scheduled_minutes;
+    Ok(should_notify.then_some(WeeklyArchiveNotification {
+        week_start_date: archive.week_start_date,
+    }))
+}
+
+fn parse_clock_minutes(value: &str) -> Result<i64, String> {
+    let (hours, minutes) = value
+        .split_once(':')
+        .ok_or_else(|| "weekly report notification time must use HH:MM".to_owned())?;
+    let hours = hours
+        .parse::<i64>()
+        .map_err(|_| "invalid hour".to_owned())?;
+    let minutes = minutes
+        .parse::<i64>()
+        .map_err(|_| "invalid minute".to_owned())?;
+    Ok(hours * 60 + minutes)
 }
 
 #[derive(Clone, Default)]
@@ -73,7 +191,41 @@ pub fn run_due(
             create_automatic_backup(repository, app_data, now_ms)?;
         }
     }
+    if settings.automatic_encrypted_backup_enabled {
+        let interval_ms = if settings.backup_interval == "DAILY" {
+            DAY_MS
+        } else {
+            7 * DAY_MS
+        };
+        if now_ms.saturating_sub(settings.last_encrypted_backup_at_ms) >= interval_ms {
+            create_automatic_encrypted_backup(repository, app_data, now_ms)?;
+        }
+    }
     Ok(())
+}
+
+pub fn create_automatic_encrypted_backup(
+    repository: &ActivityRepository,
+    app_data: &Path,
+    now_ms: i64,
+) -> Result<PathBuf, String> {
+    let settings = repository.settings().map_err(|error| error.to_string())?;
+    let directory = settings
+        .backup_directory
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| app_data.join("backups"));
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let timestamp = DateTime::<Utc>::from_timestamp_millis(now_ms)
+        .ok_or_else(|| "backup timestamp is outside the supported range".to_owned())?
+        .format("%Y%m%d-%H%M%S");
+    let destination = directory.join(format!("watchhouse-auto-{timestamp}.yqbackup"));
+    crate::commands::encrypted_backup::create_automatic_encrypted_backup(repository, &destination)?;
+    repository
+        .mark_encrypted_backup_completed(now_ms)
+        .map_err(|error| error.to_string())?;
+    prune_backups_with_extension(&directory, settings.backup_keep_count as usize, ".yqbackup")?;
+    Ok(destination)
 }
 
 pub fn run_cleanup(
@@ -125,12 +277,20 @@ fn remove_application_icons(app_data: &Path, application_ids: &[i64]) {
 }
 
 fn prune_backups(directory: &Path, keep_count: usize) -> Result<(), String> {
+    prune_backups_with_extension(directory, keep_count, ".sqlite3")
+}
+
+fn prune_backups_with_extension(
+    directory: &Path,
+    keep_count: usize,
+    extension: &str,
+) -> Result<(), String> {
     let mut backups = fs::read_dir(directory)
         .map_err(|error| error.to_string())?
         .filter_map(Result::ok)
         .filter(|entry| {
             entry.file_name().to_str().is_some_and(|name| {
-                name.starts_with("watchhouse-auto-") && name.ends_with(".sqlite3")
+                name.starts_with("watchhouse-auto-") && name.ends_with(extension)
             })
         })
         .collect::<Vec<_>>();

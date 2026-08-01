@@ -1,27 +1,61 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  BackupPreview,
   createEncryptedDatabaseBackup,
+  clearAutomaticEncryptedBackupPassword,
   errorMessage,
-  restoreEncryptedDatabaseBackup,
+  hasAutomaticEncryptedBackupPassword,
+  previewEncryptedDatabaseRestore,
+  restorePreparedDatabase,
+  setAutomaticEncryptedBackupPassword,
 } from "../../lib/ipc";
 import { useLocale } from "../../lib/i18n";
 import { notifyActivityDataChanged } from "../../lib/events";
 import "./EncryptedBackupControls.css";
+import { RestorePreview } from "./RestorePreview";
 
 export function EncryptedBackupControls({
   onMessage,
   onRestored,
+  automaticEnabled,
+  onAutomaticEnabledChange,
 }: {
   onMessage: (message: string) => void;
   onRestored: () => void;
+  automaticEnabled: boolean;
+  onAutomaticEnabledChange: (enabled: boolean) => Promise<void>;
 }) {
   const { t } = useLocale();
   const [mode, setMode] = useState<"backup" | "restore">("backup");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
+  const [restorePreview, setRestorePreview] = useState<BackupPreview | null>(null);
+  const [automaticPassword, setAutomaticPassword] = useState("");
+  const [automaticPasswordSaved, setAutomaticPasswordSaved] = useState(false);
   const passwordValid = password.length >= 10;
   const canSubmit = passwordValid && (mode === "restore" || password === confirmation);
+
+  useEffect(() => {
+    void hasAutomaticEncryptedBackupPassword()
+      .then(setAutomaticPasswordSaved)
+      .catch(() => setAutomaticPasswordSaved(false));
+  }, []);
+
+  async function saveAutomaticPassword() {
+    if (automaticPassword.length < 10) return;
+    setBusy(true);
+    try {
+      await setAutomaticEncryptedBackupPassword(automaticPassword);
+      setAutomaticPasswordSaved(true);
+      setAutomaticPassword("");
+      onMessage(t("Automatic encrypted backup password saved securely."));
+    } catch (reason) {
+      onMessage(t(errorMessage(reason)));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit() {
     if (!canSubmit) return;
@@ -31,13 +65,9 @@ export function EncryptedBackupControls({
       if (mode === "backup") {
         const path = await createEncryptedDatabaseBackup(password);
         if (path) onMessage(`${t("Encrypted backup saved to")} ${path}`);
-      } else if (window.confirm(t("Restore this encrypted backup? Current activity data will be replaced and tracking will pause."))) {
-        const restored = await restoreEncryptedDatabaseBackup(password);
-        if (restored) {
-          onMessage(t("Encrypted backup restored. Review the data, then resume tracking."));
-          notifyActivityDataChanged();
-          onRestored();
-        }
+      } else {
+        const preview = await previewEncryptedDatabaseRestore(password);
+        if (preview) setRestorePreview(preview);
       }
     } catch (reason) {
       onMessage(t(errorMessage(reason)));
@@ -97,6 +127,63 @@ export function EncryptedBackupControls({
       {mode === "backup" && confirmation.length > 0 && password !== confirmation && (
         <small className="encrypted-backup-validation">{t("Passwords do not match.")}</small>
       )}
+      {mode === "restore" && restorePreview && (
+        <RestorePreview
+          preview={restorePreview}
+          busy={busy}
+          onCancel={() => setRestorePreview(null)}
+          onConfirm={() => {
+            setBusy(true);
+            void restorePreparedDatabase(restorePreview.token).then(() => {
+              setRestorePreview(null);
+              onMessage(t("Encrypted backup restored. Review the data, then resume tracking."));
+              notifyActivityDataChanged();
+              onRestored();
+            }).catch((reason) => onMessage(t(errorMessage(reason)))).finally(() => setBusy(false));
+          }}
+        />
+      )}
+      <div className="encrypted-backup-automatic">
+        <div>
+          <strong>{t("Automatic encrypted backups")}</strong>
+          <small>{t("The password is stored in the system Keychain, not in Watchhouse data.")}</small>
+        </div>
+        <label className="encrypted-backup-automatic-toggle">
+          <input
+            type="checkbox"
+            checked={automaticEnabled}
+            disabled={busy || !automaticPasswordSaved}
+            onChange={(event) => void onAutomaticEnabledChange(event.currentTarget.checked)}
+          />
+          <span>{t(automaticEnabled ? "Enabled" : "Disabled")}</span>
+        </label>
+        <div className="encrypted-backup-fields">
+          <label>
+            <span>{t(automaticPasswordSaved ? "Replace automatic backup password" : "Automatic backup password")}</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={automaticPassword}
+              disabled={busy}
+              onChange={(event) => setAutomaticPassword(event.currentTarget.value)}
+            />
+          </label>
+          <button type="button" disabled={busy || automaticPassword.length < 10} onClick={() => void saveAutomaticPassword()}>
+            {t("Save securely")}
+          </button>
+          {automaticPasswordSaved && (
+            <button type="button" disabled={busy} onClick={() => {
+              void clearAutomaticEncryptedBackupPassword().then(async () => {
+                setAutomaticPasswordSaved(false);
+                if (automaticEnabled) await onAutomaticEnabledChange(false);
+                onMessage(t("Automatic encrypted backup password removed."));
+              }).catch((reason) => onMessage(t(errorMessage(reason))));
+            }}>
+              {t("Remove password")}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -124,6 +124,19 @@ export interface DataHealthUndoStatus {
   createdAtMs: number | null;
 }
 
+export interface BackupPreview {
+  token: string;
+  fileName: string;
+  encrypted: boolean;
+  schemaVersion: number;
+  fileSizeBytes: number;
+  applicationCount: number;
+  sessionCount: number;
+  earliestSessionAtMs: number | null;
+  latestSessionAtMs: number | null;
+  weeklyReportCount: number;
+}
+
 export interface TimelineEntry {
   sessionId: number;
   applicationId: number | null;
@@ -197,6 +210,38 @@ export interface CategoryRulePreview {
   shadowedSessionCount: number;
   conflicts: CategoryRuleConflict[];
   samples: CategoryRulePreviewSample[];
+}
+
+export interface CategoryRulesReapplyPreviewSample {
+  applicationName: string;
+  windowTitle: string | null;
+  previousCategory: string;
+  nextCategory: string;
+  previousIsOverride: boolean;
+  nextIsOverride: boolean;
+}
+
+export interface CategoryRulesReapplyPreview {
+  scannedSessionCount: number;
+  affectedSessionCount: number;
+  categoryChangeCount: number;
+  assignedSessionCount: number;
+  clearedSessionCount: number;
+  samples: CategoryRulesReapplyPreviewSample[];
+}
+
+export interface CategoryRulesReapplyResult {
+  affectedCount: number;
+  undoToken: string | null;
+  undoCreatedAtMs: number | null;
+  undoExpiresAtMs: number | null;
+}
+
+export interface CategoryRulesReapplyUndoStatus {
+  token: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  affectedCount: number;
 }
 
 export type UsageLimitScopeType = "APPLICATION" | "CATEGORY";
@@ -325,6 +370,12 @@ export interface Settings {
   backupDirectory: string | null;
   lastMaintenanceAtMs: number;
   lastBackupAtMs: number;
+  automaticEncryptedBackupEnabled: boolean;
+  lastEncryptedBackupAtMs: number;
+  weeklyReportAutoArchiveEnabled: boolean;
+  weeklyReportNotificationEnabled: boolean;
+  weeklyReportNotificationWeekday: number;
+  weeklyReportNotificationTime: string;
   dailyFocusGoalMinutes: number;
   focusBlockGapMinutes: number;
   breakRemindersEnabled: boolean;
@@ -620,6 +671,10 @@ export function getCategoryRules(): Promise<CategoryRule[]> {
   return invoke("get_category_rules");
 }
 
+export function reorderCategoryRules(ruleIds: number[]): Promise<CategoryRule[]> {
+  return invoke("reorder_category_rules", { ruleIds });
+}
+
 export function previewCategoryRule(
   input: CategoryRuleInput,
   ruleId: number | null,
@@ -642,8 +697,20 @@ export function deleteCategoryRule(ruleId: number): Promise<void> {
   return invoke("delete_category_rule", { ruleId });
 }
 
-export function reapplyCategoryRules(): Promise<number> {
+export function previewCategoryRulesReapply(): Promise<CategoryRulesReapplyPreview> {
+  return invoke("preview_category_rules_reapply");
+}
+
+export function reapplyCategoryRules(): Promise<CategoryRulesReapplyResult> {
   return invoke("reapply_category_rules");
+}
+
+export function getCategoryRulesReapplyUndoStatus(): Promise<CategoryRulesReapplyUndoStatus | null> {
+  return invoke("get_category_rules_reapply_undo_status");
+}
+
+export function undoCategoryRulesReapply(undoToken: string): Promise<number> {
+  return invoke("undo_category_rules_reapply", { undoToken });
 }
 
 export function getUsageLimits(): Promise<UsageLimitRule[]> {
@@ -891,8 +958,32 @@ export function createEncryptedDatabaseBackup(password: string): Promise<string 
   return invoke("create_encrypted_database_backup", { password });
 }
 
-export function restoreEncryptedDatabaseBackup(password: string): Promise<boolean> {
-  return invoke("restore_encrypted_database_backup", { password });
+export function setAutomaticEncryptedBackupPassword(password: string): Promise<void> {
+  return invoke("set_automatic_encrypted_backup_password", { password });
+}
+
+export function clearAutomaticEncryptedBackupPassword(): Promise<void> {
+  return invoke("clear_automatic_encrypted_backup_password");
+}
+
+export function hasAutomaticEncryptedBackupPassword(): Promise<boolean> {
+  return invoke("has_automatic_encrypted_backup_password");
+}
+
+export function previewDatabaseRestore(): Promise<BackupPreview | null> {
+  return invoke("preview_database_restore");
+}
+
+export function previewEncryptedDatabaseRestore(password: string): Promise<BackupPreview | null> {
+  return invoke("preview_encrypted_database_restore", { password });
+}
+
+export function cancelPreparedDatabaseRestore(token: string): Promise<void> {
+  return invoke("cancel_prepared_database_restore", { token });
+}
+
+export function restorePreparedDatabase(token: string): Promise<void> {
+  return invoke("restore_prepared_database", { token });
 }
 
 export function chooseBackupDirectory(): Promise<string | null> {
@@ -917,10 +1008,6 @@ export function runDataMaintenance(): Promise<MaintenanceResult> {
 
 export function createAutomaticBackupNow(): Promise<string> {
   return invoke("create_automatic_backup_now");
-}
-
-export function restoreDatabase(): Promise<boolean> {
-  return invoke("restore_database");
 }
 
 export function optimizeDatabase(): Promise<void> {

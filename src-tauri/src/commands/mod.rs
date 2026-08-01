@@ -1,10 +1,12 @@
 pub(crate) mod activity;
 pub(crate) mod applications;
+pub(crate) mod backup_credentials;
 #[path = "../backup_crypto.rs"]
 pub(crate) mod backup_crypto;
 pub(crate) mod category_rules;
 pub(crate) mod encrypted_backup;
 pub(crate) mod focus;
+pub(crate) mod restore_preview;
 pub(crate) mod settings;
 pub(crate) mod statistics;
 pub(crate) mod timeline;
@@ -17,11 +19,17 @@ pub use applications::{
     clear_application_icon_cache, get_application_icon, update_application_preferences,
 };
 pub use category_rules::{
-    create_category_rule, delete_category_rule, get_category_rules, preview_category_rule,
-    reapply_category_rules, update_category_rule,
+    create_category_rule, delete_category_rule, get_category_rules,
+    get_category_rules_reapply_undo_status, preview_category_rule, preview_category_rules_reapply,
+    reapply_category_rules, reorder_category_rules, undo_category_rules_reapply,
+    update_category_rule,
 };
 pub use encrypted_backup::{create_encrypted_database_backup, restore_encrypted_database_backup};
 pub use focus::{get_focus_mode, set_focus_mode};
+pub use restore_preview::{
+    cancel_prepared_database_restore, preview_database_restore, preview_encrypted_database_restore,
+    restore_prepared_database,
+};
 pub use settings::{
     backup_database, choose_backup_directory, complete_onboarding, create_automatic_backup_now,
     delete_all_activity, export_activity, get_diagnostics_summary, get_maintenance_preview,

@@ -1,0 +1,69 @@
+.restore-preview {
+  margin-top: 12px;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid #d0645c;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 94%, #d0645c);
+}
+
+.restore-preview-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.restore-preview-title span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.restore-preview dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.restore-preview dl > div {
+  min-width: 0;
+}
+
+.restore-preview dt,
+.restore-preview p {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.restore-preview dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.restore-preview-wide {
+  grid-column: 1 / -1;
+}
+
+.restore-preview p {
+  margin: 0;
+}
+
+.restore-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 620px) {
+  .restore-preview dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

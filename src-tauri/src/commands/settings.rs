@@ -387,7 +387,14 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
     if !matches!(settings.break_reminder_minutes, 30 | 45 | 60 | 90 | 120) {
         return Err("break reminder must be 30, 45, 60, 90, or 120 minutes".to_owned());
     }
-    for value in [&settings.quiet_hours_start, &settings.quiet_hours_end] {
+    if !(1..=7).contains(&settings.weekly_report_notification_weekday) {
+        return Err("weekly report notification weekday must be between 1 and 7".to_owned());
+    }
+    for value in [
+        &settings.quiet_hours_start,
+        &settings.quiet_hours_end,
+        &settings.weekly_report_notification_time,
+    ] {
         let valid = value.len() == 5
             && value.as_bytes().get(2) == Some(&b':')
             && value[..2].parse::<u8>().is_ok_and(|hour| hour < 24)
@@ -1025,6 +1032,12 @@ mod tests {
             backup_directory: None,
             last_maintenance_at_ms: 0,
             last_backup_at_ms: 0,
+            automatic_encrypted_backup_enabled: false,
+            last_encrypted_backup_at_ms: 0,
+            weekly_report_auto_archive_enabled: false,
+            weekly_report_notification_enabled: false,
+            weekly_report_notification_weekday: 1,
+            weekly_report_notification_time: "09:00".to_owned(),
             daily_focus_goal_minutes: 240,
             focus_block_gap_minutes: 5,
             break_reminders_enabled: false,

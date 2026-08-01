@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   DiagnosticsSummary,
+  BackupPreview,
   DataHealthSummary,
   DataHealthUndoStatus,
   MaintenancePreview,
@@ -29,7 +30,8 @@ import {
   openBackupDirectory,
   openLogDirectory,
   optimizeDatabase,
-  restoreDatabase,
+  previewDatabaseRestore,
+  restorePreparedDatabase,
   runDataMaintenance,
   requestNotificationPermission,
   repairDataHealth,
@@ -45,6 +47,7 @@ import { PrivacyNotice } from "../onboarding/PrivacyNotice";
 import { CategoryRules } from "./CategoryRules";
 import { DiagnosticsCenter } from "./DiagnosticsCenter";
 import { EncryptedBackupControls } from "./EncryptedBackupControls";
+import { RestorePreview } from "./RestorePreview";
 import { SoftwareUpdates } from "./SoftwareUpdates";
 import { UsageLimits } from "./UsageLimits";
 import { UsageLimitReminderCenter } from "./UsageLimitReminderCenter";
@@ -95,6 +98,8 @@ export function Settings() {
   const [checkingNotification, setCheckingNotification] = useState(false);
   const [shortcuts, setShortcuts] = useState<ShortcutSettings | null>(null);
   const [savingShortcuts, setSavingShortcuts] = useState(false);
+  const [restorePreview, setRestorePreview] = useState<BackupPreview | null>(null);
+  const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
     void getSettings()
@@ -447,18 +452,29 @@ export function Settings() {
           <button onClick={() => void exportActivity("json").then((path) => path && setMessage(`Exported to ${path}`))}>{t("Export JSON")}</button>
           <button onClick={() => void exportActivity("csv").then((path) => path && setMessage(`Exported to ${path}`))}>{t("Export CSV")}</button>
         </div>
-        <button className="secondary-action" onClick={() => {
-          if (window.confirm(t("Restore a Watchhouse database backup? Current activity data will be replaced and tracking will pause."))) {
-            void restoreDatabase().then((restored) => {
-              if (restored) {
-                setMessage("Database restored. Review the data, then resume tracking.");
+        <button className="secondary-action" disabled={restoring} onClick={() => {
+          setMessage(null);
+          void previewDatabaseRestore().then((preview) => {
+            if (preview) setRestorePreview(preview);
+          }).catch((error) => setMessage(errorMessage(error)));
+        }}>{t("Restore Database Backup")}</button>
+        {restorePreview && (
+          <RestorePreview
+            preview={restorePreview}
+            busy={restoring}
+            onCancel={() => setRestorePreview(null)}
+            onConfirm={() => {
+              setRestoring(true);
+              void restorePreparedDatabase(restorePreview.token).then(() => {
+                setRestorePreview(null);
+                setMessage(t("Database restored. Review the data, then resume tracking."));
                 notifyActivityDataChanged();
                 void getDiagnosticsSummary().then(setDiagnostics);
                 void getSettings().then(setSettings);
-              }
-            }).catch((error) => setMessage(errorMessage(error)));
-          }
-        }}>{t("Restore Database Backup")}</button>
+              }).catch((error) => setMessage(errorMessage(error))).finally(() => setRestoring(false));
+            }}
+          />
+        )}
         <button className="secondary-action" onClick={() => {
           void clearApplicationIconCache().then(() => {
             clearApplicationIconMemoryCache();
@@ -468,6 +484,10 @@ export function Settings() {
         }}>{t("Refresh Application Icons")}</button>
         <EncryptedBackupControls
           onMessage={setMessage}
+          automaticEnabled={settings.automaticEncryptedBackupEnabled}
+          onAutomaticEnabledChange={async (enabled) => {
+            await save({ ...settings, automaticEncryptedBackupEnabled: enabled });
+          }}
           onRestored={() => {
             void getDiagnosticsSummary().then(setDiagnostics);
             void getSettings().then(setSettings);
@@ -510,6 +530,50 @@ export function Settings() {
               onChange={(value) => void save({ ...settings, automaticBackupEnabled: value })}
             />
           </div>
+          <div className="setting-row">
+            <div><strong>{t("Automatic weekly report archive")}</strong><small>{t("Archive the most recent completed week locally.")}</small></div>
+            <Toggle
+              label={t("Automatic weekly report archive")}
+              checked={settings.weeklyReportAutoArchiveEnabled}
+              disabled={saving}
+              onChange={(value) => void save({ ...settings, weeklyReportAutoArchiveEnabled: value })}
+            />
+          </div>
+          <label className="setting-row">
+            <div><strong>{t("Weekly report reminder")}</strong><small>{t("Notify after the weekly archive is ready.")}</small></div>
+            <span className="maintenance-inline">
+              <select
+                value={settings.weeklyReportNotificationWeekday}
+                disabled={saving || !settings.weeklyReportAutoArchiveEnabled}
+                onChange={(event) => void save({
+                  ...settings,
+                  weeklyReportNotificationEnabled: true,
+                  weeklyReportNotificationWeekday: Number(event.currentTarget.value),
+                })}
+              >
+                {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((day, index) => (
+                  <option key={day} value={index + 1}>{t(day)}</option>
+                ))}
+              </select>
+              <input
+                type="time"
+                value={settings.weeklyReportNotificationTime}
+                disabled={saving || !settings.weeklyReportAutoArchiveEnabled}
+                onChange={(event) => void save({
+                  ...settings,
+                  weeklyReportNotificationEnabled: true,
+                  weeklyReportNotificationTime: event.currentTarget.value,
+                })}
+                aria-label={t("Weekly report reminder time")}
+              />
+              <Toggle
+                label={t("Weekly report reminder")}
+                checked={settings.weeklyReportNotificationEnabled}
+                disabled={saving || !settings.weeklyReportAutoArchiveEnabled}
+                onChange={(value) => void save({ ...settings, weeklyReportNotificationEnabled: value })}
+              />
+            </span>
+          </label>
           <label className="setting-row">
             <div><strong>{t("Backup Schedule")}</strong><small>{t("Old automatic backups are rotated.")}</small></div>
             <span className="maintenance-inline">

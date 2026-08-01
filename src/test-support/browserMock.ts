@@ -22,6 +22,12 @@ const settings = {
   backupDirectory: null,
   lastMaintenanceAtMs: now.getTime() - 86_400_000,
   lastBackupAtMs: now.getTime() - 3_600_000,
+  automaticEncryptedBackupEnabled: false,
+  lastEncryptedBackupAtMs: 0,
+  weeklyReportAutoArchiveEnabled: true,
+  weeklyReportNotificationEnabled: true,
+  weeklyReportNotificationWeekday: 1,
+  weeklyReportNotificationTime: "09:00",
   dailyFocusGoalMinutes: 240,
   focusBlockGapMinutes: 5,
   breakRemindersEnabled: true,
@@ -175,6 +181,7 @@ export function installBrowserMock() {
       case "get_accessibility_permission": return "GRANTED";
       case "get_notification_permission": return "GRANTED";
       case "get_category_rules": return [];
+      case "reorder_category_rules": return [];
       case "preview_category_rule": return {
         matchedSessionCount: 7,
         matchedApplicationCount: 2,
@@ -207,6 +214,31 @@ export function installBrowserMock() {
           },
         ],
       };
+      case "preview_category_rules_reapply": return {
+        scannedSessionCount: 240,
+        affectedSessionCount: 18,
+        categoryChangeCount: 15,
+        assignedSessionCount: 14,
+        clearedSessionCount: 4,
+        samples: [
+          {
+            applicationName: "Visual Studio Code",
+            windowTitle: "Watchhouse - CategoryRules.tsx",
+            previousCategory: "Uncategorized",
+            nextCategory: "Development",
+            previousIsOverride: false,
+            nextIsOverride: true,
+          },
+        ],
+      };
+      case "reapply_category_rules": return {
+        affectedCount: 18,
+        undoToken: "browser-preview-token",
+        undoCreatedAtMs: now.getTime(),
+        undoExpiresAtMs: now.getTime() + 86_400_000,
+      };
+      case "get_category_rules_reapply_undo_status": return null;
+      case "undo_category_rules_reapply": return 18;
       case "get_usage_limits": return [];
       case "get_usage_limit_targets": return { applications: [], categories: ["Development"] };
       case "get_usage_limit_reminder_history": return [];

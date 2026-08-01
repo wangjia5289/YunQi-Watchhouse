@@ -544,6 +544,7 @@ pub fn run() {
             app.manage(AppLocaleState::new());
             app.manage(ShortcutSettingsState::new(shortcut_settings.clone()));
             app.manage(DatabaseMaintenanceState::default());
+            app.manage(commands::restore_preview::PreparedRestoreState::default());
             #[cfg(not(debug_assertions))]
             spawn_automatic_update_check(app.handle().clone());
 
@@ -661,12 +662,16 @@ pub fn run() {
             app.manage(maintenance_status.clone());
             let maintenance_repository =
                 app.state::<database::ActivityRepository>().inner().clone();
+            let maintenance_statistics =
+                app.state::<statistics::StatisticsService>().inner().clone();
             let maintenance_app_data = app_data.clone();
+            let maintenance_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
                 loop {
                     interval.tick().await;
                     let repository = maintenance_repository.clone();
+                    let statistics = maintenance_statistics.clone();
                     let app_data = maintenance_app_data.clone();
                     maintenance_status.start();
                     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -674,20 +679,37 @@ pub fn run() {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map_err(|error| error.to_string())?
                             .as_millis() as i64;
-                        maintenance::run_due(&repository, &app_data, now_ms)
+                        maintenance::run_due(&repository, &app_data, now_ms)?;
+                        let notification = maintenance::archive_due_weekly_report(
+                            &repository,
+                            &statistics,
+                            now_ms,
+                        )?;
+                        Ok::<_, String>(notification)
                     })
                     .await;
                     let completed_at_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|duration| duration.as_millis() as i64)
                         .unwrap_or_default();
-                    let status_result = match result {
-                        Ok(result) => result,
-                        Err(error) => Err(error.to_string()),
+                    let (status_result, notification) = match result {
+                        Ok(Ok(notification)) => (Ok(()), notification),
+                        Ok(Err(error)) => (Err(error), None),
+                        Err(error) => (Err(error.to_string()), None),
                     };
                     maintenance_status.finish(completed_at_ms, &status_result);
                     if let Err(error) = status_result {
                         log::error!("automatic data maintenance failed: {error}");
+                    }
+                    if let Some(notification) = notification
+                        && let Err(error) = commands::weekly_reports::notify_weekly_report_archive(
+                            maintenance_app.clone(),
+                            maintenance_repository.clone(),
+                            notification.week_start_date,
+                        )
+                        .await
+                    {
+                        log::warn!("automatic weekly report notification failed: {error}");
                     }
                 }
             });
@@ -1116,7 +1138,11 @@ pub fn run() {
             commands::category_rules::create_category_rule,
             commands::category_rules::update_category_rule,
             commands::category_rules::delete_category_rule,
+            commands::category_rules::reorder_category_rules,
+            commands::category_rules::preview_category_rules_reapply,
             commands::category_rules::reapply_category_rules,
+            commands::category_rules::get_category_rules_reapply_undo_status,
+            commands::category_rules::undo_category_rules_reapply,
             commands::statistics::get_today_summary,
             commands::statistics::get_today_focus_summary,
             commands::statistics::get_timeline,
@@ -1177,14 +1203,19 @@ pub fn run() {
             commands::settings::run_diagnostics_repair,
             commands::settings::backup_database,
             commands::encrypted_backup::create_encrypted_database_backup,
-            commands::encrypted_backup::restore_encrypted_database_backup,
+            commands::encrypted_backup::set_automatic_encrypted_backup_password,
+            commands::encrypted_backup::clear_automatic_encrypted_backup_password,
+            commands::encrypted_backup::has_automatic_encrypted_backup_password,
+            commands::restore_preview::preview_database_restore,
+            commands::restore_preview::preview_encrypted_database_restore,
+            commands::restore_preview::cancel_prepared_database_restore,
+            commands::restore_preview::restore_prepared_database,
             commands::settings::choose_backup_directory,
             commands::settings::open_backup_directory,
             commands::settings::get_maintenance_preview,
             commands::settings::get_maintenance_status,
             commands::settings::run_data_maintenance,
             commands::settings::create_automatic_backup_now,
-            commands::settings::restore_database,
             commands::settings::optimize_database,
             commands::updater::check_for_updates,
             commands::updater::install_update,

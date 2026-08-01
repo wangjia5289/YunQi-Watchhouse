@@ -2,12 +2,63 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use zeroize::Zeroizing;
 
+use super::backup_credentials;
 use super::backup_crypto::{BackupCryptoError, decrypt_file, encrypt_file};
 use crate::{
     AppLocaleState, DatabaseMaintenanceState, TrackingTrayMenuItem,
     activity::{MonitorHandle, SessionManagerHandle},
     database::ActivityRepository,
 };
+
+pub(crate) fn create_automatic_encrypted_backup(
+    repository: &ActivityRepository,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    let password = backup_credentials::load()?
+        .ok_or_else(|| "automatic encrypted backup password is not configured".to_owned())?;
+    let plaintext_directory = tempfile::Builder::new()
+        .prefix("watchhouse-auto-encrypted-")
+        .tempdir()
+        .map_err(|_| "Could not prepare the automatic encrypted backup.".to_owned())?;
+    let plaintext = plaintext_directory.path().join("backup.sqlite3");
+    repository
+        .backup_database(&plaintext)
+        .map_err(|_| "Could not create the database backup.".to_owned())?;
+    encrypt_file(&plaintext, destination, password.as_bytes()).map_err(encryption_error_message)
+}
+
+#[tauri::command]
+pub async fn set_automatic_encrypted_backup_password(password: String) -> Result<(), String> {
+    let password = Zeroizing::new(password);
+    validate_password(&password)?;
+    tauri::async_runtime::spawn_blocking(move || backup_credentials::save(&password))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn clear_automatic_encrypted_backup_password() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(backup_credentials::delete)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn has_automatic_encrypted_backup_password() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(|| backup_credentials::load().map(|value| value.is_some()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn validate_password(password: &str) -> Result<(), String> {
+    if password.is_empty() {
+        return Err("The backup password cannot be empty.".to_owned());
+    }
+    if password.chars().count() < 10 {
+        return Err("Use at least 10 characters.".to_owned());
+    }
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn create_encrypted_database_backup(
