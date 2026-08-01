@@ -78,6 +78,14 @@ export function EncryptedBackupControls({
     }
   }
 
+  function selectMode(nextMode: "backup" | "restore") {
+    if (nextMode === mode) return;
+    setRestorePreview(null);
+    setPassword("");
+    setConfirmation("");
+    setMode(nextMode);
+  }
+
   return (
     <div className="encrypted-backup-controls">
       <div className="encrypted-backup-heading">
@@ -86,10 +94,10 @@ export function EncryptedBackupControls({
           <small>{t("Protect a portable backup with a password. The password is never stored.")}</small>
         </div>
         <div className="encrypted-backup-mode" role="group" aria-label={t("Encrypted backup action")}>
-          <button type="button" className={mode === "backup" ? "active" : ""} onClick={() => setMode("backup")}>
+          <button type="button" className={mode === "backup" ? "active" : ""} onClick={() => selectMode("backup")}>
             {t("Create")}
           </button>
-          <button type="button" className={mode === "restore" ? "active" : ""} onClick={() => setMode("restore")}>
+          <button type="button" className={mode === "restore" ? "active" : ""} onClick={() => selectMode("restore")}>
             {t("Restore")}
           </button>
         </div>
@@ -139,7 +147,10 @@ export function EncryptedBackupControls({
               onMessage(t("Encrypted backup restored. Review the data, then resume tracking."));
               notifyActivityDataChanged();
               onRestored();
-            }).catch((reason) => onMessage(t(errorMessage(reason)))).finally(() => setBusy(false));
+            }).catch((reason) => {
+              setRestorePreview(null);
+              onMessage(t(errorMessage(reason)));
+            }).finally(() => setBusy(false));
           }}
         />
       )}
@@ -147,6 +158,7 @@ export function EncryptedBackupControls({
         <div>
           <strong>{t("Automatic encrypted backups")}</strong>
           <small>{t("The password is stored in the system Keychain, not in Watchhouse data.")}</small>
+          <small>{t("Uses the backup schedule and retention settings below.")}</small>
         </div>
         <label className="encrypted-backup-automatic-toggle">
           <input
@@ -173,11 +185,12 @@ export function EncryptedBackupControls({
           </button>
           {automaticPasswordSaved && (
             <button type="button" disabled={busy} onClick={() => {
-              void clearAutomaticEncryptedBackupPassword().then(async () => {
-                setAutomaticPasswordSaved(false);
+              void (async () => {
                 if (automaticEnabled) await onAutomaticEnabledChange(false);
+                await clearAutomaticEncryptedBackupPassword();
+                setAutomaticPasswordSaved(false);
                 onMessage(t("Automatic encrypted backup password removed."));
-              }).catch((reason) => onMessage(t(errorMessage(reason))));
+              })().catch((reason) => onMessage(t(errorMessage(reason))));
             }}>
               {t("Remove password")}
             </button>

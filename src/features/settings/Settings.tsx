@@ -471,7 +471,10 @@ export function Settings() {
                 notifyActivityDataChanged();
                 void getDiagnosticsSummary().then(setDiagnostics);
                 void getSettings().then(setSettings);
-              }).catch((error) => setMessage(errorMessage(error))).finally(() => setRestoring(false));
+              }).catch((error) => {
+                setRestorePreview(null);
+                setMessage(errorMessage(error));
+              }).finally(() => setRestoring(false));
             }}
           />
         )}
@@ -579,7 +582,7 @@ export function Settings() {
             <span className="maintenance-inline">
               <select
                 value={settings.backupInterval}
-                disabled={saving || !settings.automaticBackupEnabled}
+                disabled={saving || (!settings.automaticBackupEnabled && !settings.automaticEncryptedBackupEnabled)}
                 onChange={(event) => void save({
                   ...settings,
                   backupInterval: event.currentTarget.value as "DAILY" | "WEEKLY",
@@ -590,7 +593,7 @@ export function Settings() {
               </select>
               <select
                 value={settings.backupKeepCount}
-                disabled={saving || !settings.automaticBackupEnabled}
+                disabled={saving || (!settings.automaticBackupEnabled && !settings.automaticEncryptedBackupEnabled)}
                 onChange={(event) => void save({
                   ...settings,
                   backupKeepCount: Number(event.currentTarget.value),
@@ -685,6 +688,12 @@ export function Settings() {
             {t("Last cleanup:")} {formatOptionalDate(settings.lastMaintenanceAtMs, locale, t("Never"))}
             {" · "}
             {t("Last backup:")} {formatOptionalDate(settings.lastBackupAtMs, locale, t("Never"))}
+            {settings.automaticEncryptedBackupEnabled && (
+              <>
+                {" · "}
+                {t("Last encrypted backup:")} {formatOptionalDate(settings.lastEncryptedBackupAtMs, locale, t("Never"))}
+              </>
+            )}
           </p>
           {maintenanceStatus?.running && (
             <p className="settings-note">{t("Automatic maintenance is running.")}</p>
