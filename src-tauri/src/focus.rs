@@ -52,6 +52,15 @@ impl FocusModeState {
             .unwrap_or_default()
     }
 
+    pub fn replace(&self, status: FocusModeStatus) -> FocusModeStatus {
+        let Ok(mut runtime) = self.0.lock() else {
+            return FocusModeStatus::default();
+        };
+        runtime.status = status;
+        runtime.last_reminded_interval = 0;
+        runtime.status.clone()
+    }
+
     pub fn start(
         &self,
         now_ms: i64,
@@ -178,6 +187,25 @@ mod tests {
         assert_eq!(status.total_paused_ms, 10_000);
         assert!(!state.should_send_break_reminder(61_000, 1));
         assert!(state.should_send_break_reminder(71_000, 1));
+    }
+
+    #[test]
+    fn replacing_restored_focus_state_resets_runtime_reminders() {
+        let state = FocusModeState::new(true, Some(1_000), None, false, None, 0, None);
+        assert!(state.should_send_break_reminder(61_000, 1));
+        let restored = FocusModeStatus {
+            active: true,
+            started_at_ms: Some(120_000),
+            planned_end_at_ms: Some(240_000),
+            ..FocusModeStatus::default()
+        };
+
+        let replaced = state.replace(restored);
+        assert!(replaced.active);
+        assert_eq!(replaced.started_at_ms, Some(120_000));
+        assert_eq!(replaced.planned_end_at_ms, Some(240_000));
+        assert!(!state.should_send_break_reminder(179_999, 1));
+        assert!(state.should_send_break_reminder(180_000, 1));
     }
 
     #[test]

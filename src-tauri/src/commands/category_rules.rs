@@ -1,6 +1,6 @@
 use tauri::State;
 
-use crate::database::{ActivityRepository, CategoryRule, CategoryRuleInput};
+use crate::database::{ActivityRepository, CategoryRule, CategoryRuleInput, CategoryRulePreview};
 
 use super::{IpcResult, run_blocking};
 
@@ -11,6 +11,16 @@ pub fn get_category_rules(
     repository
         .category_rules()
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn preview_category_rule(
+    input: CategoryRuleInput,
+    rule_id: Option<i64>,
+    repository: State<'_, ActivityRepository>,
+) -> IpcResult<CategoryRulePreview> {
+    let repository = repository.inner().clone();
+    run_blocking(move || repository.preview_category_rule(&input, rule_id)).await
 }
 
 #[tauri::command]

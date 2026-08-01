@@ -1,0 +1,67 @@
+.diagnostics-center .list-heading > button {
+  min-height: 34px;
+}
+
+.diagnostic-list {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.diagnostic-item {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diagnostic-item i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8b8f96;
+}
+
+.diagnostic-item.healthy i {
+  background: #4f8a68;
+}
+
+.diagnostic-item.attention i {
+  background: #bd7049;
+}
+
+.diagnostic-item span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.diagnostic-item strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostic-error {
+  margin: 14px 0 0;
+  color: #a44843;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .diagnostics-center .list-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .diagnostic-item {
+    grid-template-columns: 8px minmax(0, 1fr);
+  }
+
+  .diagnostic-item strong {
+    grid-column: 2;
+  }
+}

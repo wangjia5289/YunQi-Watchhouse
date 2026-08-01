@@ -1,4 +1,4 @@
-use std::{path::Path, time::Duration};
+use std::{collections::HashSet, path::Path, time::Duration};
 
 use chrono::NaiveDate;
 use rusqlite::{Connection, OptionalExtension, Row, backup::Backup, params};
@@ -130,6 +130,72 @@ pub struct CategoryRule {
     pub category: String,
     pub priority: i64,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRulePreviewSample {
+    pub application_name: String,
+    pub bundle_id: Option<String>,
+    pub window_title: Option<String>,
+    pub would_apply: bool,
+    pub shadowed_by_rule_id: Option<i64>,
+    pub shadowed_by_category: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRuleConflict {
+    pub rule_id: i64,
+    pub match_field: CategoryRuleMatchField,
+    pub pattern: String,
+    pub category: String,
+    pub priority: i64,
+    pub session_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRulePreview {
+    pub matched_session_count: usize,
+    pub matched_application_count: usize,
+    pub effective_session_count: usize,
+    pub shadowed_session_count: usize,
+    pub conflicts: Vec<CategoryRuleConflict>,
+    pub samples: Vec<CategoryRulePreviewSample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyReportArchiveInput {
+    pub week_start_date: String,
+    pub week_end_date: String,
+    pub generated_at_ms: i64,
+    pub active_duration_ms: i64,
+    pub idle_duration_ms: i64,
+    pub previous_week_active_duration_ms: i64,
+    pub strongest_day_date: Option<String>,
+    pub peak_hour: Option<i64>,
+    pub leading_category: Option<String>,
+    pub focus_completion_rate: Option<i64>,
+    pub payload_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeeklyReportArchive {
+    pub week_start_date: String,
+    pub week_end_date: String,
+    pub generated_at_ms: i64,
+    pub active_duration_ms: i64,
+    pub idle_duration_ms: i64,
+    pub previous_week_active_duration_ms: i64,
+    pub strongest_day_date: Option<String>,
+    pub peak_hour: Option<i64>,
+    pub leading_category: Option<String>,
+    pub focus_completion_rate: Option<i64>,
+    pub payload_json: String,
+    pub notified_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -289,7 +355,15 @@ pub struct DataHealthUndoStatus {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DataHealthUndoSnapshot {
-    sessions: Vec<ActivitySession>,
+    sessions: Vec<DataHealthUndoSession>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DataHealthUndoSession {
+    #[serde(flatten)]
+    session: ActivitySession,
+    #[serde(default)]
+    category_override: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -511,6 +585,120 @@ impl ActivityRepository {
             bundle_id,
             window_title,
         ))
+    }
+
+    pub fn preview_category_rule(
+        &self,
+        input: &CategoryRuleInput,
+        editing_rule_id: Option<i64>,
+    ) -> AppResult<CategoryRulePreview> {
+        const SAMPLE_LIMIT: usize = 5;
+
+        let normalized = normalize_category_rule(input)?;
+        let connection = self.database.lock()?;
+        if let Some(rule_id) = editing_rule_id
+            && find_category_rule(&connection, rule_id)?.is_none()
+        {
+            return Err(AppError::InvalidSession(
+                "category rule was not found".to_owned(),
+            ));
+        }
+
+        let preceding_rules = enabled_category_rules(&connection)?
+            .into_iter()
+            .filter(|rule| {
+                Some(rule.id) != editing_rule_id
+                    && (rule.priority < normalized.priority
+                        || (rule.priority == normalized.priority
+                            && editing_rule_id.is_none_or(|rule_id| rule.id < rule_id)))
+            })
+            .collect::<Vec<_>>();
+
+        let mut statement = connection.prepare(
+            "SELECT a.id, a.name, a.bundle_id, s.window_title
+             FROM activity_sessions s
+             JOIN applications a ON a.id = s.application_id
+             WHERE s.state = 'ACTIVE'
+             ORDER BY s.started_at_ms DESC, s.id DESC",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut matched_application_ids = HashSet::new();
+        let mut matched_session_count = 0;
+        let mut effective_session_count = 0;
+        let mut shadowed_session_count = 0;
+        let mut conflicts = Vec::<CategoryRuleConflict>::new();
+        let mut samples = Vec::with_capacity(SAMPLE_LIMIT);
+
+        while let Some(row) = rows.next()? {
+            let application_id = row.get::<_, i64>(0)?;
+            let application_name = row.get::<_, String>(1)?;
+            let bundle_id = row.get::<_, Option<String>>(2)?;
+            let window_title = row.get::<_, Option<String>>(3)?;
+            if !category_rule_matches(
+                normalized.match_field,
+                &normalized.pattern,
+                &application_name,
+                bundle_id.as_deref(),
+                window_title.as_deref(),
+            ) {
+                continue;
+            }
+
+            matched_session_count += 1;
+            matched_application_ids.insert(application_id);
+            let shadowing_rule = preceding_rules.iter().find(|rule| {
+                category_rule_matches(
+                    rule.match_field,
+                    &rule.pattern,
+                    &application_name,
+                    bundle_id.as_deref(),
+                    window_title.as_deref(),
+                )
+            });
+
+            if let Some(rule) = shadowing_rule {
+                shadowed_session_count += 1;
+                if let Some(conflict) = conflicts
+                    .iter_mut()
+                    .find(|conflict| conflict.rule_id == rule.id)
+                {
+                    conflict.session_count += 1;
+                } else {
+                    conflicts.push(CategoryRuleConflict {
+                        rule_id: rule.id,
+                        match_field: rule.match_field,
+                        pattern: rule.pattern.clone(),
+                        category: rule.category.clone(),
+                        priority: rule.priority,
+                        session_count: 1,
+                    });
+                }
+            } else if normalized.enabled {
+                effective_session_count += 1;
+            }
+
+            if samples.len() < SAMPLE_LIMIT {
+                samples.push(CategoryRulePreviewSample {
+                    application_name: truncate_preview_text(&application_name),
+                    bundle_id: bundle_id.as_deref().map(truncate_preview_text),
+                    window_title: window_title.as_deref().map(truncate_preview_text),
+                    would_apply: normalized.enabled && shadowing_rule.is_none(),
+                    shadowed_by_rule_id: shadowing_rule.map(|rule| rule.id),
+                    shadowed_by_category: shadowing_rule
+                        .map(|rule| truncate_preview_text(&rule.category)),
+                });
+            }
+        }
+
+        conflicts.sort_by_key(|conflict| (conflict.priority, conflict.rule_id));
+        Ok(CategoryRulePreview {
+            matched_session_count,
+            matched_application_count: matched_application_ids.len(),
+            effective_session_count,
+            shadowed_session_count,
+            conflicts,
+            samples,
+        })
     }
 
     pub fn reapply_category_rules(&self) -> AppResult<usize> {
@@ -1345,8 +1533,12 @@ impl ActivityRepository {
     pub fn repair_data_health(&self, backup_path: &str) -> AppResult<DataHealthRepairResult> {
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
-        let mut snapshot_statement = transaction.prepare(&format!(
-            "{SESSION_SELECT}
+        let mut snapshot_statement = transaction.prepare(
+            "SELECT
+               id, state, application_id, window_title, started_at_ms, ended_at_ms,
+               duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note,
+               category_override
+             FROM activity_sessions
              WHERE is_open = 0 AND (
                duration_ms = 0 OR EXISTS (
                  SELECT 1 FROM activity_sessions other
@@ -1354,10 +1546,15 @@ impl ActivityRepository {
                    AND other.started_at_ms < activity_sessions.ended_at_ms
                    AND other.ended_at_ms > activity_sessions.started_at_ms
                )
-             ) ORDER BY started_at_ms, id"
-        ))?;
+             ) ORDER BY started_at_ms, id",
+        )?;
         let snapshot = snapshot_statement
-            .query_map([], map_session)?
+            .query_map([], |row| {
+                Ok(DataHealthUndoSession {
+                    session: map_session(row)?,
+                    category_override: row.get(12)?,
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(snapshot_statement);
         transaction.execute(
@@ -1458,13 +1655,15 @@ impl ActivityRepository {
             serde_json::from_str(&snapshot_json).map_err(|error| {
                 AppError::InvalidSession(format!("invalid health repair snapshot: {error}"))
             })?;
-        for session in &snapshot.sessions {
+        for saved in &snapshot.sessions {
+            let session = &saved.session;
             transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session.id])?;
             transaction.execute(
                 "INSERT INTO activity_sessions (
                    id, state, application_id, window_title, started_at_ms, ended_at_ms,
-                   duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                   duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note,
+                   category_override
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     session.id,
                     session.state.as_db_str(),
@@ -1478,6 +1677,7 @@ impl ActivityRepository {
                     session.created_at_ms,
                     session.updated_at_ms,
                     session.note,
+                    saved.category_override,
                 ],
             )?;
         }
@@ -2239,6 +2439,111 @@ impl ActivityRepository {
         Ok(())
     }
 
+    pub fn archive_weekly_report(
+        &self,
+        input: &WeeklyReportArchiveInput,
+    ) -> AppResult<WeeklyReportArchive> {
+        validate_weekly_report_archive(input)?;
+        let connection = self.database.lock()?;
+        connection.execute(
+            "INSERT INTO weekly_report_archives (
+                week_start_date, week_end_date, generated_at_ms, active_duration_ms,
+                idle_duration_ms, previous_week_active_duration_ms, strongest_day_date,
+                peak_hour, leading_category, focus_completion_rate, payload_json, notified_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)
+             ON CONFLICT(week_start_date) DO UPDATE SET
+                week_end_date = excluded.week_end_date,
+                generated_at_ms = excluded.generated_at_ms,
+                active_duration_ms = excluded.active_duration_ms,
+                idle_duration_ms = excluded.idle_duration_ms,
+                previous_week_active_duration_ms = excluded.previous_week_active_duration_ms,
+                strongest_day_date = excluded.strongest_day_date,
+                peak_hour = excluded.peak_hour,
+                leading_category = excluded.leading_category,
+                focus_completion_rate = excluded.focus_completion_rate,
+                payload_json = excluded.payload_json",
+            params![
+                input.week_start_date,
+                input.week_end_date,
+                input.generated_at_ms,
+                input.active_duration_ms,
+                input.idle_duration_ms,
+                input.previous_week_active_duration_ms,
+                input.strongest_day_date,
+                input.peak_hour,
+                input.leading_category,
+                input.focus_completion_rate,
+                input.payload_json,
+            ],
+        )?;
+        find_weekly_report_archive(&connection, &input.week_start_date)?.ok_or_else(|| {
+            AppError::InvalidSession(
+                "weekly report archive could not be read after saving".to_owned(),
+            )
+        })
+    }
+
+    pub fn weekly_report_archives(&self, limit: usize) -> AppResult<Vec<WeeklyReportArchive>> {
+        if !(1..=104).contains(&limit) {
+            return Err(AppError::InvalidSession(
+                "weekly report archive limit must be between 1 and 104".to_owned(),
+            ));
+        }
+        let connection = self.database.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT week_start_date, week_end_date, generated_at_ms, active_duration_ms,
+                    idle_duration_ms, previous_week_active_duration_ms, strongest_day_date,
+                    peak_hour, leading_category, focus_completion_rate, payload_json, notified_at_ms
+             FROM weekly_report_archives
+             ORDER BY week_start_date DESC
+             LIMIT ?1",
+        )?;
+        statement
+            .query_map([limit as i64], map_weekly_report_archive)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn weekly_report_archive(
+        &self,
+        week_start_date: &str,
+    ) -> AppResult<Option<WeeklyReportArchive>> {
+        let connection = self.database.lock()?;
+        find_weekly_report_archive(&connection, week_start_date)
+    }
+
+    pub fn mark_weekly_report_notified(
+        &self,
+        week_start_date: &str,
+        notified_at_ms: i64,
+    ) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        let updated = connection.execute(
+            "UPDATE weekly_report_archives SET notified_at_ms = ?2 WHERE week_start_date = ?1",
+            params![week_start_date, notified_at_ms],
+        )?;
+        if updated == 0 {
+            return Err(AppError::InvalidSession(
+                "weekly report archive was not found".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn delete_weekly_report_archive(&self, week_start_date: &str) -> AppResult<()> {
+        let connection = self.database.lock()?;
+        let deleted = connection.execute(
+            "DELETE FROM weekly_report_archives WHERE week_start_date = ?1",
+            [week_start_date],
+        )?;
+        if deleted == 0 {
+            return Err(AppError::InvalidSession(
+                "weekly report archive was not found".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn restore_database(&self, source_path: &Path) -> AppResult<()> {
         let source =
             Connection::open_with_flags(source_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -2287,6 +2592,12 @@ impl ActivityRepository {
              PRAGMA optimize;",
         )?;
         Ok(())
+    }
+
+    pub fn database_integrity_ok(&self) -> AppResult<bool> {
+        let connection = self.database.lock()?;
+        let result: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+        Ok(result == "ok")
     }
 
     pub fn record_counts(&self) -> AppResult<(i64, i64)> {
@@ -3138,15 +3449,107 @@ fn resolve_category_from_rules(
         if !rule.enabled {
             return None;
         }
-        let candidate = match rule.match_field {
-            CategoryRuleMatchField::ApplicationName => Some(application_name),
-            CategoryRuleMatchField::BundleId => bundle_id,
-            CategoryRuleMatchField::WindowTitle => window_title,
-        }?;
-        candidate
-            .to_lowercase()
-            .contains(&rule.pattern.to_lowercase())
-            .then(|| rule.category.clone())
+        category_rule_matches(
+            rule.match_field,
+            &rule.pattern,
+            application_name,
+            bundle_id,
+            window_title,
+        )
+        .then(|| rule.category.clone())
+    })
+}
+
+fn category_rule_matches(
+    match_field: CategoryRuleMatchField,
+    pattern: &str,
+    application_name: &str,
+    bundle_id: Option<&str>,
+    window_title: Option<&str>,
+) -> bool {
+    let candidate = match match_field {
+        CategoryRuleMatchField::ApplicationName => Some(application_name),
+        CategoryRuleMatchField::BundleId => bundle_id,
+        CategoryRuleMatchField::WindowTitle => window_title,
+    };
+    candidate.is_some_and(|candidate| candidate.to_lowercase().contains(&pattern.to_lowercase()))
+}
+
+fn truncate_preview_text(value: &str) -> String {
+    const CHARACTER_LIMIT: usize = 160;
+    let mut characters = value.chars();
+    let truncated = characters
+        .by_ref()
+        .take(CHARACTER_LIMIT)
+        .collect::<String>();
+    if characters.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+fn validate_weekly_report_archive(input: &WeeklyReportArchiveInput) -> AppResult<()> {
+    let start = NaiveDate::parse_from_str(&input.week_start_date, "%Y-%m-%d")
+        .map_err(|_| AppError::InvalidSession("week start must use YYYY-MM-DD".to_owned()))?;
+    let end = NaiveDate::parse_from_str(&input.week_end_date, "%Y-%m-%d")
+        .map_err(|_| AppError::InvalidSession("week end must use YYYY-MM-DD".to_owned()))?;
+    if end.signed_duration_since(start).num_days() != 6 {
+        return Err(AppError::InvalidSession(
+            "weekly report archive must cover exactly seven dates".to_owned(),
+        ));
+    }
+    if input.generated_at_ms < 0
+        || input.active_duration_ms < 0
+        || input.idle_duration_ms < 0
+        || input.previous_week_active_duration_ms < 0
+        || input
+            .peak_hour
+            .is_some_and(|hour| !(0..=23).contains(&hour))
+        || input
+            .focus_completion_rate
+            .is_some_and(|rate| !(0..=100).contains(&rate))
+        || input.payload_json.len() > 1_000_000
+        || serde_json::from_str::<serde_json::Value>(&input.payload_json).is_err()
+    {
+        return Err(AppError::InvalidSession(
+            "weekly report archive contains invalid data".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn find_weekly_report_archive(
+    connection: &Connection,
+    week_start_date: &str,
+) -> AppResult<Option<WeeklyReportArchive>> {
+    connection
+        .query_row(
+            "SELECT week_start_date, week_end_date, generated_at_ms, active_duration_ms,
+                    idle_duration_ms, previous_week_active_duration_ms, strongest_day_date,
+                    peak_hour, leading_category, focus_completion_rate, payload_json, notified_at_ms
+             FROM weekly_report_archives WHERE week_start_date = ?1",
+            [week_start_date],
+            map_weekly_report_archive,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn map_weekly_report_archive(row: &Row<'_>) -> rusqlite::Result<WeeklyReportArchive> {
+    Ok(WeeklyReportArchive {
+        week_start_date: row.get(0)?,
+        week_end_date: row.get(1)?,
+        generated_at_ms: row.get(2)?,
+        active_duration_ms: row.get(3)?,
+        idle_duration_ms: row.get(4)?,
+        previous_week_active_duration_ms: row.get(5)?,
+        strongest_day_date: row.get(6)?,
+        peak_hour: row.get(7)?,
+        leading_category: row.get(8)?,
+        focus_completion_rate: row.get(9)?,
+        payload_json: row.get(10)?,
+        notified_at_ms: row.get(11)?,
     })
 }
 
@@ -3458,6 +3861,203 @@ mod tests {
         ] {
             assert!(repository.create_category_rule(&input).is_err());
         }
+    }
+
+    #[test]
+    fn category_rule_preview_counts_unicode_matches_and_shadowing_with_capped_samples() {
+        let repository = repository();
+        let jetbrains = application(&repository, 100);
+        let safari = repository
+            .upsert_application(&NewApplication {
+                name: "Safari".to_owned(),
+                bundle_id: Some("com.apple.Safari".to_owned()),
+                executable_path: Some("/Applications/Safari.app".to_owned()),
+                seen_at_ms: 100,
+            })
+            .unwrap();
+        for index in 0..6 {
+            let started_at_ms = 100 + index * 10;
+            let session = repository
+                .create_session(&NewSession {
+                    state: ActivityState::Active,
+                    application_id: Some(jetbrains.id),
+                    window_title: Some(format!("übersicht · project {index}")),
+                    category_override: None,
+                    started_at_ms,
+                })
+                .unwrap();
+            repository
+                .close_session(session.id, started_at_ms + 5, ClosedReason::AppChanged)
+                .unwrap();
+        }
+        let long_title = format!("ÜBERSICHT · {}", "本地报告".repeat(50));
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(safari.id),
+                window_title: Some(long_title),
+                category_override: None,
+                started_at_ms: 200,
+            })
+            .unwrap();
+        repository
+            .close_session(session.id, 205, ClosedReason::AppChanged)
+            .unwrap();
+
+        let earlier = repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::BundleId,
+                pattern: "JETBRAINS".to_owned(),
+                category: "Development".to_owned(),
+                priority: 10,
+                enabled: true,
+            })
+            .unwrap();
+        let preview = repository
+            .preview_category_rule(
+                &CategoryRuleInput {
+                    match_field: CategoryRuleMatchField::WindowTitle,
+                    pattern: "ÜBERSICHT".to_owned(),
+                    category: "Focused work".to_owned(),
+                    priority: 100,
+                    enabled: true,
+                },
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(preview.matched_session_count, 7);
+        assert_eq!(preview.matched_application_count, 2);
+        assert_eq!(preview.effective_session_count, 1);
+        assert_eq!(preview.shadowed_session_count, 6);
+        assert_eq!(preview.samples.len(), 5);
+        assert_eq!(preview.conflicts.len(), 1);
+        assert_eq!(preview.conflicts[0].rule_id, earlier.id);
+        assert_eq!(preview.conflicts[0].session_count, 6);
+        assert!(preview.samples[0].would_apply);
+        assert!(
+            preview.samples[0]
+                .window_title
+                .as_deref()
+                .unwrap()
+                .chars()
+                .count()
+                <= 161
+        );
+    }
+
+    #[test]
+    fn category_rule_preview_respects_id_order_when_editing_equal_priorities() {
+        let repository = repository();
+        let app = application(&repository, 100);
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(app.id),
+                window_title: None,
+                category_override: None,
+                started_at_ms: 100,
+            })
+            .unwrap();
+        repository
+            .close_session(session.id, 110, ClosedReason::AppChanged)
+            .unwrap();
+        let first = repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "intellij".to_owned(),
+                category: "First".to_owned(),
+                priority: 100,
+                enabled: true,
+            })
+            .unwrap();
+        repository
+            .create_category_rule(&CategoryRuleInput {
+                match_field: CategoryRuleMatchField::ApplicationName,
+                pattern: "idea".to_owned(),
+                category: "Second".to_owned(),
+                priority: 100,
+                enabled: true,
+            })
+            .unwrap();
+        let draft = CategoryRuleInput {
+            match_field: CategoryRuleMatchField::ApplicationName,
+            pattern: "INTELLIJ".to_owned(),
+            category: "Edited".to_owned(),
+            priority: 100,
+            enabled: true,
+        };
+
+        let editing = repository
+            .preview_category_rule(&draft, Some(first.id))
+            .unwrap();
+        assert_eq!(editing.effective_session_count, 1);
+        assert_eq!(editing.shadowed_session_count, 0);
+
+        let creating = repository.preview_category_rule(&draft, None).unwrap();
+        assert_eq!(creating.effective_session_count, 0);
+        assert_eq!(creating.shadowed_session_count, 1);
+        assert_eq!(creating.conflicts[0].rule_id, first.id);
+    }
+
+    #[test]
+    fn weekly_report_archives_upsert_notify_and_delete() {
+        let repository = repository();
+        let input = WeeklyReportArchiveInput {
+            week_start_date: "2026-07-27".to_owned(),
+            week_end_date: "2026-08-02".to_owned(),
+            generated_at_ms: 100,
+            active_duration_ms: 7_200_000,
+            idle_duration_ms: 600_000,
+            previous_week_active_duration_ms: 3_600_000,
+            strongest_day_date: Some("2026-07-29".to_owned()),
+            peak_hour: Some(9),
+            leading_category: Some("Development".to_owned()),
+            focus_completion_rate: Some(80),
+            payload_json: r#"{"version":1}"#.to_owned(),
+        };
+
+        let saved = repository.archive_weekly_report(&input).unwrap();
+        assert_eq!(saved.week_start_date, "2026-07-27");
+        assert_eq!(saved.notified_at_ms, None);
+
+        let mut updated = input.clone();
+        updated.generated_at_ms = 200;
+        updated.active_duration_ms = 8_000_000;
+        let saved = repository.archive_weekly_report(&updated).unwrap();
+        assert_eq!(saved.generated_at_ms, 200);
+        assert_eq!(saved.active_duration_ms, 8_000_000);
+
+        repository
+            .mark_weekly_report_notified("2026-07-27", 300)
+            .unwrap();
+        let archives = repository.weekly_report_archives(12).unwrap();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].notified_at_ms, Some(300));
+
+        repository
+            .delete_weekly_report_archive("2026-07-27")
+            .unwrap();
+        assert!(repository.weekly_report_archives(12).unwrap().is_empty());
+    }
+
+    #[test]
+    fn weekly_report_archive_rejects_invalid_ranges_and_payloads() {
+        let repository = repository();
+        let invalid = WeeklyReportArchiveInput {
+            week_start_date: "2026-07-27".to_owned(),
+            week_end_date: "2026-07-31".to_owned(),
+            generated_at_ms: 100,
+            active_duration_ms: 1,
+            idle_duration_ms: 0,
+            previous_week_active_duration_ms: 0,
+            strongest_day_date: None,
+            peak_hour: None,
+            leading_category: None,
+            focus_completion_rate: None,
+            payload_json: "not-json".to_owned(),
+        };
+        assert!(repository.archive_weekly_report(&invalid).is_err());
     }
 
     #[test]
@@ -4043,6 +4643,13 @@ mod tests {
                     )
                     .unwrap();
             }
+            connection
+                .execute(
+                    "UPDATE activity_sessions SET category_override = 'Manual review'
+                     WHERE started_at_ms = 100",
+                    [],
+                )
+                .unwrap();
         }
         let summary = repository.data_health_summary().unwrap();
         assert!(summary.overlapping_session_count >= 2);
@@ -4067,6 +4674,17 @@ mod tests {
         );
         assert_eq!(repository.undo_data_health_repair().unwrap(), 3);
         assert_eq!(repository.records_overlapping(0, 600).unwrap().len(), 3);
+        let restored_category: Option<String> = repository
+            .database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT category_override FROM activity_sessions WHERE started_at_ms = 100",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(restored_category.as_deref(), Some("Manual review"));
         assert!(!repository.data_health_undo_status().unwrap().available);
     }
 

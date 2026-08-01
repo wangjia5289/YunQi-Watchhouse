@@ -3,8 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use tauri::Manager;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::{AutoLaunchManager, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -19,9 +18,9 @@ use crate::database::{
 };
 use crate::maintenance::{MaintenanceStatus, MaintenanceStatusState};
 use crate::{
-    AppLocaleState, FocusCountdownTrayMenuItem, FocusTemplateTrayMenuItems, FocusTrayMenuItem,
-    QuitTrayMenuItem, ShortcutSettingsState, ShowTrayMenuItem, TrackingTrayMenuItem,
-    parse_shortcut,
+    AppLocaleState, DatabaseMaintenanceState, FocusCountdownTrayMenuItem,
+    FocusTemplateTrayMenuItems, FocusTrayMenuItem, QuitTrayMenuItem, ShortcutSettingsState,
+    ShowTrayMenuItem, TrackingTrayMenuItem, parse_shortcut,
 };
 
 #[derive(serde::Serialize)]
@@ -45,6 +44,25 @@ pub struct DiagnosticsSummary {
     automatic_backup_count: usize,
     application_count: i64,
     session_count: i64,
+    database_integrity_ok: bool,
+    accessibility_permission: crate::platform::AccessibilityPermission,
+    notification_permission: NotificationPermission,
+    tracking_paused: bool,
+    automatic_backup_enabled: bool,
+    last_backup_at_ms: i64,
+    backup_directory_available: bool,
+    log_directory_available: bool,
+    maintenance_last_error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsRepairResult {
+    backup_path: String,
+    trimmed_session_count: usize,
+    deleted_session_count: usize,
+    icon_cache_cleared: bool,
+    database_optimized: bool,
 }
 
 #[tauri::command]
@@ -551,6 +569,15 @@ pub fn get_diagnostics_summary(
     let (application_count, session_count) = repository
         .record_counts()
         .map_err(|error| error.to_string())?;
+    let database_integrity_ok = repository
+        .database_integrity_ok()
+        .map_err(|error| error.to_string())?;
+    let notification_permission = app
+        .notification()
+        .permission_state()
+        .map(NotificationPermission::from)
+        .map_err(|error| error.to_string())?;
+    let maintenance = app.state::<MaintenanceStatusState>().snapshot();
     Ok(DiagnosticsSummary {
         application_version: app.package_info().version.to_string(),
         database_path: database.to_string_lossy().into_owned(),
@@ -562,7 +589,89 @@ pub fn get_diagnostics_summary(
         automatic_backup_count: file_count(&backups),
         application_count,
         session_count,
+        database_integrity_ok,
+        accessibility_permission: crate::platform::accessibility_permission(),
+        notification_permission,
+        tracking_paused: app.state::<MonitorHandle>().is_paused(),
+        automatic_backup_enabled: settings.automatic_backup_enabled,
+        last_backup_at_ms: settings.last_backup_at_ms,
+        backup_directory_available: directory_available(&backups),
+        log_directory_available: directory_available(&logs),
+        maintenance_last_error: maintenance.last_error,
     })
+}
+
+#[tauri::command]
+pub async fn run_diagnostics_repair(app: AppHandle) -> Result<DiagnosticsRepairResult, String> {
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
+    let monitor = app.state::<MonitorHandle>();
+    let was_paused = monitor.is_paused();
+    monitor.set_paused(true);
+    if let Some(receiver) = app.state::<SessionManagerHandle>().request_pause() {
+        let _ = receiver.await;
+    }
+
+    let operation: Result<DiagnosticsRepairResult, String> = async {
+        let repository = app.state::<ActivityRepository>().inner().clone();
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        tauri::async_runtime::spawn_blocking(move || {
+            let backup_directory = app_data.join("backups");
+            fs::create_dir_all(&backup_directory).map_err(|error| error.to_string())?;
+            let backup_path =
+                backup_directory.join(format!("before-diagnostics-repair-{}.sqlite3", now_ms()?));
+            repository
+                .backup_database(&backup_path)
+                .map_err(|error| error.to_string())?;
+            let health = repository
+                .repair_data_health(&backup_path.to_string_lossy())
+                .map_err(|error| error.to_string())?;
+            let database_optimized = match repository.optimize_database() {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("diagnostics repair could not optimize the database: {error}");
+                    false
+                }
+            };
+            let icons = app_data.join("icons");
+            let icon_cache_cleared = match (|| -> Result<(), std::io::Error> {
+                if icons.exists() {
+                    fs::remove_dir_all(&icons)?;
+                }
+                fs::create_dir_all(&icons)
+            })() {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("diagnostics repair could not refresh the icon cache: {error}");
+                    false
+                }
+            };
+            Ok(DiagnosticsRepairResult {
+                backup_path: backup_path.to_string_lossy().into_owned(),
+                trimmed_session_count: health.trimmed_session_count,
+                deleted_session_count: health.deleted_session_count,
+                icon_cache_cleared,
+                database_optimized,
+            })
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+    .await;
+
+    if !was_paused {
+        monitor.set_paused(false);
+        let _ = app.state::<TrackingTrayMenuItem>().0.set_text(
+            if app.state::<AppLocaleState>().is_chinese() {
+                "暂停追踪"
+            } else {
+                "Pause Tracking"
+            },
+        );
+    }
+    operation
 }
 
 fn file_size(path: &std::path::Path) -> u64 {
@@ -596,6 +705,21 @@ fn file_count(path: &std::path::Path) -> usize {
         .filter_map(Result::ok)
         .filter(|entry| entry.path().is_file())
         .count()
+}
+
+fn directory_available(path: &std::path::Path) -> bool {
+    if path.exists() {
+        return path.is_dir()
+            && fs::metadata(path)
+                .map(|metadata| !metadata.permissions().readonly())
+                .unwrap_or(false);
+    }
+    path.parent().is_some_and(|parent| {
+        parent.exists()
+            && fs::metadata(parent)
+                .map(|metadata| !metadata.permissions().readonly())
+                .unwrap_or(false)
+    })
 }
 
 #[tauri::command]
@@ -728,25 +852,35 @@ pub async fn restore_database(app: AppHandle) -> Result<bool, String> {
         return Ok(false);
     };
 
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
     let monitor = app.state::<MonitorHandle>();
     let session_manager = app.state::<SessionManagerHandle>();
     let repository = app.state::<ActivityRepository>().inner().clone();
+    let was_paused = monitor.is_paused();
     monitor.set_paused(true);
     let acknowledgement = session_manager.request_pause();
     if let Some(receiver) = acknowledgement {
         let _ = receiver.await;
     }
     let restore_repository = repository.clone();
-    tauri::async_runtime::spawn_blocking(move || restore_repository.restore_database(&path))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
-    let restored_settings = repository.settings().map_err(|error| error.to_string())?;
-    monitor
-        .set_idle_threshold(std::time::Duration::from_secs(
-            restored_settings.idle_threshold_seconds as u64,
-        ))
-        .map_err(|error| error.to_string())?;
+    let restore_result =
+        tauri::async_runtime::spawn_blocking(move || restore_repository.restore_database(&path))
+            .await
+            .map_err(|error| error.to_string())?;
+    if let Err(error) = restore_result {
+        if !was_paused {
+            monitor.set_paused(false);
+            let _ = app.state::<TrackingTrayMenuItem>().0.set_text(
+                if app.state::<AppLocaleState>().is_chinese() {
+                    "暂停追踪"
+                } else {
+                    "Pause Tracking"
+                },
+            );
+        }
+        return Err(error.to_string());
+    }
+    reload_runtime_after_restore(&app, &repository)?;
     let _ = app.state::<TrackingTrayMenuItem>().0.set_text(
         if app.state::<AppLocaleState>().is_chinese() {
             "继续追踪"
@@ -756,6 +890,78 @@ pub async fn restore_database(app: AppHandle) -> Result<bool, String> {
     );
     log::info!("database restore completed; tracking remains paused");
     Ok(true)
+}
+
+pub(crate) fn reload_runtime_after_restore(
+    app: &AppHandle,
+    repository: &ActivityRepository,
+) -> Result<(), String> {
+    let restored_settings = repository.settings().map_err(|error| error.to_string())?;
+    let restored_shortcuts = repository
+        .shortcut_settings()
+        .map_err(|error| error.to_string())?;
+    let restored_focus = repository
+        .focus_mode_status()
+        .map_err(|error| error.to_string())?;
+
+    app.state::<MonitorHandle>()
+        .set_idle_threshold(std::time::Duration::from_secs(
+            restored_settings.idle_threshold_seconds as u64,
+        ))
+        .map_err(|error| error.to_string())?;
+
+    let focus_status = crate::focus::FocusModeStatus {
+        active: restored_focus.active,
+        started_at_ms: restored_focus.started_at_ms,
+        planned_end_at_ms: restored_focus.planned_end_at_ms,
+        paused: restored_focus.paused,
+        paused_at_ms: restored_focus.paused_at_ms,
+        total_paused_ms: restored_focus.total_paused_ms,
+        template_id: restored_focus.template_id,
+    };
+    let focus_status = app
+        .state::<crate::focus::FocusModeState>()
+        .replace(focus_status);
+    app.state::<ShortcutSettingsState>()
+        .replace(restored_shortcuts.clone());
+
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|error| error.to_string())?;
+    for shortcut in [
+        parse_shortcut(&restored_shortcuts.toggle_focus),
+        parse_shortcut(&restored_shortcuts.pause_focus),
+        parse_shortcut(&restored_shortcuts.start_template),
+    ]
+    .into_iter()
+    .filter_map(|result| match result {
+        Ok(shortcut) => shortcut,
+        Err(error) => {
+            log::warn!("restored shortcut is invalid: {error}");
+            None
+        }
+    }) {
+        if let Err(error) = app.global_shortcut().register(shortcut) {
+            log::warn!("restored shortcut could not be registered: {error}");
+        }
+    }
+
+    let chinese = app.state::<AppLocaleState>().is_chinese();
+    let _ = app
+        .state::<FocusTrayMenuItem>()
+        .0
+        .set_text(if focus_status.active && chinese {
+            "结束专注模式"
+        } else if focus_status.active {
+            "End Focus Mode"
+        } else if chinese {
+            "开始专注模式"
+        } else {
+            "Start Focus Mode"
+        });
+    let _ = app.emit("focus-mode-changed", &focus_status);
+    crate::update_tray_overview(app);
+    Ok(())
 }
 
 #[tauri::command]

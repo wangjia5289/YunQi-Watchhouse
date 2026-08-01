@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::{
-    AppLocaleState, TrackingTrayMenuItem,
+    AppLocaleState, DatabaseMaintenanceState, TrackingTrayMenuItem,
     activity::{MonitorHandle, MonitorStatus, SessionManagerHandle, SessionManagerStatus},
 };
 
@@ -33,7 +33,11 @@ pub async fn set_tracking_paused(
     session_manager: State<'_, SessionManagerHandle>,
     tray_item: State<'_, TrackingTrayMenuItem>,
     locale: State<'_, AppLocaleState>,
+    maintenance: State<'_, DatabaseMaintenanceState>,
 ) -> Result<bool, String> {
+    if !paused && maintenance.is_active() {
+        return Err("Tracking cannot resume while database maintenance is in progress.".to_owned());
+    }
     let acknowledgement = if paused {
         monitor.set_paused(true);
         session_manager.request_pause()

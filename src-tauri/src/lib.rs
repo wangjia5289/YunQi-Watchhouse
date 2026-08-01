@@ -10,14 +10,16 @@ pub mod statistics;
 use std::{
     str::FromStr,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
-use tauri::{Emitter, Manager};
+use tauri::{
+    Emitter, Manager, PhysicalPosition, Rect, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_notification::{NotificationExt, PermissionState};
@@ -36,6 +38,12 @@ pub struct TodayFocusTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct UsageLimitTrayMenuItem(pub MenuItem<tauri::Wry>);
 pub struct AppLocaleState(AtomicBool);
 pub struct ShortcutSettingsState(Mutex<database::ShortcutSettings>);
+#[derive(Clone, Default)]
+pub struct DatabaseMaintenanceState(Arc<AtomicBool>);
+pub struct DatabaseMaintenanceGuard(Arc<AtomicBool>);
+
+const TRAY_PANEL_WIDTH: f64 = 360.0;
+const TRAY_PANEL_HEIGHT: f64 = 430.0;
 
 impl Default for AppLocaleState {
     fn default() -> Self {
@@ -77,6 +85,25 @@ impl ShortcutSettingsState {
         if let Ok(mut current) = self.0.lock() {
             *current = settings;
         }
+    }
+}
+
+impl DatabaseMaintenanceState {
+    pub fn is_active(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub fn try_begin(&self) -> Result<DatabaseMaintenanceGuard, String> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| DatabaseMaintenanceGuard(self.0.clone()))
+            .map_err(|_| "Database maintenance is already in progress.".to_owned())
+    }
+}
+
+impl Drop for DatabaseMaintenanceGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -211,6 +238,56 @@ fn format_tray_duration(duration_ms: i64) -> String {
         (hours, 0) => format!("{hours}h"),
         (hours, minutes) => format!("{hours}h {minutes}min"),
     }
+}
+
+fn position_tray_panel(
+    app: &tauri::AppHandle,
+    panel: &WebviewWindow,
+    click_position: PhysicalPosition<f64>,
+    tray_rect: Rect,
+) {
+    let Ok(Some(monitor)) = app.monitor_from_point(click_position.x, click_position.y) else {
+        return;
+    };
+    let scale_factor = monitor.scale_factor();
+    let tray_position = tray_rect.position.to_physical::<f64>(scale_factor);
+    let tray_size = tray_rect.size.to_physical::<f64>(scale_factor);
+    let work_area = monitor.work_area();
+    let work_left = work_area.position.x as f64;
+    let work_top = work_area.position.y as f64;
+    let work_right = work_left + work_area.size.width as f64;
+    let work_bottom = work_top + work_area.size.height as f64;
+    let panel_width = TRAY_PANEL_WIDTH * scale_factor;
+    let panel_height = TRAY_PANEL_HEIGHT * scale_factor;
+    let gap = 8.0 * scale_factor;
+    let tray_center_x = tray_position.x + tray_size.width / 2.0;
+    let tray_center_y = tray_position.y + tray_size.height / 2.0;
+    let work_center_y = work_top + work_area.size.height as f64 / 2.0;
+
+    let max_x = (work_right - panel_width).max(work_left);
+    let max_y = (work_bottom - panel_height).max(work_top);
+    let x = (tray_center_x - panel_width / 2.0).clamp(work_left, max_x);
+    let preferred_y = if tray_center_y <= work_center_y {
+        tray_position.y + tray_size.height + gap
+    } else {
+        tray_position.y - panel_height - gap
+    };
+    let y = preferred_y.clamp(work_top, max_y);
+    let _ = panel.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+}
+
+fn toggle_tray_panel(app: &tauri::AppHandle, position: PhysicalPosition<f64>, rect: Rect) {
+    let Some(panel) = app.get_webview_window("tray-panel") else {
+        return;
+    };
+    if panel.is_visible().unwrap_or(false) {
+        let _ = panel.hide();
+        return;
+    }
+    position_tray_panel(app, &panel, position, rect);
+    let _ = app.emit_to("tray-panel", "tray-panel-shown", ());
+    let _ = panel.show();
+    let _ = panel.set_focus();
 }
 
 pub(crate) fn update_tray_overview(app: &tauri::AppHandle) {
@@ -391,6 +468,9 @@ pub fn run() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
+                    if app.state::<DatabaseMaintenanceState>().is_active() {
+                        return;
+                    }
                     let configured = app.state::<ShortcutSettingsState>().snapshot();
                     let toggle = parse_shortcut(&configured.toggle_focus).ok().flatten();
                     let pause = parse_shortcut(&configured.pause_focus).ok().flatten();
@@ -463,6 +543,7 @@ pub fn run() {
             ));
             app.manage(AppLocaleState::new());
             app.manage(ShortcutSettingsState::new(shortcut_settings.clone()));
+            app.manage(DatabaseMaintenanceState::default());
             #[cfg(not(debug_assertions))]
             spawn_automatic_update_check(app.handle().clone());
 
@@ -474,6 +555,9 @@ pub fn run() {
                 interval.tick().await;
                 loop {
                     interval.tick().await;
+                    if reminder_app.state::<DatabaseMaintenanceState>().is_active() {
+                        continue;
+                    }
                     let Ok(settings) = reminder_repository.settings() else {
                         continue;
                     };
@@ -658,6 +742,21 @@ pub fn run() {
                 app.manage(monitor);
             }
 
+            WebviewWindowBuilder::new(app, "tray-panel", WebviewUrl::App("index.html".into()))
+                .title("Watchhouse")
+                .inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
+                .min_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
+                .max_inner_size(TRAY_PANEL_WIDTH, TRAY_PANEL_HEIGHT)
+                .resizable(false)
+                .decorations(false)
+                .always_on_top(true)
+                .visible_on_all_workspaces(true)
+                .skip_taskbar(true)
+                .shadow(true)
+                .visible(false)
+                .focused(false)
+                .build()?;
+
             let show = MenuItem::with_id(app, "show", "Show Watchhouse", true, None::<&str>)?;
             app.manage(ShowTrayMenuItem(show.clone()));
             let pause = MenuItem::with_id(
@@ -774,6 +873,19 @@ pub fn run() {
                 .icon(app.default_window_icon().expect("application icon").clone())
                 .tooltip("YunQi-Watchhouse")
                 .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        position,
+                        rect,
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        toggle_tray_panel(tray.app_handle(), position, rect);
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
@@ -786,6 +898,9 @@ pub fn run() {
                     "pause" => {
                         let monitor = app.state::<activity::MonitorHandle>();
                         let paused = !monitor.is_paused();
+                        if !paused && app.state::<DatabaseMaintenanceState>().is_active() {
+                            return;
+                        }
                         if paused {
                             monitor.set_paused(true);
                             let app = app.clone();
@@ -808,6 +923,9 @@ pub fn run() {
                         let _ = app.state::<TrackingTrayMenuItem>().0.set_text(label);
                     }
                     "focus" => {
+                        if app.state::<DatabaseMaintenanceState>().is_active() {
+                            return;
+                        }
                         let state = app.state::<focus::FocusModeState>();
                         let current = state.snapshot();
                         let active = !current.active;
@@ -951,6 +1069,19 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "tray-panel" {
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
+                    tauri::WindowEvent::Focused(false) => {
+                        let _ = window.hide();
+                    }
+                    _ => {}
+                }
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let hide = window
                     .state::<database::ActivityRepository>()
@@ -981,6 +1112,7 @@ pub fn run() {
             commands::applications::clear_application_icon_cache,
             commands::applications::update_application_preferences,
             commands::category_rules::get_category_rules,
+            commands::category_rules::preview_category_rule,
             commands::category_rules::create_category_rule,
             commands::category_rules::update_category_rule,
             commands::category_rules::delete_category_rule,
@@ -996,6 +1128,10 @@ pub fn run() {
             commands::statistics::get_productivity_report,
             commands::statistics::export_productivity_report_csv,
             commands::statistics::get_application_daily_usage,
+            commands::weekly_reports::archive_weekly_report,
+            commands::weekly_reports::get_weekly_report_archives,
+            commands::weekly_reports::delete_weekly_report_archive,
+            commands::weekly_reports::send_weekly_report_notification,
             commands::usage_limits::get_usage_limits,
             commands::usage_limits::get_usage_limit_targets,
             commands::usage_limits::create_usage_limit,
@@ -1038,7 +1174,10 @@ pub fn run() {
             commands::settings::open_data_directory,
             commands::settings::open_log_directory,
             commands::settings::get_diagnostics_summary,
+            commands::settings::run_diagnostics_repair,
             commands::settings::backup_database,
+            commands::encrypted_backup::create_encrypted_database_backup,
+            commands::encrypted_backup::restore_encrypted_database_backup,
             commands::settings::choose_backup_directory,
             commands::settings::open_backup_directory,
             commands::settings::get_maintenance_preview,
@@ -1069,7 +1208,22 @@ pub fn run() {
 
 #[cfg(test)]
 mod shortcut_tests {
-    use super::{format_tray_duration, parse_shortcut, usage_limit_notification_copy};
+    use super::{
+        DatabaseMaintenanceState, format_tray_duration, parse_shortcut,
+        usage_limit_notification_copy,
+    };
+
+    #[test]
+    fn database_maintenance_lease_is_exclusive_and_released_on_drop() {
+        let state = DatabaseMaintenanceState::default();
+        assert!(!state.is_active());
+        let guard = state.try_begin().expect("first maintenance lease");
+        assert!(state.is_active());
+        assert!(state.try_begin().is_err());
+        drop(guard);
+        assert!(!state.is_active());
+        assert!(state.try_begin().is_ok());
+    }
 
     #[test]
     fn shortcut_parser_accepts_presets_and_disabled_actions() {

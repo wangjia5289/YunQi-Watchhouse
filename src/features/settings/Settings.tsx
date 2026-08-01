@@ -43,6 +43,8 @@ import { notifyActivityDataChanged } from "../../lib/events";
 import { clearApplicationIconMemoryCache } from "../applications/ApplicationIcon";
 import { PrivacyNotice } from "../onboarding/PrivacyNotice";
 import { CategoryRules } from "./CategoryRules";
+import { DiagnosticsCenter } from "./DiagnosticsCenter";
+import { EncryptedBackupControls } from "./EncryptedBackupControls";
 import { SoftwareUpdates } from "./SoftwareUpdates";
 import { UsageLimits } from "./UsageLimits";
 import { UsageLimitReminderCenter } from "./UsageLimitReminderCenter";
@@ -51,10 +53,12 @@ import "./SettingsAnime.css";
 function Toggle({
   checked,
   disabled,
+  label,
   onChange,
 }: {
   checked: boolean;
   disabled?: boolean;
+  label: string;
   onChange: (checked: boolean) => void;
 }) {
   return (
@@ -62,6 +66,7 @@ function Toggle({
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       className={`settings-toggle${checked ? " active" : ""}`}
       disabled={disabled}
       onClick={() => onChange(!checked)}
@@ -153,17 +158,17 @@ export function Settings() {
         <div className="list-heading"><div><p className="section-kicker">{t("General")}</p><h2>{t("Application")}</h2></div></div>
         <div className="setting-row">
           <div><strong>{t("Launch at Login")}</strong><small>{t("Start Watchhouse when you sign in.")}</small></div>
-          <Toggle checked={settings.launchAtLogin} disabled={saving}
+          <Toggle label={t("Launch at Login")} checked={settings.launchAtLogin} disabled={saving}
             onChange={(value) => void save({ ...settings, launchAtLogin: value })} />
         </div>
         <div className="setting-row">
           <div><strong>{t("Hide to Tray on Close")}</strong><small>{t("Keep tracking when the window closes.")}</small></div>
-          <Toggle checked={settings.hideToTrayOnClose} disabled={saving}
+          <Toggle label={t("Hide to Tray on Close")} checked={settings.hideToTrayOnClose} disabled={saving}
             onChange={(value) => void save({ ...settings, hideToTrayOnClose: value })} />
         </div>
         <div className="setting-row">
           <div><strong>{t("Start Tracking Automatically")}</strong><small>{t("Begin recording when Watchhouse starts.")}</small></div>
-          <Toggle checked={settings.startTrackingAutomatically} disabled={saving}
+          <Toggle label={t("Start Tracking Automatically")} checked={settings.startTrackingAutomatically} disabled={saving}
             onChange={(value) => void save({ ...settings, startTrackingAutomatically: value })} />
         </div>
       </section>
@@ -189,6 +194,7 @@ export function Settings() {
             </small>
           </div>
           <Toggle
+            label={t("Record Window Titles")}
             checked={settings.recordWindowTitles}
             disabled={saving || accessibilityPermission !== "GRANTED"}
             onChange={(value) => void save({ ...settings, recordWindowTitles: value })}
@@ -246,6 +252,7 @@ export function Settings() {
         <div className="setting-row">
           <div><strong>{t("Break Reminders")}</strong><small>{t("Show a local reminder after continuous focus.")}</small></div>
           <Toggle
+            label={t("Break Reminders")}
             checked={settings.breakRemindersEnabled}
             disabled={saving}
             onChange={(value) => void save({ ...settings, breakRemindersEnabled: value })}
@@ -348,6 +355,7 @@ export function Settings() {
           <span className="quiet-hours">
             <input
               type="time"
+              aria-label={t("Quiet hours start")}
               value={settings.quietHoursStart}
               disabled={saving}
               onChange={(event) => void save({ ...settings, quietHoursStart: event.currentTarget.value })}
@@ -355,6 +363,7 @@ export function Settings() {
             <span>{t("to")}</span>
             <input
               type="time"
+              aria-label={t("Quiet hours end")}
               value={settings.quietHoursEnd}
               disabled={saving}
               onChange={(event) => void save({ ...settings, quietHoursEnd: event.currentTarget.value })}
@@ -457,6 +466,13 @@ export function Settings() {
             void getDiagnosticsSummary().then(setDiagnostics);
           }).catch((error) => setMessage(errorMessage(error)));
         }}>{t("Refresh Application Icons")}</button>
+        <EncryptedBackupControls
+          onMessage={setMessage}
+          onRestored={() => {
+            void getDiagnosticsSummary().then(setDiagnostics);
+            void getSettings().then(setSettings);
+          }}
+        />
         <div className="maintenance-settings">
           <div className="list-heading">
             <div><p className="section-kicker">{t("Maintenance")}</p><h2>{t("Retention and backups")}</h2></div>
@@ -488,6 +504,7 @@ export function Settings() {
           <div className="setting-row">
             <div><strong>{t("Automatic Backups")}</strong><small>{t("Create local SQLite backups on schedule.")}</small></div>
             <Toggle
+              label={t("Automatic Backups")}
               checked={settings.automaticBackupEnabled}
               disabled={saving}
               onChange={(value) => void save({ ...settings, automaticBackupEnabled: value })}
@@ -636,6 +653,22 @@ export function Settings() {
       </section>
 
       <SoftwareUpdates />
+
+      <DiagnosticsCenter
+        diagnostics={diagnostics}
+        onMessage={setMessage}
+        onRefresh={async () => {
+          const [nextDiagnostics, nextHealth, nextUndo] = await Promise.all([
+            getDiagnosticsSummary(),
+            getDataHealthSummary(),
+            getDataHealthUndoStatus(),
+          ]);
+          clearApplicationIconMemoryCache();
+          setDiagnostics(nextDiagnostics);
+          setDataHealth(nextHealth);
+          setDataHealthUndo(nextUndo);
+        }}
+      />
 
       <section className="settings-card">
         <div className="list-heading"><div><p className="section-kicker">{t("About")}</p><h2>{t("YunQi-Watchhouse")}</h2></div><span>{t(diagnostics ? `Version ${diagnostics.applicationVersion}` : "Version…")}</span></div>

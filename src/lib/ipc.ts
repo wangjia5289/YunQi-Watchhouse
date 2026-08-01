@@ -172,6 +172,33 @@ export interface CategoryRule extends CategoryRuleInput {
   id: number;
 }
 
+export interface CategoryRulePreviewSample {
+  applicationName: string;
+  bundleId: string | null;
+  windowTitle: string | null;
+  wouldApply: boolean;
+  shadowedByRuleId: number | null;
+  shadowedByCategory: string | null;
+}
+
+export interface CategoryRuleConflict {
+  ruleId: number;
+  matchField: CategoryRuleMatchField;
+  pattern: string;
+  category: string;
+  priority: number;
+  sessionCount: number;
+}
+
+export interface CategoryRulePreview {
+  matchedSessionCount: number;
+  matchedApplicationCount: number;
+  effectiveSessionCount: number;
+  shadowedSessionCount: number;
+  conflicts: CategoryRuleConflict[];
+  samples: CategoryRulePreviewSample[];
+}
+
 export type UsageLimitScopeType = "APPLICATION" | "CATEGORY";
 
 export interface UsageLimitRuleInput {
@@ -256,6 +283,24 @@ export interface ProductivityReport {
   categoryUsage: CategoryUsage[];
 }
 
+export interface WeeklyReportArchiveInput {
+  weekStartDate: string;
+  weekEndDate: string;
+  generatedAtMs: number;
+  activeDurationMs: number;
+  idleDurationMs: number;
+  previousWeekActiveDurationMs: number;
+  strongestDayDate: string | null;
+  peakHour: number | null;
+  leadingCategory: string | null;
+  focusCompletionRate: number | null;
+  payloadJson: string;
+}
+
+export interface WeeklyReportArchive extends WeeklyReportArchiveInput {
+  notifiedAtMs: number | null;
+}
+
 export interface UpdateCheck {
   configured: boolean;
   available: boolean;
@@ -321,6 +366,23 @@ export interface DiagnosticsSummary {
   automaticBackupCount: number;
   applicationCount: number;
   sessionCount: number;
+  databaseIntegrityOk: boolean;
+  accessibilityPermission: AccessibilityPermission;
+  notificationPermission: NotificationPermission;
+  trackingPaused: boolean;
+  automaticBackupEnabled: boolean;
+  lastBackupAtMs: number;
+  backupDirectoryAvailable: boolean;
+  logDirectoryAvailable: boolean;
+  maintenanceLastError: string | null;
+}
+
+export interface DiagnosticsRepairResult {
+  backupPath: string;
+  trimmedSessionCount: number;
+  deletedSessionCount: number;
+  iconCacheCleared: boolean;
+  databaseOptimized: boolean;
 }
 
 export function getCurrentActivity(): Promise<CurrentActivity> {
@@ -558,6 +620,13 @@ export function getCategoryRules(): Promise<CategoryRule[]> {
   return invoke("get_category_rules");
 }
 
+export function previewCategoryRule(
+  input: CategoryRuleInput,
+  ruleId: number | null,
+): Promise<CategoryRulePreview> {
+  return invoke("preview_category_rule", { input, ruleId });
+}
+
 export function createCategoryRule(input: CategoryRuleInput): Promise<CategoryRule> {
   return invoke("create_category_rule", { input });
 }
@@ -703,6 +772,24 @@ export function getProductivityReport(
   return invoke("get_productivity_report", { rangeStartMs, rangeEndMs });
 }
 
+export function archiveWeeklyReport(
+  input: WeeklyReportArchiveInput,
+): Promise<WeeklyReportArchive> {
+  return invoke("archive_weekly_report", { input });
+}
+
+export function getWeeklyReportArchives(limit = 12): Promise<WeeklyReportArchive[]> {
+  return invoke("get_weekly_report_archives", { limit });
+}
+
+export function deleteWeeklyReportArchive(weekStartDate: string): Promise<void> {
+  return invoke("delete_weekly_report_archive", { weekStartDate });
+}
+
+export function sendWeeklyReportNotification(weekStartDate: string): Promise<void> {
+  return invoke("send_weekly_report_notification", { weekStartDate });
+}
+
 export function exportProductivityReportCsv(
   rangeStartMs: number,
   rangeEndMs: number,
@@ -792,8 +879,20 @@ export function getDiagnosticsSummary(): Promise<DiagnosticsSummary> {
   return invoke("get_diagnostics_summary");
 }
 
+export function runDiagnosticsRepair(): Promise<DiagnosticsRepairResult> {
+  return invoke("run_diagnostics_repair");
+}
+
 export function backupDatabase(): Promise<string | null> {
   return invoke("backup_database");
+}
+
+export function createEncryptedDatabaseBackup(password: string): Promise<string | null> {
+  return invoke("create_encrypted_database_backup", { password });
+}
+
+export function restoreEncryptedDatabaseBackup(password: string): Promise<boolean> {
+  return invoke("restore_encrypted_database_backup", { password });
 }
 
 export function chooseBackupDirectory(): Promise<string | null> {

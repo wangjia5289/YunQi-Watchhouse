@@ -11,6 +11,7 @@ import {
 } from "../../lib/ipc";
 import { useLocale } from "../../lib/i18n";
 import { WeeklyInsights } from "./WeeklyInsights";
+import { WeeklyArchivePanel } from "./WeeklyArchivePanel";
 import { shiftReportRangeByDays } from "./weeklyInsightModel";
 import "./Reports.css";
 
@@ -192,11 +193,18 @@ export function Reports() {
       </section>
 
       {period === "week" && report && previousWeekReport && (
-        <WeeklyInsights
-          report={report}
-          focusHistory={focusHistory}
-          previousWeekActiveDurationMs={previousWeekReport.activeDurationMs}
-        />
+        <>
+          <WeeklyInsights
+            report={report}
+            focusHistory={focusHistory}
+            previousWeekActiveDurationMs={previousWeekReport.activeDurationMs}
+          />
+          <WeeklyArchivePanel
+            report={report}
+            focusHistory={focusHistory}
+            previousWeekActiveDurationMs={previousWeekReport.activeDurationMs}
+          />
+        </>
       )}
 
       <section className="report-section focus-history" aria-labelledby="focus-history-title">

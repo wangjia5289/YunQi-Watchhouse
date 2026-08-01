@@ -3,15 +3,19 @@ import {
   CategoryRule,
   CategoryRuleInput,
   CategoryRuleMatchField,
+  CategoryRulePreview,
+  CategoryRulePreviewSample,
   createCategoryRule,
   deleteCategoryRule,
   errorMessage,
   getCategoryRules,
+  previewCategoryRule,
   reapplyCategoryRules,
   updateCategoryRule,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { useLocale } from "../../lib/i18n";
+import { categoryRulePreviewState } from "./categoryRulePreviewModel";
 import "./CategoryRules.css";
 
 interface CategoryRuleDraft {
@@ -80,6 +84,15 @@ const MATCH_FIELD_LABELS: Record<CategoryRuleMatchField, string> = {
   WINDOW_TITLE: "Window title",
 };
 
+function previewSampleValue(
+  sample: CategoryRulePreviewSample,
+  matchField: CategoryRuleMatchField,
+): string {
+  if (matchField === "BUNDLE_ID") return sample.bundleId ?? "";
+  if (matchField === "WINDOW_TITLE") return sample.windowTitle ?? "";
+  return sample.bundleId ?? sample.windowTitle ?? "";
+}
+
 function Toggle({ checked, disabled, label, onChange }: {
   checked: boolean;
   disabled?: boolean;
@@ -113,6 +126,9 @@ export function CategoryRules() {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [reapplying, setReapplying] = useState(false);
+  const [preview, setPreview] = useState<CategoryRulePreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const actionsLocked = categoryRuleActionsLocked(saving, busyId, reapplying);
 
   async function loadRules() {
@@ -130,6 +146,38 @@ export function CategoryRules() {
   useEffect(() => {
     void loadRules();
   }, []);
+
+  useEffect(() => {
+    const input = categoryRuleInputFromDraft(draft);
+    if (!editorOpen || !input) {
+      setPreview(null);
+      setPreviewLoading(false);
+      setPreviewError(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setPreview(null);
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const timer = window.setTimeout(() => {
+      void previewCategoryRule(input, editingId)
+        .then((result) => {
+          if (!cancelled) setPreview(result);
+        })
+        .catch((error) => {
+          if (!cancelled) setPreviewError(errorMessage(error));
+        })
+        .finally(() => {
+          if (!cancelled) setPreviewLoading(false);
+        });
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [draft, editingId, editorOpen]);
 
   function openCreateEditor() {
     setEditingId(null);
@@ -314,6 +362,81 @@ export function CategoryRules() {
                 onChange={(event) => setDraft({ ...draft, priority: event.currentTarget.value })}
               />
             </label>
+          </div>
+          <div className="category-rule-preview" aria-live="polite" aria-busy={previewLoading}>
+            <div className="category-rule-preview-heading">
+              <strong>{t("Match preview")}</strong>
+              {previewLoading && <small>{t("Checking matches…")}</small>}
+            </div>
+            {previewError ? (
+              <p className="category-rule-preview-error">{t(previewError)}</p>
+            ) : preview ? (
+              <>
+                <div className="category-rule-preview-metrics">
+                  <span>
+                    <strong>{preview.matchedSessionCount}</strong>
+                    <small>{t("Matching sessions")}</small>
+                  </span>
+                  <span>
+                    <strong>{preview.matchedApplicationCount}</strong>
+                    <small>{t("Applications")}</small>
+                  </span>
+                  <span>
+                    <strong>{preview.effectiveSessionCount}</strong>
+                    <small>{t("Will apply")}</small>
+                  </span>
+                </div>
+                <p className={`category-rule-preview-status ${categoryRulePreviewState(preview, draft.enabled).toLowerCase()}`}>
+                  {t({
+                    NO_MATCHES: "No recorded sessions match this rule yet.",
+                    DISABLED: "This rule is disabled; matches will not be classified.",
+                    FULLY_SHADOWED: "Every match is already handled by an earlier rule.",
+                    PARTIALLY_SHADOWED: "Some matches are already handled by earlier rules.",
+                    WILL_APPLY: "This rule can classify every matching session.",
+                  }[categoryRulePreviewState(preview, draft.enabled)])}
+                </p>
+                {preview.conflicts.length > 0 && (
+                  <div className="category-rule-conflicts">
+                    <strong>{t("Earlier matching rules")}</strong>
+                    {preview.conflicts.map((conflict) => (
+                      <div key={conflict.ruleId}>
+                        <span>{t("Priority")} {conflict.priority}</span>
+                        <b>{conflict.pattern}</b>
+                        <i aria-hidden="true">→</i>
+                        <em>{conflict.category}</em>
+                        <small>{conflict.sessionCount} {t("sessions shadowed")}</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {preview.samples.length > 0 && (
+                  <div className="category-rule-preview-samples">
+                    <strong>{t("Recent matches")}</strong>
+                    {preview.samples.map((sample, index) => (
+                      <div key={`${sample.applicationName}-${index}`}>
+                        <span>
+                          <b>{sample.applicationName}</b>
+                          {previewSampleValue(sample, draft.matchField) && (
+                            <small title={previewSampleValue(sample, draft.matchField)}>
+                              {previewSampleValue(sample, draft.matchField)}
+                            </small>
+                          )}
+                        </span>
+                        <i className={draft.enabled ? (sample.wouldApply ? "applies" : "shadowed") : "disabled"}>
+                          {t(!draft.enabled
+                            ? "Rule disabled"
+                            : sample.wouldApply
+                              ? "Will apply"
+                              : "Handled earlier")}
+                        </i>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : !previewLoading ? (
+              <p>{t("Complete the rule to preview its matches.")}</p>
+            ) : null}
           </div>
           <div className="category-rule-editor-footer">
             <label>

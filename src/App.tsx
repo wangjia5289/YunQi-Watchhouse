@@ -16,9 +16,11 @@ import {
 } from "./lib/ipc";
 import { completeOnboarding, setTrackingPaused } from "./lib/ipc";
 import { PrivacyNotice } from "./features/onboarding/PrivacyNotice";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { notifyActivityDataChanged } from "./lib/events";
 import { useLocale } from "./lib/i18n";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { TrayPanel } from "./features/tray/TrayPanel";
 
 const navigation = [
   { label: "Today", icon: "today", page: "today", enabled: true },
@@ -66,7 +68,7 @@ function NavIcon({ name }: { name: string }) {
   );
 }
 
-function App() {
+function MainApp() {
   const { locale, setLocale, t } = useLocale();
   const [page, setPage] = useState<Page>("today");
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -108,6 +110,12 @@ function App() {
       void unlisten.then((stop) => stop());
     };
   }, []);
+
+  useEffect(() => {
+    void emit("locale-changed", locale).catch(() => {
+      // Browser preview does not expose Tauri events.
+    });
+  }, [locale]);
 
   return (
     <>
@@ -221,6 +229,12 @@ function App() {
     )}
     </>
   );
+}
+
+function App() {
+  const isTrayPanel = "__TAURI_INTERNALS__" in window
+    && getCurrentWindow().label === "tray-panel";
+  return isTrayPanel ? <TrayPanel /> : <MainApp />;
 }
 
 export default App;

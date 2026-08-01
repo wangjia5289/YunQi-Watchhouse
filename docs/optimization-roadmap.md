@@ -497,3 +497,26 @@ Decisions:
 - Developer ID signing and Apple notarization cannot be verified locally without the owner's
   certificate and Apple credentials; CI rejects missing secrets instead of publishing an unsigned
   release.
+
+## Phase 23: Daily Control, Data Safety And Quality
+
+Status: Complete
+
+- [x] Add a real menu-bar panel with current activity, daily totals, Focus controls, and limits.
+- [x] Preview automatic-classification matches, conflicts, precedence, and recent samples.
+- [x] Archive weekly report snapshots locally and deliver optional native notifications.
+- [x] Create password-protected backups with authenticated encryption and tamper detection.
+- [x] Add an in-app diagnostics center with service health and safety-backup-first repair.
+- [x] Add browser UI automation for Chinese and English, primary navigation, rule previews,
+  weekly archives, accessibility checks, and 390 px overflow checks.
+
+Decisions:
+
+- The menu-bar panel is a separate fixed-size Tauri window that stops polling while hidden.
+- Weekly archives preserve the source report payload plus compact searchable summary fields.
+- Encrypted backups derive keys with Argon2id and use chunked XChaCha20-Poly1305; passwords are
+  never stored, and isolated temporary plaintext copies are removed automatically.
+- Diagnostics repair creates a full SQLite backup before session repair, database optimization,
+  and icon-cache refresh.
+- Browser fixtures use Tauri's official IPC mocks only in Vite development mode and are excluded
+  from production builds.

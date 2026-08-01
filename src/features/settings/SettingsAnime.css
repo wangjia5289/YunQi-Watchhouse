@@ -1,6 +1,7 @@
 .settings-page {
   position: relative;
   isolation: isolate;
+  overflow-x: clip;
 }
 
 .settings-page::before,

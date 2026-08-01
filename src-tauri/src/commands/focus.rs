@@ -4,7 +4,7 @@ use chrono::{Local, TimeZone};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
-    AppLocaleState, FocusTrayMenuItem,
+    AppLocaleState, DatabaseMaintenanceState, FocusTrayMenuItem,
     database::{ActivityRepository, FocusPlanTemplate, PersistedFocusMode},
     focus::{FocusModeState, FocusModeStatus},
 };
@@ -34,8 +34,10 @@ pub fn get_focus_plan_templates(
 pub fn create_focus_plan_template(
     name: String,
     duration_minutes: i64,
+    app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<FocusPlanTemplate, String> {
+    ensure_database_available(&app)?;
     repository
         .create_focus_plan_template(&name, duration_minutes)
         .map_err(|error| error.to_string())
@@ -47,8 +49,10 @@ pub fn update_focus_plan_template(
     name: String,
     duration_minutes: i64,
     sort_order: i64,
+    app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<FocusPlanTemplate, String> {
+    ensure_database_available(&app)?;
     repository
         .update_focus_plan_template(template_id, &name, duration_minutes, sort_order)
         .map_err(|error| error.to_string())
@@ -57,8 +61,10 @@ pub fn update_focus_plan_template(
 #[tauri::command]
 pub fn delete_focus_plan_template(
     template_id: i64,
+    app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<(), String> {
+    ensure_database_available(&app)?;
     repository
         .delete_focus_plan_template(template_id)
         .map_err(|error| error.to_string())
@@ -180,6 +186,7 @@ pub fn start_focus_template(
     status: State<'_, FocusModeState>,
     repository: State<'_, ActivityRepository>,
 ) -> Result<FocusModeStatus, String> {
+    ensure_database_available(&app)?;
     let template = repository
         .focus_plan_templates()
         .map_err(|error| error.to_string())?
@@ -202,6 +209,7 @@ fn start_focus_plan_with_template(
     status: State<'_, FocusModeState>,
     repository: State<'_, ActivityRepository>,
 ) -> Result<FocusModeStatus, String> {
+    ensure_database_available(&app)?;
     if duration_minutes.is_some_and(|minutes| !(5..=240).contains(&minutes)) {
         return Err("focus plan duration must be between 5 and 240 minutes".to_owned());
     }
@@ -239,6 +247,7 @@ pub fn set_focus_plan_paused(
     status: State<'_, FocusModeState>,
     repository: State<'_, ActivityRepository>,
 ) -> Result<FocusModeStatus, String> {
+    ensure_database_available(&app)?;
     let now_ms = unix_timestamp_ms()?;
     let next = status.set_paused(paused, now_ms);
     repository
@@ -255,6 +264,7 @@ pub fn end_focus_plan(
     status: State<'_, FocusModeState>,
     repository: State<'_, ActivityRepository>,
 ) -> Result<FocusModeStatus, String> {
+    ensure_database_available(&app)?;
     let now_ms = unix_timestamp_ms()?;
     let current = status.snapshot();
     if let Some(started_at_ms) = current.started_at_ms.filter(|_| current.active) {
@@ -290,6 +300,14 @@ pub fn end_focus_plan(
     let next = status.end();
     publish_status(&app, &next);
     Ok(next)
+}
+
+fn ensure_database_available(app: &AppHandle) -> Result<(), String> {
+    if app.state::<DatabaseMaintenanceState>().is_active() {
+        Err("Focus controls are unavailable while database maintenance is in progress.".to_owned())
+    } else {
+        Ok(())
+    }
 }
 
 fn unix_timestamp_ms() -> Result<i64, String> {

@@ -12,6 +12,8 @@ dist
 dist-ssr
 src-tauri/target
 coverage
+playwright-report
+test-results
 *.local
 .env
 .env.*

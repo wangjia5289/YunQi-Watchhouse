@@ -37,6 +37,9 @@ describe("translateText", () => {
       "Data Health",
       "View Privacy Notice",
       "Restore Database Backup",
+      "Weekly report archive",
+      "Encrypted backup",
+      "Diagnostics center",
       "Delete All Activity Data",
       "Import Watchhouse data",
       "These sessions will be removed from the timeline. You can undo this operation afterward.",
@@ -62,6 +65,15 @@ describe("translateText", () => {
     expect(translateText(
       "Delete all recorded activity? This cannot be undone.",
     )).toBe("要删除所有活动记录吗？此操作无法撤销。");
+  });
+
+  it("translates errors from encrypted backups and weekly notifications", () => {
+    expect(translateText("The encrypted backup file could not be written.")).toBe(
+      "无法写入加密备份文件。",
+    );
+    expect(translateText("notification permission has not been granted")).toBe(
+      "尚未获得通知权限。",
+    );
   });
 
   it("formats durations compactly in every interface language", () => {
