@@ -111,8 +111,8 @@ const report = (startMs: number, endMs: number) => ({
   ],
 });
 
-export function installBrowserMock() {
-  mockWindows("main");
+export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") {
+  mockWindows(windowLabel);
   mockIPC((command, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
     switch (command) {
@@ -124,6 +124,27 @@ export function installBrowserMock() {
       case "get_today_summary": return todaySummary;
       case "get_today_focus_summary": return focusSummary;
       case "get_timeline": return [];
+      case "get_timeline_page": return {
+        entries: [],
+        totalCount: 0,
+        activeDurationMs: 0,
+        idleDurationMs: 0,
+        offset: Number(args.offset ?? 0),
+        hasMore: false,
+      };
+      case "search_timeline_range": return {
+        entries: [],
+        totalCount: 0,
+        activeDurationMs: 0,
+        idleDurationMs: 0,
+        offset: Number(args.offset ?? 0),
+        hasMore: false,
+      };
+      case "get_timeline_undo_history": return [];
+      case "get_app_usage": return [];
+      case "get_category_usage": return [];
+      case "get_application_daily_usage": return [];
+      case "get_daily_usage": return [];
       case "get_today_usage_limit_progress": return [];
       case "get_focus_mode": return focusMode;
       case "get_focus_plan_templates": return [];
@@ -250,7 +271,7 @@ export function installBrowserMock() {
         notes: null,
         publishedAt: null,
       };
-      default: return null;
+      default: throw new Error(`Unhandled browser mock command: ${command}`);
     }
   }, { shouldMockEvents: true });
 }

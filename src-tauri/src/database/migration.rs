@@ -34,5 +34,8 @@ pub(super) fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/0018_category_rule_reapply_undo.sql"
         )),
+        M::up(include_str!(
+            "../../migrations/0019_focus_plan_history_query_index.sql"
+        )),
     ])
 }

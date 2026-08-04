@@ -2,7 +2,7 @@ import { CSSProperties, useCallback, useEffect, useMemo, useState } from "react"
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { formatDuration } from "../../lib/format";
-import { Locale, useLocale } from "../../lib/i18n";
+import { initialLocale, Locale, persistLocale } from "../../lib/locale";
 import {
   CurrentActivity,
   FocusModeStatus,
@@ -16,6 +16,7 @@ import {
   getTodayFocusSummary,
   getTodaySummary,
   getTodayUsageLimitProgress,
+  setAppLocale,
   setFocusMode,
   setTrackingPaused,
 } from "../../lib/ipc";
@@ -96,13 +97,24 @@ const copy = {
 } as const;
 
 export function TrayPanel() {
-  const { locale, setLocale } = useLocale();
+  const [locale, setLocaleState] = useState<Locale>(initialLocale);
+  const setLocale = useCallback((next: Locale) => {
+    persistLocale(next);
+    setLocaleState(next);
+  }, []);
   const labels = copy[locale];
   const [snapshot, setSnapshot] = useState<TraySnapshot>(emptySnapshot);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"tracking" | "focus" | null>(null);
   const [nowMs, setNowMs] = useState(Date.now());
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+    void setAppLocale(locale).catch(() => {
+      // Browser preview does not expose Tauri IPC.
+    });
+  }, [locale]);
 
   const refresh = useCallback(async () => {
     try {

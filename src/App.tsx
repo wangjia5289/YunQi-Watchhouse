@@ -1,13 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import "./App.css";
 import "./styles/tokens.css";
-import { Dashboard } from "./features/dashboard/Dashboard";
-import { Timeline } from "./features/timeline/Timeline";
-import { Applications } from "./features/applications/Applications";
-import { History } from "./features/history/History";
-import { Settings } from "./features/settings/Settings";
-import { Reports } from "./features/reports/Reports";
-import { GlobalSearch } from "./features/search/GlobalSearch";
 import {
   CurrentActivity,
   errorMessage,
@@ -16,11 +9,25 @@ import {
 } from "./lib/ipc";
 import { completeOnboarding, setTrackingPaused } from "./lib/ipc";
 import { PrivacyNotice } from "./features/onboarding/PrivacyNotice";
+import { PageErrorBoundary } from "./components/PageErrorBoundary";
 import { emit, listen } from "@tauri-apps/api/event";
 import { notifyActivityDataChanged } from "./lib/events";
 import { useLocale } from "./lib/i18n";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { TrayPanel } from "./features/tray/TrayPanel";
+
+const Dashboard = lazy(() => import("./features/dashboard/Dashboard")
+  .then((module) => ({ default: module.Dashboard })));
+const Timeline = lazy(() => import("./features/timeline/Timeline")
+  .then((module) => ({ default: module.Timeline })));
+const GlobalSearch = lazy(() => import("./features/search/GlobalSearch")
+  .then((module) => ({ default: module.GlobalSearch })));
+const Applications = lazy(() => import("./features/applications/Applications")
+  .then((module) => ({ default: module.Applications })));
+const History = lazy(() => import("./features/history/History")
+  .then((module) => ({ default: module.History })));
+const Reports = lazy(() => import("./features/reports/Reports")
+  .then((module) => ({ default: module.Reports })));
+const Settings = lazy(() => import("./features/settings/Settings")
+  .then((module) => ({ default: module.Settings })));
 
 const navigation = [
   { label: "Today", icon: "today", page: "today", enabled: true },
@@ -65,6 +72,16 @@ function NavIcon({ name }: { name: string }) {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       {paths[name]}
     </svg>
+  );
+}
+
+function PageLoading() {
+  const { t } = useLocale();
+  return (
+    <div className="page-loading" role="status">
+      <span className="page-loading-indicator" aria-hidden="true" />
+      <span>{t("Loading…")}</span>
+    </div>
   );
 }
 
@@ -246,28 +263,32 @@ function MainApp() {
             <button type="button" onClick={loadSettings}>{t("Retry")}</button>
           </div>
         )}
-        {page === "today" && (
-          <Dashboard current={tracking} onTrackingChanged={loadTracking} />
-        )}
-        {page === "timeline" && (
-          <Timeline
-            initialDate={timelineTarget.date}
-            initialSessionId={timelineTarget.sessionId}
-            onDateChange={(date) => setTimelineTarget({ date })}
-          />
-        )}
-        {page === "search" && (
-          <GlobalSearch
-            onOpenDate={(date, sessionId) => {
-              setTimelineTarget({ date, sessionId });
-              setPage("timeline");
-            }}
-          />
-        )}
-        {page === "applications" && <Applications />}
-        {page === "history" && <History />}
-        {page === "reports" && <Reports />}
-        {page === "settings" && <Settings />}
+        <PageErrorBoundary resetKey={page}>
+          <Suspense fallback={<PageLoading />}>
+            {page === "today" && (
+              <Dashboard current={tracking} onTrackingChanged={loadTracking} />
+            )}
+            {page === "timeline" && (
+              <Timeline
+                initialDate={timelineTarget.date}
+                initialSessionId={timelineTarget.sessionId}
+                onDateChange={(date) => setTimelineTarget({ date })}
+              />
+            )}
+            {page === "search" && (
+              <GlobalSearch
+                onOpenDate={(date, sessionId) => {
+                  setTimelineTarget({ date, sessionId });
+                  setPage("timeline");
+                }}
+              />
+            )}
+            {page === "applications" && <Applications />}
+            {page === "history" && <History />}
+            {page === "reports" && <Reports />}
+            {page === "settings" && <Settings />}
+          </Suspense>
+        </PageErrorBoundary>
       </main>
     </div>
     {settingsLoaded && needsOnboarding && (
@@ -282,10 +303,4 @@ function MainApp() {
   );
 }
 
-function App() {
-  const isTrayPanel = "__TAURI_INTERNALS__" in window
-    && getCurrentWindow().label === "tray-panel";
-  return isTrayPanel ? <TrayPanel /> : <MainApp />;
-}
-
-export default App;
+export default MainApp;

@@ -4,7 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, Timelike, Utc};
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, NaiveDateTime, Timelike, Utc,
+};
 
 use crate::{
     database::{ActivityRepository, MaintenanceResult, WeeklyReportArchiveInput},
@@ -316,9 +318,11 @@ fn prune_backups_with_extension(
         .map_err(|error| error.to_string())?
         .filter_map(Result::ok)
         .filter(|entry| {
-            entry.file_name().to_str().is_some_and(|name| {
-                name.starts_with("watchhouse-auto-") && name.ends_with(extension)
-            })
+            entry.file_type().is_ok_and(|file_type| file_type.is_file())
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| is_automatic_backup_name(name, extension))
         })
         .collect::<Vec<_>>();
     backups.sort_by_key(|entry| std::cmp::Reverse(entry.file_name()));
@@ -326,6 +330,16 @@ fn prune_backups_with_extension(
         fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn is_automatic_backup_name(name: &str, extension: &str) -> bool {
+    name.strip_prefix("watchhouse-auto-")
+        .and_then(|value| value.strip_suffix(extension))
+        .is_some_and(|timestamp| {
+            timestamp.len() == 15
+                && timestamp.as_bytes().get(8) == Some(&b'-')
+                && NaiveDateTime::parse_from_str(timestamp, "%Y%m%d-%H%M%S").is_ok()
+        })
 }
 
 #[cfg(test)]
@@ -463,5 +477,72 @@ mod tests {
                 .last_backup_at_ms,
             3_000
         );
+    }
+
+    #[test]
+    fn backup_rotation_ignores_files_that_only_resemble_generated_backups() {
+        let directory = tempfile::tempdir().expect("temporary directory should exist");
+        let names = [
+            "watchhouse-auto-not-a-date.sqlite3",
+            "watchhouse-auto-20260230-120000.sqlite3",
+            "watchhouse-auto-20260101-120000-copy.sqlite3",
+            "watchhouse-auto-20260101-120000.sqlite3.bak",
+            "watchhouse-auto-not-a-date.yqbackup",
+            "watchhouse-auto-20260230-120000.yqbackup",
+            "watchhouse-auto-20260101-120000-copy.yqbackup",
+            "watchhouse-auto-20260101-120000.yqbackup.bak",
+        ];
+        for name in names {
+            fs::write(directory.path().join(name), b"keep")
+                .expect("test backup file should be written");
+        }
+
+        prune_backups(directory.path(), 0).expect("backup rotation should succeed");
+        prune_backups_with_extension(directory.path(), 0, ".yqbackup")
+            .expect("encrypted backup rotation should succeed");
+
+        for name in names {
+            assert!(
+                directory.path().join(name).exists(),
+                "{name} should be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn backup_rotation_removes_only_old_strictly_named_files_for_each_format() {
+        let directory = tempfile::tempdir().expect("temporary directory should exist");
+        for extension in [".sqlite3", ".yqbackup"] {
+            for timestamp in ["20260101-120000", "20260102-120000", "20260103-120000"] {
+                fs::write(
+                    directory
+                        .path()
+                        .join(format!("watchhouse-auto-{timestamp}{extension}")),
+                    b"backup",
+                )
+                .expect("test backup file should be written");
+            }
+            prune_backups_with_extension(directory.path(), 2, extension)
+                .expect("backup rotation should succeed");
+
+            assert!(
+                !directory
+                    .path()
+                    .join(format!("watchhouse-auto-20260101-120000{extension}"))
+                    .exists()
+            );
+            assert!(
+                directory
+                    .path()
+                    .join(format!("watchhouse-auto-20260102-120000{extension}"))
+                    .exists()
+            );
+            assert!(
+                directory
+                    .path()
+                    .join(format!("watchhouse-auto-20260103-120000{extension}"))
+                    .exists()
+            );
+        }
     }
 }

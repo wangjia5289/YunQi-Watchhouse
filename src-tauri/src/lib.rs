@@ -670,6 +670,12 @@ pub fn run() {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
                 loop {
                     interval.tick().await;
+                    let Ok(maintenance_guard) = maintenance_app
+                        .state::<DatabaseMaintenanceState>()
+                        .try_begin()
+                    else {
+                        continue;
+                    };
                     let repository = maintenance_repository.clone();
                     let statistics = maintenance_statistics.clone();
                     let app_data = maintenance_app_data.clone();
@@ -698,6 +704,7 @@ pub fn run() {
                         Err(error) => (Err(error.to_string()), None),
                     };
                     maintenance_status.finish(completed_at_ms, &status_result);
+                    drop(maintenance_guard);
                     if let Err(error) = status_result {
                         log::error!("automatic data maintenance failed: {error}");
                     }
@@ -1253,6 +1260,21 @@ mod shortcut_tests {
         assert!(state.try_begin().is_err());
         drop(guard);
         assert!(!state.is_active());
+        assert!(state.try_begin().is_ok());
+    }
+
+    #[test]
+    fn database_maintenance_lease_is_shared_across_threads() {
+        let state = DatabaseMaintenanceState::default();
+        let competing_state = state.clone();
+        let guard = state.try_begin().expect("automatic maintenance lease");
+
+        let was_rejected = std::thread::spawn(move || competing_state.try_begin().is_err())
+            .join()
+            .expect("competing maintenance thread should finish");
+
+        assert!(was_rejected);
+        drop(guard);
         assert!(state.try_begin().is_ok());
     }
 

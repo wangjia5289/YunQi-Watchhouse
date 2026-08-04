@@ -232,6 +232,7 @@ pub async fn repair_data_health(
     app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<DataHealthRepairResult, String> {
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
     let repository = repository.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let directory = app
@@ -262,7 +263,11 @@ pub fn get_data_health_undo_status(
 }
 
 #[tauri::command]
-pub fn undo_data_health_repair(repository: State<'_, ActivityRepository>) -> Result<usize, String> {
+pub fn undo_data_health_repair(
+    app: AppHandle,
+    repository: State<'_, ActivityRepository>,
+) -> Result<usize, String> {
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
     repository
         .undo_data_health_repair()
         .map_err(|error| error.to_string())
@@ -439,7 +444,9 @@ pub async fn delete_all_activity(
     repository: State<'_, ActivityRepository>,
     monitor: State<'_, MonitorHandle>,
     session_manager: State<'_, SessionManagerHandle>,
+    maintenance: State<'_, DatabaseMaintenanceState>,
 ) -> Result<(), String> {
+    let _maintenance_guard = maintenance.try_begin()?;
     let was_paused = monitor.is_paused();
     monitor.set_paused(true);
     let acknowledgement = session_manager.request_pause();
@@ -830,6 +837,7 @@ pub async fn run_data_maintenance(
     app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<MaintenanceResult, String> {
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
     let repository = repository.inner().clone();
     let settings = repository.settings().map_err(|error| error.to_string())?;
     let app_data = app
@@ -848,6 +856,7 @@ pub async fn create_automatic_backup_now(
     app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<String, String> {
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
     let repository = repository.inner().clone();
     let app_data = app
         .path()
@@ -992,6 +1001,7 @@ pub(crate) fn reload_runtime_after_restore(
 
 #[tauri::command]
 pub async fn optimize_database(app: AppHandle) -> Result<(), String> {
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
     let monitor = app.state::<MonitorHandle>();
     let was_paused = monitor.is_paused();
     monitor.set_paused(true);

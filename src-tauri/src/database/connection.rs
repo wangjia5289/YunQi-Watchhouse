@@ -82,13 +82,96 @@ mod tests {
             migrations()
                 .current_version(&connection)
                 .expect("schema version should be readable"),
-            SchemaVersion::Inside(std::num::NonZeroUsize::new(18).expect("eighteen is non-zero"))
+            SchemaVersion::Inside(std::num::NonZeroUsize::new(19).expect("nineteen is non-zero"))
         );
         assert_eq!(
             connection
                 .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
                 .expect("foreign key pragma should be readable"),
             1
+        );
+    }
+
+    #[test]
+    fn focus_plan_history_index_upgrades_existing_database_and_serves_history_query() {
+        let mut connection = Connection::open_in_memory().expect("database should open");
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("foreign keys should be enabled");
+        migrations()
+            .to_version(&mut connection, 18)
+            .expect("legacy schema should migrate");
+        connection
+            .execute(
+                "INSERT INTO focus_plan_history (
+                    started_at_ms, planned_end_at_ms, ended_at_ms,
+                    paused_duration_ms, outcome, template_id
+                 ) VALUES (100, 200, 180, 0, 'COMPLETED', NULL)",
+                [],
+            )
+            .expect("legacy focus history should be inserted");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("current schema should migrate");
+
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM focus_plan_history", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("focus history should remain readable"),
+            1
+        );
+
+        let index_columns = connection
+            .prepare("PRAGMA index_xinfo('idx_focus_plan_history_ended_at_id')")
+            .expect("index metadata query should prepare")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, bool>(5)?,
+                ))
+            })
+            .expect("index metadata query should run")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("index metadata should decode")
+            .into_iter()
+            .filter(|(_, _, key)| *key)
+            .map(|(name, descending, _)| (name, descending))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            index_columns,
+            vec![
+                (Some("ended_at_ms".to_owned()), true),
+                (Some("id".to_owned()), true),
+            ]
+        );
+
+        let query_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, started_at_ms, planned_end_at_ms, ended_at_ms,
+                        paused_duration_ms, outcome, template_id
+                 FROM focus_plan_history
+                 WHERE ended_at_ms >= ?1 AND ended_at_ms < ?2
+                 ORDER BY ended_at_ms DESC, id DESC",
+            )
+            .expect("query plan should prepare")
+            .query_map(params![0, 1_000], |row| row.get::<_, String>(3))
+            .expect("query plan should run")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query plan should decode");
+        assert!(
+            query_plan.iter().any(|detail| {
+                detail.contains("USING INDEX idx_focus_plan_history_ended_at_id")
+            })
+        );
+        assert!(
+            query_plan
+                .iter()
+                .all(|detail| !detail.contains("USE TEMP B-TREE FOR ORDER BY"))
         );
     }
 

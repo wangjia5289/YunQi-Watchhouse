@@ -553,3 +553,41 @@ Validation:
 - The macOS application bundle was generated successfully.
 - Browser UI automation could not start locally because the execution environment denied local port
   binding and its escalation approval service was unavailable; CI now runs the same suite on macOS.
+
+## Phase 25: Maintenance Safety And Load Performance
+
+Status: Complete
+
+- [x] Serialize scheduled maintenance, manual cleanup, health repair, destructive data operations,
+  restore, diagnostics, and database optimization through one process-wide maintenance lease.
+- [x] Restrict automatic-backup rotation to regular files with an exact generated timestamp and
+  the expected SQLite or encrypted-backup extension.
+- [x] Add a descending focus-plan history index that matches the range and ordering query.
+- [x] Lazy-load every top-level page and choose the tray or main root before importing its feature
+  tree, styles, and localization dependencies.
+- [x] Split focus-plan persistence from the central Rust repository and move locale storage and
+  Chinese translations out of the React localization provider.
+- [x] Exercise every lazy page in browser automation with complete empty-state IPC fixtures.
+
+Decisions:
+
+- Automatic maintenance skips a run when another database-wide operation owns the lease instead of
+  waiting and later executing an already stale schedule.
+- Backup cleanup recognizes only `watchhouse-auto-YYYYMMDD-HHMMSS.sqlite3` and `.yqbackup` files
+  with valid calendar timestamps, so similarly named user files remain untouched.
+- Migration 19 verifies both the index metadata and the real query plan, including the absence of a
+  temporary order-by B-tree.
+- The tray keeps its self-contained stylesheet and small locale state but does not import the main
+  application CSS, translation catalog, or page chunks.
+- Repository decomposition starts with the cohesive focus-plan domain while preserving the existing
+  `database` public API; other domains can follow the same child-module pattern incrementally.
+
+Validation:
+
+- 44 frontend unit tests passed.
+- 9 browser UI tests passed across desktop and narrow viewports; 5 intentionally duplicated cases
+  were skipped by project configuration.
+- The production build split the former roughly 408 kB monolithic JavaScript bundle into a roughly
+  186 kB bootstrap, a 10 kB application shell, and independently loaded feature chunks.
+- 130 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting and Clippy passed with warnings denied.

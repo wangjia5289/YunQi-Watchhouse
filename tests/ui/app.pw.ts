@@ -21,6 +21,39 @@ test("opens reports and exposes weekly archive controls", async ({ page }) => {
   await expect(page.getByText("Weekly report archived locally.")).toBeVisible();
 });
 
+test("loads each top-level page on demand", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "narrow", "lazy page loading runs once on desktop");
+  await page.goto("./?browser-mock");
+
+  const pages = [
+    ["Timeline", "No activity recorded"],
+    ["Search", "No matching activity"],
+    ["Applications", "No application activity"],
+    ["History", "Daily activity"],
+    ["Reports", "Weekly insights"],
+    ["Settings", "Diagnostics center"],
+  ] as const;
+  for (const [pageName, readyHeading] of pages) {
+    await page.getByRole("button", { name: pageName, exact: true }).click();
+    await expect(page.getByRole("heading", { name: pageName, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: readyHeading, exact: true })).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+  }
+});
+
+test("loads the isolated tray entry and controls tracking", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "narrow", "tray entry smoke test runs once on desktop");
+  await page.goto("./?browser-mock&window=tray-panel");
+
+  const tray = page.locator("main.tray-panel");
+  await expect(tray).toBeVisible();
+  await expect(tray).toHaveCSS("border-radius", "12px");
+  await expect(tray.getByText("Visual Studio Code", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Pause tracking", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Resume tracking", exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
 test("previews a classification rule before saving", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "narrow", "classification editor workflow runs once on desktop");
   await page.goto("./?browser-mock");
