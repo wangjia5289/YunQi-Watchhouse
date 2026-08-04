@@ -129,14 +129,15 @@ export function Settings() {
     if (settings) void getMaintenancePreview().then(setMaintenancePreview);
   }, [settings?.retentionDays]);
 
-  async function save(next: SettingsModel) {
-    if (savingRef.current) return;
+  async function save(next: SettingsModel): Promise<boolean> {
+    if (savingRef.current) return false;
     savingRef.current = true;
     setSaving(true);
     setSettings(next);
     try {
       setSettings(await updateSettings(next));
       setMessage("Settings saved.");
+      return true;
     } catch (error) {
       setMessage(errorMessage(error));
       try {
@@ -144,6 +145,7 @@ export function Settings() {
       } catch (reloadError) {
         setMessage(errorMessage(reloadError));
       }
+      return false;
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -489,7 +491,7 @@ export function Settings() {
           onMessage={setMessage}
           automaticEnabled={settings.automaticEncryptedBackupEnabled}
           onAutomaticEnabledChange={async (enabled) => {
-            await save({ ...settings, automaticEncryptedBackupEnabled: enabled });
+            return save({ ...settings, automaticEncryptedBackupEnabled: enabled });
           }}
           onRestored={() => {
             void getDiagnosticsSummary().then(setDiagnostics);

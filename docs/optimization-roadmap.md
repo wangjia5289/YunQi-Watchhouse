@@ -514,9 +514,42 @@ Decisions:
 
 - The menu-bar panel is a separate fixed-size Tauri window that stops polling while hidden.
 - Weekly archives preserve the source report payload plus compact searchable summary fields.
-- Encrypted backups derive keys with Argon2id and use chunked XChaCha20-Poly1305; passwords are
-  never stored, and isolated temporary plaintext copies are removed automatically.
+- Encrypted backups derive keys with Argon2id and use chunked XChaCha20-Poly1305; manual backup
+  passwords are never stored, while automatic-backup passwords are opt-in and kept in the system
+  Keychain. Isolated temporary plaintext copies are removed automatically.
 - Diagnostics repair creates a full SQLite backup before session repair, database optimization,
   and icon-cache refresh.
 - Browser fixtures use Tauri's official IPC mocks only in Vite development mode and are excluded
   from production builds.
+
+## Phase 24: Reliability And Runtime Efficiency
+
+Status: Complete
+
+- [x] Keep automatic encrypted-backup settings and Keychain credentials consistent across errors.
+- [x] Catch up the oldest unnotified weekly archive after missed schedules or application downtime.
+- [x] Stop current-activity polling while the main window is hidden or unfocused and share one
+  polling source with Today.
+- [x] Match historical category rules outside the database lock with pre-normalized candidates and
+  conditionally apply changes without overwriting concurrent edits.
+- [x] Run frontend unit and browser UI tests in pull-request CI.
+- [x] Avoid empty Focus Plan history division when automatically archiving a weekly report.
+
+Decisions:
+
+- Enabling automatic encrypted backups requires an existing Keychain credential; disabling remains
+  available when credential lookup fails, and password removal is rejected while backups are enabled.
+- Weekly notification due dates are derived from each archive's week end, so unnotified archives
+  remain eligible across later weeks and are delivered oldest first.
+- Category-rule scans snapshot the required rows under the SQLite lock, perform string matching after
+  releasing it, then verify the active rules and previous override before transactional writeback.
+
+Validation:
+
+- Frontend production build passed.
+- 42 frontend unit tests passed.
+- 126 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting and Clippy passed with warnings denied.
+- The macOS application bundle was generated successfully.
+- Browser UI automation could not start locally because the execution environment denied local port
+  binding and its escalation approval service was unavailable; CI now runs the same suite on macOS.

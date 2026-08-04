@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, Timelike, Utc};
 
 use crate::{
     database::{ActivityRepository, MaintenanceResult, WeeklyReportArchiveInput},
@@ -55,9 +55,7 @@ pub fn archive_due_weekly_report(
     let existing = repository
         .weekly_report_archive(&week_start_text)
         .map_err(|error| error.to_string())?;
-    let archive = if let Some(existing) = existing {
-        existing
-    } else {
+    if existing.is_none() {
         let start_range =
             crate::statistics::local_day_range(week_start).map_err(|error| error.to_string())?;
         let end_range =
@@ -93,7 +91,7 @@ pub fn archive_due_weekly_report(
             .filter(|plan| plan.outcome == "COMPLETED")
             .count();
         let focus_completion_rate =
-            (!plans.is_empty()).then_some((completed.saturating_mul(100) / plans.len()) as i64);
+            (!plans.is_empty()).then(|| (completed.saturating_mul(100) / plans.len()) as i64);
         let input = WeeklyReportArchiveInput {
             week_start_date: week_start_text.clone(),
             week_end_date: week_end.format("%Y-%m-%d").to_string(),
@@ -109,18 +107,47 @@ pub fn archive_due_weekly_report(
         };
         repository
             .archive_weekly_report(&input)
-            .map_err(|error| error.to_string())?
-    };
+            .map_err(|error| error.to_string())?;
+    }
+
+    if !settings.weekly_report_notification_enabled {
+        return Ok(None);
+    }
 
     let scheduled_minutes = parse_clock_minutes(&settings.weekly_report_notification_time)?;
-    let current_minutes = now.hour() as i64 * 60 + now.minute() as i64;
-    let should_notify = settings.weekly_report_notification_enabled
-        && archive.notified_at_ms.is_none()
-        && now.weekday().number_from_monday() as i64 == settings.weekly_report_notification_weekday
-        && current_minutes >= scheduled_minutes;
+    let Some(archive) = repository
+        .oldest_unnotified_weekly_report_archive()
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let should_notify = weekly_notification_is_due(
+        &now,
+        &archive.week_end_date,
+        settings.weekly_report_notification_weekday,
+        scheduled_minutes,
+    )?;
     Ok(should_notify.then_some(WeeklyArchiveNotification {
         week_start_date: archive.week_start_date,
     }))
+}
+
+fn weekly_notification_is_due(
+    now: &DateTime<Local>,
+    archive_week_end_date: &str,
+    scheduled_weekday: i64,
+    scheduled_minutes: i64,
+) -> Result<bool, String> {
+    let week_end = NaiveDate::parse_from_str(archive_week_end_date, "%Y-%m-%d")
+        .map_err(|_| "weekly report archive has an invalid end date".to_owned())?;
+    let scheduled_date = week_end
+        .checked_add_signed(ChronoDuration::days(scheduled_weekday))
+        .ok_or_else(|| {
+            "weekly report notification date is outside the supported range".to_owned()
+        })?;
+    let current_minutes = now.hour() as i64 * 60 + now.minute() as i64;
+    Ok(now.date_naive() > scheduled_date
+        || (now.date_naive() == scheduled_date && current_minutes >= scheduled_minutes))
 }
 
 fn parse_clock_minutes(value: &str) -> Result<i64, String> {
@@ -303,9 +330,103 @@ fn prune_backups_with_extension(
 
 #[cfg(test)]
 mod tests {
+    use chrono::{LocalResult, TimeZone};
+
     use crate::database::Database;
 
     use super::*;
+
+    fn weekly_report_setup() -> (ActivityRepository, StatisticsService) {
+        let repository =
+            ActivityRepository::new(Database::in_memory().expect("database should initialize"));
+        let mut settings = repository.settings().expect("settings should load");
+        settings.weekly_report_auto_archive_enabled = true;
+        settings.weekly_report_notification_enabled = true;
+        settings.weekly_report_notification_weekday = 2;
+        settings.weekly_report_notification_time = "09:00".to_owned();
+        repository
+            .update_settings(&settings, 1)
+            .expect("settings should update");
+        let statistics = StatisticsService::new(repository.clone());
+        (repository, statistics)
+    }
+
+    fn local_timestamp(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> i64 {
+        match Local.with_ymd_and_hms(year, month, day, hour, minute, 0) {
+            LocalResult::Single(value) => value.timestamp_millis(),
+            LocalResult::Ambiguous(earliest, _) => earliest.timestamp_millis(),
+            LocalResult::None => panic!("test timestamp should exist in the local timezone"),
+        }
+    }
+
+    #[test]
+    fn weekly_report_notification_is_due_at_the_scheduled_time() {
+        let (repository, statistics) = weekly_report_setup();
+
+        let notification =
+            archive_due_weekly_report(&repository, &statistics, local_timestamp(2026, 8, 4, 9, 0))
+                .expect("weekly report archive should succeed")
+                .expect("notification should be due");
+
+        assert_eq!(notification.week_start_date, "2026-07-27");
+    }
+
+    #[test]
+    fn weekly_report_notification_is_caught_up_after_the_scheduled_day() {
+        let (repository, statistics) = weekly_report_setup();
+
+        let before_schedule =
+            archive_due_weekly_report(&repository, &statistics, local_timestamp(2026, 8, 4, 8, 59))
+                .expect("weekly report archive should succeed");
+        assert!(before_schedule.is_none());
+
+        let notification = archive_due_weekly_report(
+            &repository,
+            &statistics,
+            local_timestamp(2026, 8, 10, 15, 30),
+        )
+        .expect("weekly report archive should succeed")
+        .expect("missed notification should be caught up");
+
+        assert_eq!(notification.week_start_date, "2026-07-27");
+    }
+
+    #[test]
+    fn weekly_report_notification_waits_until_the_scheduled_time() {
+        let (repository, statistics) = weekly_report_setup();
+
+        let notification =
+            archive_due_weekly_report(&repository, &statistics, local_timestamp(2026, 8, 4, 8, 59))
+                .expect("weekly report archive should succeed");
+
+        assert!(notification.is_none());
+        assert!(
+            repository
+                .weekly_report_archive("2026-07-27")
+                .expect("archive lookup should succeed")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn weekly_report_notification_is_not_repeated_after_being_marked() {
+        let (repository, statistics) = weekly_report_setup();
+        archive_due_weekly_report(&repository, &statistics, local_timestamp(2026, 8, 4, 9, 0))
+            .expect("weekly report archive should succeed")
+            .expect("notification should initially be due");
+        repository
+            .mark_weekly_report_notified("2026-07-27", local_timestamp(2026, 8, 4, 9, 1))
+            .expect("archive should be marked as notified");
+
+        let notification = archive_due_weekly_report(
+            &repository,
+            &statistics,
+            local_timestamp(2026, 8, 7, 15, 30),
+        )
+        .expect("weekly report archive should succeed");
+
+        assert!(notification.is_none());
+    }
 
     #[test]
     fn automatic_backups_are_rotated_and_completion_is_recorded() {

@@ -23,7 +23,7 @@ export function EncryptedBackupControls({
   onMessage: (message: string) => void;
   onRestored: () => void;
   automaticEnabled: boolean;
-  onAutomaticEnabledChange: (enabled: boolean) => Promise<void>;
+  onAutomaticEnabledChange: (enabled: boolean) => Promise<boolean>;
 }) {
   const { t } = useLocale();
   const [mode, setMode] = useState<"backup" | "restore">("backup");
@@ -50,6 +50,24 @@ export function EncryptedBackupControls({
       setAutomaticPasswordSaved(true);
       setAutomaticPassword("");
       onMessage(t("Automatic encrypted backup password saved securely."));
+    } catch (reason) {
+      onMessage(t(errorMessage(reason)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAutomaticPassword() {
+    setBusy(true);
+    try {
+      const removed = await removeAutomaticEncryptedBackupPassword(
+        automaticEnabled,
+        () => onAutomaticEnabledChange(false),
+        clearAutomaticEncryptedBackupPassword,
+      );
+      if (!removed) return;
+      setAutomaticPasswordSaved(false);
+      onMessage(t("Automatic encrypted backup password removed."));
     } catch (reason) {
       onMessage(t(errorMessage(reason)));
     } finally {
@@ -164,7 +182,7 @@ export function EncryptedBackupControls({
           <input
             type="checkbox"
             checked={automaticEnabled}
-            disabled={busy || !automaticPasswordSaved}
+            disabled={busy || !canToggleAutomaticEncryptedBackup(automaticEnabled, automaticPasswordSaved)}
             onChange={(event) => void onAutomaticEnabledChange(event.currentTarget.checked)}
           />
           <span>{t(automaticEnabled ? "Enabled" : "Disabled")}</span>
@@ -184,14 +202,7 @@ export function EncryptedBackupControls({
             {t("Save securely")}
           </button>
           {automaticPasswordSaved && (
-            <button type="button" disabled={busy} onClick={() => {
-              void (async () => {
-                if (automaticEnabled) await onAutomaticEnabledChange(false);
-                await clearAutomaticEncryptedBackupPassword();
-                setAutomaticPasswordSaved(false);
-                onMessage(t("Automatic encrypted backup password removed."));
-              })().catch((reason) => onMessage(t(errorMessage(reason))));
-            }}>
+            <button type="button" disabled={busy} onClick={() => void removeAutomaticPassword()}>
               {t("Remove password")}
             </button>
           )}
@@ -199,4 +210,21 @@ export function EncryptedBackupControls({
       </div>
     </div>
   );
+}
+
+export function canToggleAutomaticEncryptedBackup(
+  automaticEnabled: boolean,
+  automaticPasswordSaved: boolean,
+): boolean {
+  return automaticEnabled || automaticPasswordSaved;
+}
+
+export async function removeAutomaticEncryptedBackupPassword(
+  automaticEnabled: boolean,
+  disableAutomaticBackups: () => Promise<boolean>,
+  clearPassword: () => Promise<void>,
+): Promise<boolean> {
+  if (automaticEnabled && !(await disableAutomaticBackups())) return false;
+  await clearPassword();
+  return true;
 }

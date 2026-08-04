@@ -37,7 +37,16 @@ pub async fn set_automatic_encrypted_backup_password(password: String) -> Result
 }
 
 #[tauri::command]
-pub async fn clear_automatic_encrypted_backup_password() -> Result<(), String> {
+pub async fn clear_automatic_encrypted_backup_password(
+    repository: State<'_, ActivityRepository>,
+) -> Result<(), String> {
+    if repository
+        .settings()
+        .map_err(|error| error.to_string())?
+        .automatic_encrypted_backup_enabled
+    {
+        return Err("Disable automatic encrypted backups before removing its password.".to_owned());
+    }
     tauri::async_runtime::spawn_blocking(backup_credentials::delete)
         .await
         .map_err(|error| error.to_string())?

@@ -456,6 +456,27 @@ struct CategoryRulesReapplyChange {
     next_category_override: Option<String>,
 }
 
+struct CategoryRuleSession {
+    session_id: i64,
+    application_id: i64,
+    application_name: String,
+    bundle_id: Option<String>,
+    window_title: Option<String>,
+    application_category: String,
+    category_override: Option<String>,
+}
+
+struct PreparedCategoryRule<'a> {
+    rule: &'a CategoryRule,
+    normalized_pattern: String,
+}
+
+struct NormalizedCategoryCandidates {
+    application_name: String,
+    bundle_id: Option<String>,
+    window_title: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct ActivityRepository {
     database: Database,
@@ -715,14 +736,10 @@ impl ActivityRepository {
             })
             .collect::<Vec<_>>();
 
-        let mut statement = connection.prepare(
-            "SELECT a.id, a.name, a.bundle_id, s.window_title
-             FROM activity_sessions s
-             JOIN applications a ON a.id = s.application_id
-             WHERE s.state = 'ACTIVE'
-             ORDER BY s.started_at_ms DESC, s.id DESC",
-        )?;
-        let mut rows = statement.query([])?;
+        let sessions = category_rule_sessions(&connection)?;
+        drop(connection);
+        let normalized_pattern = normalized.pattern.to_lowercase();
+        let prepared_preceding_rules = prepare_category_rules(&preceding_rules);
         let mut matched_application_ids = HashSet::new();
         let mut matched_session_count = 0;
         let mut effective_session_count = 0;
@@ -730,32 +747,26 @@ impl ActivityRepository {
         let mut conflicts = Vec::<CategoryRuleConflict>::new();
         let mut samples = Vec::with_capacity(SAMPLE_LIMIT);
 
-        while let Some(row) = rows.next()? {
-            let application_id = row.get::<_, i64>(0)?;
-            let application_name = row.get::<_, String>(1)?;
-            let bundle_id = row.get::<_, Option<String>>(2)?;
-            let window_title = row.get::<_, Option<String>>(3)?;
-            if !category_rule_matches(
+        for session in sessions {
+            let candidates = NormalizedCategoryCandidates::new(
+                &session.application_name,
+                session.bundle_id.as_deref(),
+                session.window_title.as_deref(),
+            );
+            if !category_rule_matches_normalized(
                 normalized.match_field,
-                &normalized.pattern,
-                &application_name,
-                bundle_id.as_deref(),
-                window_title.as_deref(),
+                &normalized_pattern,
+                &candidates,
             ) {
                 continue;
             }
 
             matched_session_count += 1;
-            matched_application_ids.insert(application_id);
-            let shadowing_rule = preceding_rules.iter().find(|rule| {
-                category_rule_matches(
-                    rule.match_field,
-                    &rule.pattern,
-                    &application_name,
-                    bundle_id.as_deref(),
-                    window_title.as_deref(),
-                )
-            });
+            matched_application_ids.insert(session.application_id);
+            let shadowing_rule = prepared_preceding_rules
+                .iter()
+                .find(|prepared| prepared.matches(&candidates))
+                .map(|prepared| prepared.rule);
 
             if let Some(rule) = shadowing_rule {
                 shadowed_session_count += 1;
@@ -780,9 +791,9 @@ impl ActivityRepository {
 
             if samples.len() < SAMPLE_LIMIT {
                 samples.push(CategoryRulePreviewSample {
-                    application_name: truncate_preview_text(&application_name),
-                    bundle_id: bundle_id.as_deref().map(truncate_preview_text),
-                    window_title: window_title.as_deref().map(truncate_preview_text),
+                    application_name: truncate_preview_text(&session.application_name),
+                    bundle_id: session.bundle_id.as_deref().map(truncate_preview_text),
+                    window_title: session.window_title.as_deref().map(truncate_preview_text),
                     would_apply: normalized.enabled && shadowing_rule.is_none(),
                     shadowed_by_rule_id: shadowing_rule.map(|rule| rule.id),
                     shadowed_by_category: shadowing_rule
@@ -805,9 +816,14 @@ impl ActivityRepository {
     pub fn preview_category_rules_reapply(&self) -> AppResult<CategoryRulesReapplyPreview> {
         const SAMPLE_LIMIT: usize = 5;
 
-        let connection = self.database.lock()?;
-        let rules = enabled_category_rules(&connection)?;
-        let (scanned_session_count, changes) = category_rules_reapply_changes(&connection, &rules)?;
+        let (rules, sessions) = {
+            let connection = self.database.lock()?;
+            (
+                enabled_category_rules(&connection)?,
+                category_rule_sessions(&connection)?,
+            )
+        };
+        let (scanned_session_count, changes) = category_rules_reapply_changes(sessions, &rules);
         let category_change_count = changes
             .iter()
             .filter(|change| change.previous_category() != change.next_category())
@@ -843,11 +859,50 @@ impl ActivityRepository {
     }
 
     pub fn reapply_category_rules(&self) -> AppResult<CategoryRulesReapplyResult> {
+        let (rules, sessions) = {
+            let connection = self.database.lock()?;
+            (
+                enabled_category_rules(&connection)?,
+                category_rule_sessions(&connection)?,
+            )
+        };
+        let (_, changes) = category_rules_reapply_changes(sessions, &rules);
+        if changes.is_empty() {
+            return Ok(CategoryRulesReapplyResult {
+                affected_count: 0,
+                undo_token: None,
+                undo_created_at_ms: None,
+                undo_expires_at_ms: None,
+            });
+        }
+
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
-        let rules = enabled_category_rules(&transaction)?;
-        let (_, changes) = category_rules_reapply_changes(&transaction, &rules)?;
-        if changes.is_empty() {
+        if enabled_category_rules(&transaction)? != rules {
+            return Err(AppError::InvalidSession(
+                "category rules changed while reclassification was being prepared; preview again"
+                    .to_owned(),
+            ));
+        }
+
+        let mut applied_changes = Vec::with_capacity(changes.len());
+        {
+            let mut update = transaction.prepare_cached(
+                "UPDATE activity_sessions SET category_override = ?2
+                 WHERE id = ?1 AND category_override IS ?3",
+            )?;
+            for change in changes {
+                let updated = update.execute(params![
+                    change.session_id,
+                    change.next_category_override,
+                    change.previous_category_override,
+                ])?;
+                if updated == 1 {
+                    applied_changes.push(change);
+                }
+            }
+        }
+        if applied_changes.is_empty() {
             transaction.commit()?;
             return Ok(CategoryRulesReapplyResult {
                 affected_count: 0,
@@ -862,7 +917,7 @@ impl ActivityRepository {
             row.get::<_, String>(0)
         })?;
         let snapshot = CategoryRulesReapplyUndoSnapshot {
-            changes: changes
+            changes: applied_changes
                 .iter()
                 .map(|change| CategoryRulesReapplyUndoChange {
                     session_id: change.session_id,
@@ -885,15 +940,9 @@ impl ActivityRepository {
                 now_ms,
             ],
         )?;
-        for change in &changes {
-            transaction.execute(
-                "UPDATE activity_sessions SET category_override = ?2 WHERE id = ?1",
-                params![change.session_id, change.next_category_override],
-            )?;
-        }
         transaction.commit()?;
         Ok(CategoryRulesReapplyResult {
-            affected_count: changes.len(),
+            affected_count: applied_changes.len(),
             undo_token: Some(token),
             undo_created_at_ms: Some(now_ms),
             undo_expires_at_ms: Some(now_ms.saturating_add(CATEGORY_RULES_REAPPLY_UNDO_TTL_MS)),
@@ -2799,6 +2848,27 @@ impl ActivityRepository {
         find_weekly_report_archive(&connection, week_start_date)
     }
 
+    pub fn oldest_unnotified_weekly_report_archive(
+        &self,
+    ) -> AppResult<Option<WeeklyReportArchive>> {
+        let connection = self.database.lock()?;
+        connection
+            .query_row(
+                "SELECT week_start_date, week_end_date, generated_at_ms, active_duration_ms,
+                        idle_duration_ms, previous_week_active_duration_ms, strongest_day_date,
+                        peak_hour, leading_category, focus_completion_rate, payload_json,
+                        notified_at_ms
+                 FROM weekly_report_archives
+                 WHERE notified_at_ms IS NULL
+                 ORDER BY week_start_date ASC
+                 LIMIT 1",
+                [],
+                map_weekly_report_archive,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn mark_weekly_report_notified(
         &self,
         week_start_date: &str,
@@ -3723,47 +3793,96 @@ impl CategoryRulesReapplyChange {
     }
 }
 
-fn category_rules_reapply_changes(
-    connection: &Connection,
-    rules: &[CategoryRule],
-) -> AppResult<(usize, Vec<CategoryRulesReapplyChange>)> {
+impl NormalizedCategoryCandidates {
+    fn new(application_name: &str, bundle_id: Option<&str>, window_title: Option<&str>) -> Self {
+        Self {
+            application_name: application_name.to_lowercase(),
+            bundle_id: bundle_id.map(str::to_lowercase),
+            window_title: window_title.map(str::to_lowercase),
+        }
+    }
+
+    fn value(&self, match_field: CategoryRuleMatchField) -> Option<&str> {
+        match match_field {
+            CategoryRuleMatchField::ApplicationName => Some(&self.application_name),
+            CategoryRuleMatchField::BundleId => self.bundle_id.as_deref(),
+            CategoryRuleMatchField::WindowTitle => self.window_title.as_deref(),
+        }
+    }
+}
+
+impl PreparedCategoryRule<'_> {
+    fn matches(&self, candidates: &NormalizedCategoryCandidates) -> bool {
+        self.rule.enabled
+            && category_rule_matches_normalized(
+                self.rule.match_field,
+                &self.normalized_pattern,
+                candidates,
+            )
+    }
+}
+
+fn prepare_category_rules(rules: &[CategoryRule]) -> Vec<PreparedCategoryRule<'_>> {
+    rules
+        .iter()
+        .map(|rule| PreparedCategoryRule {
+            rule,
+            normalized_pattern: rule.pattern.to_lowercase(),
+        })
+        .collect()
+}
+
+fn category_rule_sessions(connection: &Connection) -> AppResult<Vec<CategoryRuleSession>> {
     let mut statement = connection.prepare(
-        "SELECT s.id, a.name, a.bundle_id, s.window_title, a.category,
+        "SELECT s.id, a.id, a.name, a.bundle_id, s.window_title, a.category,
                 s.category_override
          FROM activity_sessions s
          JOIN applications a ON a.id = s.application_id
          WHERE s.state = 'ACTIVE'
          ORDER BY s.started_at_ms DESC, s.id DESC",
     )?;
-    let mut rows = statement.query([])?;
-    let mut scanned_session_count = 0;
+    Ok(statement
+        .query_map([], |row| {
+            Ok(CategoryRuleSession {
+                session_id: row.get(0)?,
+                application_id: row.get(1)?,
+                application_name: row.get(2)?,
+                bundle_id: row.get(3)?,
+                window_title: row.get(4)?,
+                application_category: row.get(5)?,
+                category_override: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn category_rules_reapply_changes(
+    sessions: Vec<CategoryRuleSession>,
+    rules: &[CategoryRule],
+) -> (usize, Vec<CategoryRulesReapplyChange>) {
+    let scanned_session_count = sessions.len();
+    let prepared_rules = prepare_category_rules(rules);
     let mut changes = Vec::new();
-    while let Some(row) = rows.next()? {
-        scanned_session_count += 1;
-        let session_id = row.get::<_, i64>(0)?;
-        let application_name = row.get::<_, String>(1)?;
-        let bundle_id = row.get::<_, Option<String>>(2)?;
-        let window_title = row.get::<_, Option<String>>(3)?;
-        let application_category = row.get::<_, String>(4)?;
-        let previous_category_override = row.get::<_, Option<String>>(5)?;
-        let next_category_override = resolve_category_from_rules(
-            rules,
-            &application_name,
-            bundle_id.as_deref(),
-            window_title.as_deref(),
+    for session in sessions {
+        let candidates = NormalizedCategoryCandidates::new(
+            &session.application_name,
+            session.bundle_id.as_deref(),
+            session.window_title.as_deref(),
         );
-        if next_category_override != previous_category_override {
+        let next_category_override =
+            resolve_category_from_prepared_rules(&prepared_rules, &candidates);
+        if next_category_override != session.category_override {
             changes.push(CategoryRulesReapplyChange {
-                session_id,
-                application_name,
-                window_title,
-                application_category,
-                previous_category_override,
+                session_id: session.session_id,
+                application_name: session.application_name,
+                window_title: session.window_title,
+                application_category: session.application_category,
+                previous_category_override: session.category_override,
                 next_category_override,
             });
         }
     }
-    Ok((scanned_session_count, changes))
+    (scanned_session_count, changes)
 }
 
 fn normalize_category_rule(input: &CategoryRuleInput) -> AppResult<CategoryRuleInput> {
@@ -3799,34 +3918,29 @@ fn resolve_category_from_rules(
     bundle_id: Option<&str>,
     window_title: Option<&str>,
 ) -> Option<String> {
-    rules.iter().find_map(|rule| {
-        if !rule.enabled {
-            return None;
-        }
-        category_rule_matches(
-            rule.match_field,
-            &rule.pattern,
-            application_name,
-            bundle_id,
-            window_title,
-        )
-        .then(|| rule.category.clone())
-    })
+    let prepared_rules = prepare_category_rules(rules);
+    let candidates = NormalizedCategoryCandidates::new(application_name, bundle_id, window_title);
+    resolve_category_from_prepared_rules(&prepared_rules, &candidates)
 }
 
-fn category_rule_matches(
+fn resolve_category_from_prepared_rules(
+    rules: &[PreparedCategoryRule<'_>],
+    candidates: &NormalizedCategoryCandidates,
+) -> Option<String> {
+    rules
+        .iter()
+        .find(|prepared| prepared.matches(candidates))
+        .map(|prepared| prepared.rule.category.clone())
+}
+
+fn category_rule_matches_normalized(
     match_field: CategoryRuleMatchField,
-    pattern: &str,
-    application_name: &str,
-    bundle_id: Option<&str>,
-    window_title: Option<&str>,
+    normalized_pattern: &str,
+    candidates: &NormalizedCategoryCandidates,
 ) -> bool {
-    let candidate = match match_field {
-        CategoryRuleMatchField::ApplicationName => Some(application_name),
-        CategoryRuleMatchField::BundleId => bundle_id,
-        CategoryRuleMatchField::WindowTitle => window_title,
-    };
-    candidate.is_some_and(|candidate| candidate.to_lowercase().contains(&pattern.to_lowercase()))
+    candidates
+        .value(match_field)
+        .is_some_and(|candidate| candidate.contains(normalized_pattern))
 }
 
 fn truncate_preview_text(value: &str) -> String {

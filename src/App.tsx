@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import "./App.css";
 import "./styles/tokens.css";
 import { Dashboard } from "./features/dashboard/Dashboard";
@@ -80,6 +80,14 @@ function MainApp() {
     sessionId?: number;
   }>({});
 
+  const loadTracking = useCallback(async () => {
+    try {
+      setTracking(await getCurrentActivity());
+    } catch {
+      // A later poll or activity event will retry transient status failures.
+    }
+  }, []);
+
   function loadSettings() {
     setSettingsError(null);
     void getSettings().then((settings) => {
@@ -94,22 +102,64 @@ function MainApp() {
 
   useEffect(() => {
     loadSettings();
-    const loadTracking = () => void getCurrentActivity().then(setTracking).catch(() => {});
-    loadTracking();
-    const timer = window.setInterval(loadTracking, 2_000);
-    const refreshVisibleData = () => {
-      if (document.visibilityState === "visible") notifyActivityDataChanged();
+    let trackingTimer: number | null = null;
+    let windowFocused = document.hasFocus();
+
+    const isWindowActive = () =>
+      document.visibilityState === "visible" && windowFocused;
+
+    const stopTrackingPolling = () => {
+      if (trackingTimer === null) return;
+      window.clearInterval(trackingTimer);
+      trackingTimer = null;
     };
-    window.addEventListener("focus", refreshVisibleData);
-    document.addEventListener("visibilitychange", refreshVisibleData);
-    const unlisten = listen("activity-data-changed", notifyActivityDataChanged);
+    const startTrackingPolling = () => {
+      if (!isWindowActive() || trackingTimer !== null) return;
+      void loadTracking();
+      trackingTimer = window.setInterval(() => {
+        if (!isWindowActive()) {
+          stopTrackingPolling();
+          return;
+        }
+        void loadTracking();
+      }, 2_000);
+    };
+    const refreshVisibleData = () => {
+      if (!isWindowActive()) return;
+      startTrackingPolling();
+      notifyActivityDataChanged();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") refreshVisibleData();
+      else stopTrackingPolling();
+    };
+    const handleActivityDataChanged = () => {
+      if (!isWindowActive()) return;
+      void loadTracking();
+      notifyActivityDataChanged();
+    };
+    const handleWindowFocus = () => {
+      windowFocused = true;
+      refreshVisibleData();
+    };
+    const handleWindowBlur = () => {
+      windowFocused = false;
+      stopTrackingPolling();
+    };
+
+    startTrackingPolling();
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("blur", handleWindowBlur);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    const unlisten = listen("activity-data-changed", handleActivityDataChanged);
     return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refreshVisibleData);
-      document.removeEventListener("visibilitychange", refreshVisibleData);
+      stopTrackingPolling();
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("blur", handleWindowBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       void unlisten.then((stop) => stop());
     };
-  }, []);
+  }, [loadTracking]);
 
   useEffect(() => {
     void emit("locale-changed", locale).catch(() => {
@@ -172,8 +222,7 @@ function MainApp() {
             onClick={() => {
               const paused = !tracking?.paused;
               void setTrackingPaused(paused)
-                .then(() => getCurrentActivity())
-                .then(setTracking);
+                .then(loadTracking);
             }}
           >
             <span aria-hidden="true" />
@@ -197,7 +246,9 @@ function MainApp() {
             <button type="button" onClick={loadSettings}>{t("Retry")}</button>
           </div>
         )}
-        {page === "today" && <Dashboard />}
+        {page === "today" && (
+          <Dashboard current={tracking} onTrackingChanged={loadTracking} />
+        )}
         {page === "timeline" && (
           <Timeline
             initialDate={timelineTarget.date}

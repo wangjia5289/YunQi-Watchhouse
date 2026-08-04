@@ -11,6 +11,7 @@ use tauri_plugin_notification::{NotificationExt, PermissionState};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::activity::{MonitorHandle, SessionManagerHandle};
+use crate::commands::backup_credentials;
 use crate::database::{ActivityRepository, Settings, ShortcutSettings};
 use crate::database::{
     DataHealthRepairResult, DataHealthSummary, DataHealthUndoStatus, MaintenancePreview,
@@ -339,6 +340,10 @@ pub fn update_settings(
 ) -> Result<Settings, String> {
     let previous = repository.settings().map_err(|error| error.to_string())?;
     validate_settings(&settings)?;
+    validate_automatic_encrypted_backup_credentials(
+        settings.automatic_encrypted_backup_enabled && !previous.automatic_encrypted_backup_enabled,
+        || backup_credentials::load().map(|password| password.is_some()),
+    )?;
     let autostart = app.autolaunch();
     set_autostart(&autostart, settings.launch_at_login)?;
     let now = SystemTime::now()
@@ -404,6 +409,20 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_automatic_encrypted_backup_credentials(
+    enabled: bool,
+    load_password: impl FnOnce() -> Result<bool, String>,
+) -> Result<(), String> {
+    if !enabled {
+        return Ok(());
+    }
+    if load_password()? {
+        Ok(())
+    } else {
+        Err("Automatic encrypted backup password is not configured.".to_owned())
+    }
 }
 
 fn set_autostart(manager: &AutoLaunchManager, enabled: bool) -> Result<(), String> {
@@ -1053,5 +1072,31 @@ mod tests {
             ..invalid_threshold
         };
         assert!(validate_settings(&invalid_appearance).is_err());
+    }
+
+    #[test]
+    fn automatic_encrypted_backups_require_a_stored_password() {
+        assert!(
+            validate_automatic_encrypted_backup_credentials(false, || {
+                panic!("disabled backups must not access secure storage")
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            validate_automatic_encrypted_backup_credentials(true, || Ok(false)).unwrap_err(),
+            "Automatic encrypted backup password is not configured."
+        );
+        assert!(validate_automatic_encrypted_backup_credentials(true, || Ok(true)).is_ok());
+    }
+
+    #[test]
+    fn automatic_encrypted_backup_validation_preserves_secure_storage_errors() {
+        assert_eq!(
+            validate_automatic_encrypted_backup_credentials(true, || {
+                Err("secure storage unavailable".to_owned())
+            })
+            .unwrap_err(),
+            "secure storage unavailable"
+        );
     }
 }

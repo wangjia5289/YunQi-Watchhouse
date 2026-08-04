@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  CurrentActivity,
   FocusSummary,
   TimelineEntry,
   TodaySummary,
   UsageLimitProgress,
   errorMessage,
-  getCurrentActivity,
   getTimeline,
   getTodayFocusSummary,
   getTodayUsageLimitProgress,
@@ -18,7 +16,6 @@ import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
 interface DashboardState {
   summary: TodaySummary | null;
   timeline: TimelineEntry[];
-  current: CurrentActivity | null;
   focus: FocusSummary | null;
   usageLimits: UsageLimitProgress[];
   loading: boolean;
@@ -28,7 +25,6 @@ interface DashboardState {
 const initialState: DashboardState = {
   summary: null,
   timeline: [],
-  current: null,
   focus: null,
   usageLimits: [],
   loading: true,
@@ -38,7 +34,6 @@ const initialState: DashboardState = {
 export function useDashboard(): DashboardState & { refresh: () => void } {
   const [state, setState] = useState(initialState);
   const historyRequest = useRef(0);
-  const currentRequest = useRef(0);
 
   const loadHistory = useCallback(async () => {
     const request = ++historyRequest.current;
@@ -69,44 +64,17 @@ export function useDashboard(): DashboardState & { refresh: () => void } {
     }
   }, []);
 
-  const loadCurrent = useCallback(async () => {
-    const request = ++currentRequest.current;
-    try {
-      const currentActivity = await getCurrentActivity();
-      if (request !== currentRequest.current) return;
-      setState((current) => ({
-        ...current,
-        current: currentActivity,
-      }));
-    } catch (error) {
-      if (request !== currentRequest.current) return;
-      setState((current) => ({
-        ...current,
-        error: current.error ?? errorMessage(error),
-      }));
-    }
-  }, []);
-
   useEffect(() => {
     void loadHistory();
-    void loadCurrent();
-    const currentTimer = window.setInterval(() => void loadCurrent(), 2_000);
-    const reload = () => {
-      void loadHistory();
-      void loadCurrent();
-    };
+    const reload = () => void loadHistory();
     window.addEventListener(ACTIVITY_DATA_CHANGED, reload);
     return () => {
-      window.clearInterval(currentTimer);
       window.removeEventListener(ACTIVITY_DATA_CHANGED, reload);
     };
-  }, [loadCurrent, loadHistory]);
+  }, [loadHistory]);
 
   return {
     ...state,
-    refresh: () => {
-      void loadHistory();
-      void loadCurrent();
-    },
+    refresh: () => void loadHistory(),
   };
 }

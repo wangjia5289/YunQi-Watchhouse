@@ -2,6 +2,7 @@ import { CSSProperties, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { formatClock, formatDuration, formatLongDate } from "../../lib/format";
 import {
+  CurrentActivity,
   FocusModeStatus,
   FocusPlanTemplate,
   TimelineEntry,
@@ -183,12 +184,17 @@ function ActivityDistribution({
   );
 }
 
-export function Dashboard() {
+export function Dashboard({
+  current,
+  onTrackingChanged,
+}: {
+  current: CurrentActivity | null;
+  onTrackingChanged: () => void | Promise<void>;
+}) {
   const { locale, t } = useLocale();
   const {
     summary,
     timeline,
-    current,
     focus,
     usageLimits,
     loading,
@@ -301,7 +307,10 @@ export function Dashboard() {
         <button
           type="button"
           className={`tracking-pill${degraded ? " degraded" : ""}${current?.paused ? " paused" : ""}`}
-          onClick={() => void setTrackingPaused(!current?.paused).then(refresh)}
+          onClick={() => void setTrackingPaused(!current?.paused).then(() => {
+            refresh();
+            void onTrackingChanged();
+          })}
           title={t(current?.paused ? "Resume tracking" : "Pause tracking")}
         >
           <span className="tracking-dot" />

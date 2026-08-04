@@ -199,6 +199,8 @@ const zh: Record<string, string> = {
   "Remove password": "移除密码",
   "Automatic encrypted backup password saved securely.": "自动加密备份密码已安全保存。",
   "Automatic encrypted backup password removed.": "自动加密备份密码已移除。",
+  "Automatic encrypted backup password is not configured.": "尚未配置自动加密备份密码。",
+  "Disable automatic encrypted backups before removing its password.": "请先关闭自动加密备份，再移除密码。",
   "Archive this week": "归档本周",
   "Archiving…": "正在归档…",
   "Save a private snapshot on this Mac and optionally send a local notification.":
