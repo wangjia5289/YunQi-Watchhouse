@@ -38,6 +38,62 @@ const settings = {
 
 let trackingPaused = false;
 let archiveSaved = false;
+let nextOrganizationId = 20;
+
+const projects = [
+  {
+    id: 1,
+    name: "Client launch",
+    color: "#4E7E68",
+    archived: false,
+    createdAtMs: now.getTime() - 86_400_000,
+    updatedAtMs: now.getTime() - 86_400_000,
+  },
+  {
+    id: 2,
+    name: "Legacy migration",
+    color: "#84715B",
+    archived: true,
+    createdAtMs: now.getTime() - 172_800_000,
+    updatedAtMs: now.getTime() - 86_400_000,
+  },
+];
+
+const activityTags = [
+  {
+    id: 10,
+    name: "Deep work",
+    color: "#596FC4",
+    archived: false,
+    createdAtMs: now.getTime() - 86_400_000,
+    updatedAtMs: now.getTime() - 86_400_000,
+  },
+  {
+    id: 11,
+    name: "Review",
+    color: "#B26458",
+    archived: false,
+    createdAtMs: now.getTime() - 86_400_000,
+    updatedAtMs: now.getTime() - 86_400_000,
+  },
+];
+
+type SessionOrganizationState = {
+  project: (typeof projects)[number] | null;
+  tags: (typeof activityTags)[number][];
+};
+
+const sessionOrganizations = new Map<number, SessionOrganizationState>();
+
+function organizationItemInput(args: Record<string, unknown>) {
+  const input = args.input as { name: string; color: string };
+  const name = input.name.trim();
+  const color = input.color.trim().toUpperCase();
+  if (!name || [...name].length > 80 || !/^#[0-9A-F]{6}$/.test(color)) {
+    throw new Error("invalid organization input");
+  }
+  return { name, color };
+}
 
 const currentActivity = () => ({
   paused: trackingPaused,
@@ -112,6 +168,21 @@ const report = (startMs: number, endMs: number) => ({
 });
 
 export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") {
+  const organizationFlow = new URLSearchParams(window.location.search).has("organization-flow");
+  const timelineEntries = organizationFlow ? [{
+    sessionId: 501,
+    applicationId: 1,
+    state: "ACTIVE",
+    applicationName: "Visual Studio Code",
+    bundleIdentifier: "com.microsoft.VSCode",
+    category: "Development",
+    windowTitle: "Watchhouse - Timeline.tsx",
+    note: null,
+    startedAtMs: dayStart.getTime() + 9 * 3_600_000,
+    endedAtMs: dayStart.getTime() + 10 * 3_600_000,
+    durationMs: 3_600_000,
+    isOpen: false,
+  }] : [];
   mockWindows(windowLabel);
   mockIPC((command, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
@@ -123,15 +194,122 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
       case "set_tracking_paused": trackingPaused = Boolean(args.paused); return null;
       case "get_today_summary": return todaySummary;
       case "get_today_focus_summary": return focusSummary;
-      case "get_timeline": return [];
+      case "get_timeline": return timelineEntries;
       case "get_timeline_page": return {
-        entries: [],
-        totalCount: 0,
-        activeDurationMs: 0,
+        entries: Number(args.offset ?? 0) === 0 ? timelineEntries : [],
+        totalCount: timelineEntries.length,
+        activeDurationMs: timelineEntries.reduce((total, entry) => total + entry.durationMs, 0),
         idleDurationMs: 0,
         offset: Number(args.offset ?? 0),
         hasMore: false,
       };
+      case "update_timeline_session": return null;
+      case "list_projects": return projects.filter((item) => Boolean(args.includeArchived) || !item.archived);
+      case "create_project": {
+        const input = organizationItemInput(args);
+        if (projects.some((item) => item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+          throw new Error("a project with this name already exists");
+        }
+        const created = {
+          id: nextOrganizationId++,
+          ...input,
+          archived: false,
+          createdAtMs: now.getTime(),
+          updatedAtMs: now.getTime(),
+        };
+        projects.push(created);
+        return created;
+      }
+      case "update_project": {
+        const project = projects.find((item) => item.id === Number(args.projectId));
+        if (!project) throw new Error("project was not found");
+        const input = organizationItemInput(args);
+        if (projects.some((item) => item.id !== project.id && item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+          throw new Error("a project with this name already exists");
+        }
+        Object.assign(project, input, { updatedAtMs: now.getTime() });
+        return { ...project };
+      }
+      case "set_project_archived": {
+        const project = projects.find((item) => item.id === Number(args.projectId));
+        if (!project) throw new Error("project was not found");
+        project.archived = Boolean(args.archived);
+        project.updatedAtMs = now.getTime();
+        return { ...project };
+      }
+      case "list_activity_tags": return activityTags.filter((item) => Boolean(args.includeArchived) || !item.archived);
+      case "create_activity_tag": {
+        const input = organizationItemInput(args);
+        if (activityTags.some((item) => item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+          throw new Error("an activity tag with this name already exists");
+        }
+        const created = {
+          id: nextOrganizationId++,
+          ...input,
+          archived: false,
+          createdAtMs: now.getTime(),
+          updatedAtMs: now.getTime(),
+        };
+        activityTags.push(created);
+        return created;
+      }
+      case "update_activity_tag": {
+        const tag = activityTags.find((item) => item.id === Number(args.tagId));
+        if (!tag) throw new Error("activity tag was not found");
+        const input = organizationItemInput(args);
+        if (activityTags.some((item) => item.id !== tag.id && item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+          throw new Error("an activity tag with this name already exists");
+        }
+        Object.assign(tag, input, { updatedAtMs: now.getTime() });
+        return { ...tag };
+      }
+      case "set_activity_tag_archived": {
+        const tag = activityTags.find((item) => item.id === Number(args.tagId));
+        if (!tag) throw new Error("activity tag was not found");
+        tag.archived = Boolean(args.archived);
+        tag.updatedAtMs = now.getTime();
+        return { ...tag };
+      }
+      case "get_session_organization": {
+        const sessionId = Number(args.sessionId);
+        if (!timelineEntries.some((entry) => entry.sessionId === sessionId)) {
+          throw new Error("session was not found");
+        }
+        const organization = sessionOrganizations.get(sessionId) ?? { project: null, tags: [] };
+        return {
+          project: organization.project ? { ...organization.project } : null,
+          tags: organization.tags.map((tag) => ({ ...tag })),
+        };
+      }
+      case "set_session_organization":
+      case "update_timeline_session_organization": {
+        const sessionId = Number(args.sessionId);
+        if (!timelineEntries.some((entry) => entry.sessionId === sessionId)) {
+          throw new Error("session was not found");
+        }
+        const projectId = args.projectId === null ? null : Number(args.projectId);
+        const tagIds = [...new Set(args.tagIds as number[])];
+        const project = projectId === null ? null : projects.find((item) => item.id === projectId);
+        if (projectId !== null && (!project || project.archived)) {
+          throw new Error(project ? "archived projects cannot be assigned" : "project was not found");
+        }
+        const tags = tagIds.map((tagId) => activityTags.find((item) => item.id === tagId));
+        const missingTag = tags.some((tag) => !tag);
+        const archivedTag = tags.some((tag) => tag?.archived);
+        if (missingTag || archivedTag) {
+          throw new Error(archivedTag ? "archived activity tags cannot be assigned" : "activity tag was not found");
+        }
+        const organization: SessionOrganizationState = {
+          project: project ?? null,
+          tags: tags as (typeof activityTags)[number][],
+        };
+        sessionOrganizations.set(sessionId, organization);
+        if (command === "update_timeline_session_organization") return null;
+        return {
+          project: organization.project ? { ...organization.project } : null,
+          tags: organization.tags.map((tag) => ({ ...tag })),
+        };
+      }
       case "search_timeline_range": return {
         entries: [],
         totalCount: 0,

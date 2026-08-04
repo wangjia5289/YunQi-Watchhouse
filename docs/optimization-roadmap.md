@@ -677,3 +677,35 @@ Validation:
 - 10 focused data-health tests passed, including a 50,001-range scaling regression.
 - 142 Rust tests passed; the deterministic performance baseline remained ignored by default.
 - Rust formatting, Clippy with warnings denied, and diff checks passed.
+
+## Phase 29: On-Demand Settings And Session Organization
+
+Status: Complete
+
+- [x] Mount only the selected Settings section and lazy-load its feature code and data requests.
+- [x] Add projects, reusable activity tags, archival, and closed-session organization links.
+- [x] Save session time and organization changes in one SQLite transaction.
+- [x] Preserve project and tag links through timeline deletion, merge, split, data-health repair,
+  and their undo operations.
+- [x] Add accessible session-editor keyboard focus handling and align browser mocks with backend
+  validation and atomicity.
+
+Decisions:
+
+- Settings requests are scoped to the active tab, while the selected tab remains the sole mounted
+  panel so inactive controls do not retain work or accessibility tree entries.
+- Project and tag names are case-insensitive and colors are normalized to `#RRGGBB`; archived
+  items remain visible on historical sessions but cannot be newly assigned.
+- A combined timeline command validates time bounds, overlap, and organization targets before it
+  writes either concern. This prevents partial saves when a target has become archived.
+- Undo snapshots retain organization IDs separately from sessions. Restores intentionally accept
+  archived historical items, while normal editing continues to reject them.
+
+Validation:
+
+- 62 frontend unit tests passed.
+- 13 browser UI tests passed across desktop and narrow viewports; 7 intentionally duplicated
+  cases were skipped by project configuration.
+- The production frontend build passed with independent Settings feature chunks.
+- 150 Rust tests passed and 1 deterministic performance baseline remained ignored.
+- Rust formatting, Clippy with warnings denied, and diff checks passed.

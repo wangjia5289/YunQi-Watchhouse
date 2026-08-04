@@ -152,6 +152,35 @@ export interface TimelineEntry {
   isOpen: boolean;
 }
 
+export interface ProjectInput {
+  name: string;
+  color: string;
+}
+
+export interface Project extends ProjectInput {
+  id: number;
+  archived: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ActivityTagInput {
+  name: string;
+  color: string;
+}
+
+export interface ActivityTag extends ActivityTagInput {
+  id: number;
+  archived: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface SessionOrganization {
+  project: Project | null;
+  tags: ActivityTag[];
+}
+
 export interface AppUsage {
   applicationId: number;
   applicationName: string;
@@ -651,6 +680,72 @@ export function updateTimelineSession(
   endedAtMs: number,
 ): Promise<void> {
   return invoke("update_timeline_session", { sessionId, startedAtMs, endedAtMs });
+}
+
+export function updateTimelineSessionOrganization(
+  sessionId: number,
+  startedAtMs: number,
+  endedAtMs: number,
+  projectId: number | null,
+  tagIds: number[],
+): Promise<void> {
+  return invoke("update_timeline_session_organization", {
+    sessionId,
+    startedAtMs,
+    endedAtMs,
+    projectId,
+    tagIds,
+  });
+}
+
+export function listProjects(includeArchived = false): Promise<Project[]> {
+  return invoke("list_projects", { includeArchived });
+}
+
+export function createProject(input: ProjectInput): Promise<Project> {
+  return invoke("create_project", { input });
+}
+
+export function updateProject(projectId: number, input: ProjectInput): Promise<Project> {
+  return invoke("update_project", { projectId, input });
+}
+
+export function setProjectArchived(projectId: number, archived: boolean): Promise<Project> {
+  return invoke("set_project_archived", { projectId, archived });
+}
+
+export function listActivityTags(includeArchived = false): Promise<ActivityTag[]> {
+  return invoke("list_activity_tags", { includeArchived });
+}
+
+export function createActivityTag(input: ActivityTagInput): Promise<ActivityTag> {
+  return invoke("create_activity_tag", { input });
+}
+
+export function updateActivityTag(
+  tagId: number,
+  input: ActivityTagInput,
+): Promise<ActivityTag> {
+  return invoke("update_activity_tag", { tagId, input });
+}
+
+export function setActivityTagArchived(
+  tagId: number,
+  archived: boolean,
+): Promise<ActivityTag> {
+  return invoke("set_activity_tag_archived", { tagId, archived });
+}
+
+export function getSessionOrganization(sessionId: number): Promise<SessionOrganization> {
+  return invoke("get_session_organization", { sessionId });
+}
+
+export function setSessionOrganization(
+  sessionId: number,
+  projectId: number | null,
+  tagIds: number[],
+): Promise<SessionOrganization> {
+  return invoke("set_session_organization", { sessionId, projectId, tagIds });
 }
 
 export function getAppUsage(

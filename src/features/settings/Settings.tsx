@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   DiagnosticsSummary,
   BackupPreview,
@@ -44,14 +44,31 @@ import { useLocale } from "../../lib/i18n";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { clearApplicationIconMemoryCache } from "../applications/ApplicationIcon";
 import { PrivacyNotice } from "../onboarding/PrivacyNotice";
-import { CategoryRules } from "./CategoryRules";
-import { DiagnosticsCenter } from "./DiagnosticsCenter";
-import { EncryptedBackupControls } from "./EncryptedBackupControls";
-import { RestorePreview } from "./RestorePreview";
-import { SoftwareUpdates } from "./SoftwareUpdates";
-import { UsageLimits } from "./UsageLimits";
-import { UsageLimitReminderCenter } from "./UsageLimitReminderCenter";
+import {
+  SETTINGS_TABS,
+  SettingsTab,
+  createSettingsTabRequestDeduper,
+  nextSettingsTab,
+  settingsTabIsMounted,
+} from "./settingsTabs";
 import "./SettingsAnime.css";
+
+const CategoryRules = lazy(() => import("./CategoryRules")
+  .then((module) => ({ default: module.CategoryRules })));
+const ProjectTagManager = lazy(() => import("./ProjectTagManager")
+  .then((module) => ({ default: module.ProjectTagManager })));
+const DiagnosticsCenter = lazy(() => import("./DiagnosticsCenter")
+  .then((module) => ({ default: module.DiagnosticsCenter })));
+const EncryptedBackupControls = lazy(() => import("./EncryptedBackupControls")
+  .then((module) => ({ default: module.EncryptedBackupControls })));
+const RestorePreview = lazy(() => import("./RestorePreview")
+  .then((module) => ({ default: module.RestorePreview })));
+const SoftwareUpdates = lazy(() => import("./SoftwareUpdates")
+  .then((module) => ({ default: module.SoftwareUpdates })));
+const UsageLimits = lazy(() => import("./UsageLimits")
+  .then((module) => ({ default: module.UsageLimits })));
+const UsageLimitReminderCenter = lazy(() => import("./UsageLimitReminderCenter")
+  .then((module) => ({ default: module.UsageLimitReminderCenter })));
 
 function Toggle({
   checked,
@@ -81,6 +98,7 @@ function Toggle({
 
 export function Settings() {
   const { locale, t } = useLocale();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("general");
   const [settings, setSettings] = useState<SettingsModel | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [showPrivacy, setShowPrivacy] = useState(false);
@@ -100,23 +118,54 @@ export function Settings() {
   const [savingShortcuts, setSavingShortcuts] = useState(false);
   const [restorePreview, setRestorePreview] = useState<BackupPreview | null>(null);
   const [restoring, setRestoring] = useState(false);
+  const activeTabRef = useRef(activeTab);
+  const tabRequestRunner = useRef<((tab: SettingsTab) => Promise<void>) | null>(null);
+
+  activeTabRef.current = activeTab;
+
+  if (tabRequestRunner.current === null) {
+    tabRequestRunner.current = createSettingsTabRequestDeduper(async (tab) => {
+      if (tab === "general") {
+        setAccessibilityPermission(await getAccessibilityPermission());
+      } else if (tab === "focus-limits") {
+        const [permission, nextShortcuts] = await Promise.all([
+          getNotificationPermission(),
+          getShortcutSettings(),
+        ]);
+        setNotificationPermission(permission);
+        setShortcuts(nextShortcuts);
+      } else if (tab === "data-safety") {
+        const [nextDiagnostics, nextHealth, nextUndo, nextStatus] = await Promise.all([
+          getDiagnosticsSummary(),
+          getDataHealthSummary(),
+          getDataHealthUndoStatus(),
+          getMaintenanceStatus(),
+        ]);
+        setDiagnostics(nextDiagnostics);
+        setDataHealth(nextHealth);
+        setDataHealthUndo(nextUndo);
+        setMaintenanceStatus(nextStatus);
+      } else if (tab === "diagnostics-updates") {
+        setDiagnostics(await getDiagnosticsSummary());
+      }
+    });
+  }
 
   useEffect(() => {
     void getSettings()
       .then(setSettings)
       .catch((error) => setMessage(errorMessage(error)));
-    void getDiagnosticsSummary().then(setDiagnostics);
-    void getDataHealthSummary().then(setDataHealth);
-    void getDataHealthUndoStatus().then(setDataHealthUndo);
-    void getMaintenanceStatus().then(setMaintenanceStatus);
-    void getAccessibilityPermission().then(setAccessibilityPermission);
-    void getNotificationPermission()
-      .then(setNotificationPermission)
-      .catch((error) => setMessage(errorMessage(error)));
-    void getShortcutSettings()
-      .then(setShortcuts)
-      .catch((error) => setMessage(errorMessage(error)));
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void tabRequestRunner.current?.(activeTab).catch((error) => {
+      if (active) setMessage(errorMessage(error));
+    });
+    return () => {
+      active = false;
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     if (settings) {
@@ -125,8 +174,16 @@ export function Settings() {
   }, [settings?.appearance]);
 
   useEffect(() => {
-    if (settings) void getMaintenancePreview().then(setMaintenancePreview);
-  }, [settings?.retentionDays]);
+    if (activeTab === "data-safety" && settings) {
+      void getMaintenancePreview()
+        .then(setMaintenancePreview)
+        .catch((error) => setMessage(errorMessage(error)));
+    }
+  }, [activeTab, settings?.retentionDays]);
+
+  useEffect(() => {
+    if (activeTab !== "data-safety") setRestorePreview(null);
+  }, [activeTab]);
 
   async function save(next: SettingsModel): Promise<boolean> {
     if (savingRef.current) return false;
@@ -158,7 +215,46 @@ export function Settings() {
   return (
     <div className="settings-page">
       <header><div><p className="date-label">{t("Preferences")}</p><h1>{t("Settings")}</h1></div></header>
-      {message && <div className="settings-message">{t(message)}</div>}
+      {message && <div className="settings-message" role="status">{t(message)}</div>}
+
+      <div className="settings-tabs" role="tablist" aria-label={t("Settings sections")}>
+        {SETTINGS_TABS.map((tab) => (
+          <button
+            type="button"
+            role="tab"
+            id={`settings-tab-${tab.id}`}
+            aria-controls={`settings-panel-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            className={activeTab === tab.id ? "active" : ""}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            onKeyDown={(event) => {
+              let next: SettingsTab | null = null;
+              if (event.key === "ArrowRight") next = nextSettingsTab(activeTab, 1);
+              if (event.key === "ArrowLeft") next = nextSettingsTab(activeTab, -1);
+              if (event.key === "Home") next = SETTINGS_TABS[0].id;
+              if (event.key === "End") next = SETTINGS_TABS[SETTINGS_TABS.length - 1].id;
+              if (next === null) return;
+              event.preventDefault();
+              setActiveTab(next);
+              document.getElementById(`settings-tab-${next}`)?.focus();
+            }}
+          >
+            {t(tab.label)}
+          </button>
+        ))}
+      </div>
+
+      <div
+        className="settings-tab-panel"
+        role="tabpanel"
+        id={`settings-panel-${activeTab}`}
+        aria-labelledby={`settings-tab-${activeTab}`}
+      >
+      <Suspense fallback={<div className="settings-tab-loading" role="status">{t("Loading settings…")}</div>}>
+      {settingsTabIsMounted(activeTab, "general") && (
+        <>
 
       <section className="settings-card">
         <div className="list-heading"><div><p className="section-kicker">{t("General")}</p><h2>{t("Application")}</h2></div></div>
@@ -221,6 +317,19 @@ export function Settings() {
         </div>
       </section>
 
+      <section className="settings-card">
+        <div className="list-heading"><div><p className="section-kicker">{t("Privacy")}</p><h2>{t("Local-first protection")}</h2></div></div>
+        <p className="settings-note">{t("Review what Watchhouse records and what it deliberately avoids collecting.")}</p>
+        <div className="data-actions">
+          <button onClick={() => setShowPrivacy(true)}>{t("View Privacy Notice")}</button>
+          <button onClick={() => void openLogDirectory()}>{t("Show Diagnostic Logs")}</button>
+        </div>
+      </section>
+        </>
+      )}
+
+      {settingsTabIsMounted(activeTab, "focus-limits") && (
+        <>
       <section className="settings-card">
         <div className="list-heading"><div><p className="section-kicker">{t("Focus")}</p><h2>{t("Goals and breaks")}</h2></div></div>
         <label className="setting-row">
@@ -378,7 +487,6 @@ export function Settings() {
         </div>
       </section>
 
-      <CategoryRules />
       <UsageLimits />
       <UsageLimitReminderCenter />
 
@@ -439,7 +547,17 @@ export function Settings() {
           </div>
         </section>
       )}
+        </>
+      )}
 
+      {settingsTabIsMounted(activeTab, "classification") && (
+        <>
+          <CategoryRules />
+          <ProjectTagManager />
+        </>
+      )}
+
+      {settingsTabIsMounted(activeTab, "data-safety") && (
       <section className="settings-card">
         <div className="list-heading"><div><p className="section-kicker">{t("Data")}</p><h2>{t("Local storage")}</h2></div></div>
         <p className="settings-path">{diagnostics?.databasePath ?? t("Loading database location…")}</p>
@@ -456,7 +574,7 @@ export function Settings() {
         <button className="secondary-action" disabled={restoring} onClick={() => {
           setMessage(null);
           void previewDatabaseRestore().then((preview) => {
-            if (preview) setRestorePreview(preview);
+            if (activeTabRef.current === "data-safety" && preview) setRestorePreview(preview);
           }).catch((error) => setMessage(errorMessage(error)));
         }}>{t("Restore Database Backup")}</button>
         {restorePreview && (
@@ -716,16 +834,10 @@ export function Settings() {
           }
         }}>{t("Delete All Activity Data")}</button>
       </section>
+      )}
 
-      <section className="settings-card">
-        <div className="list-heading"><div><p className="section-kicker">{t("Privacy")}</p><h2>{t("Local-first protection")}</h2></div></div>
-        <p className="settings-note">{t("Review what Watchhouse records and what it deliberately avoids collecting.")}</p>
-        <div className="data-actions">
-          <button onClick={() => setShowPrivacy(true)}>{t("View Privacy Notice")}</button>
-          <button onClick={() => void openLogDirectory()}>{t("Show Diagnostic Logs")}</button>
-        </div>
-      </section>
-
+      {settingsTabIsMounted(activeTab, "diagnostics-updates") && (
+        <>
       <SoftwareUpdates />
 
       <DiagnosticsCenter
@@ -760,6 +872,10 @@ export function Settings() {
           </div>
         )}
       </section>
+        </>
+      )}
+      </Suspense>
+      </div>
       {showPrivacy && <PrivacyNotice onClose={() => setShowPrivacy(false)} />}
     </div>
   );

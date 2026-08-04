@@ -82,7 +82,7 @@ mod tests {
             migrations()
                 .current_version(&connection)
                 .expect("schema version should be readable"),
-            SchemaVersion::Inside(std::num::NonZeroUsize::new(20).expect("twenty is non-zero"))
+            SchemaVersion::Inside(std::num::NonZeroUsize::new(21).expect("twenty-one is non-zero"))
         );
         assert_eq!(
             connection
@@ -222,6 +222,120 @@ mod tests {
                 .iter()
                 .any(|detail| detail.contains("idx_sessions_closed_ended_at")),
             "retention query should use the closed-session index: {query_plan:?}"
+        );
+    }
+
+    #[test]
+    fn projects_and_tags_upgrade_preserves_sessions_and_enforces_schema() {
+        let mut connection = Connection::open_in_memory().expect("database should open");
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("foreign keys should be enabled");
+        migrations()
+            .to_version(&mut connection, 20)
+            .expect("legacy schema should migrate");
+        connection
+            .execute(
+                "INSERT INTO activity_sessions (
+                    state, application_id, window_title, started_at_ms, ended_at_ms,
+                    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms
+                 ) VALUES ('IDLE', NULL, NULL, 100, 200, 100, 0, 'IDLE', 100, 200)",
+                [],
+            )
+            .expect("legacy session should be inserted");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("current schema should migrate");
+
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM activity_sessions", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("legacy session should remain readable"),
+            1
+        );
+        let organization_tables = connection
+            .prepare(
+                "SELECT name FROM sqlite_schema
+                 WHERE type = 'table' AND name IN (
+                   'projects', 'activity_tags', 'session_projects', 'session_tags'
+                 ) ORDER BY name",
+            )
+            .expect("schema query should prepare")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("schema query should run")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("schema names should decode");
+        assert_eq!(
+            organization_tables,
+            vec![
+                "activity_tags",
+                "projects",
+                "session_projects",
+                "session_tags"
+            ]
+        );
+
+        connection
+            .execute(
+                "INSERT INTO projects (name, color, archived, created_at_ms, updated_at_ms)
+                 VALUES ('Client', '#112233', 0, 100, 100)",
+                [],
+            )
+            .expect("valid project should be inserted");
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO projects (name, color, archived, created_at_ms, updated_at_ms)
+                     VALUES ('client', '#445566', 0, 100, 100)",
+                    [],
+                )
+                .is_err(),
+            "project names should be unique without regard to case"
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO activity_tags (
+                       name, color, archived, created_at_ms, updated_at_ms
+                     ) VALUES ('Invalid', '#aabbcc', 0, 100, 100)",
+                    [],
+                )
+                .is_err(),
+            "stored colors should use strict uppercase #RRGGBB"
+        );
+        connection
+            .execute(
+                "INSERT INTO activity_tags (name, color, archived, created_at_ms, updated_at_ms)
+                 VALUES ('Review', '#AABBCC', 0, 100, 100)",
+                [],
+            )
+            .expect("valid activity tag should be inserted");
+        connection
+            .execute(
+                "INSERT INTO session_projects (session_id, project_id) VALUES (1, 1)",
+                [],
+            )
+            .expect("project should be assigned");
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO session_projects (session_id, project_id) VALUES (1, 1)",
+                    [],
+                )
+                .is_err(),
+            "a session should have at most one project"
+        );
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO session_tags (session_id, tag_id) VALUES (1, 999)",
+                    [],
+                )
+                .is_err(),
+            "session tags should enforce foreign keys"
         );
     }
 

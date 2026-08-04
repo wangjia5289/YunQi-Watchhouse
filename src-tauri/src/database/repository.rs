@@ -13,9 +13,11 @@ use crate::{
 use super::Database;
 
 mod focus_plans;
+mod projects;
 mod weekly_reports;
 
 pub use focus_plans::{FocusPlanHistoryEntry, FocusPlanTemplate, PersistedFocusMode};
+pub use projects::{ActivityTag, ActivityTagInput, Project, ProjectInput, SessionOrganization};
 pub use weekly_reports::{WeeklyReportArchive, WeeklyReportArchiveInput};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -352,6 +354,8 @@ pub struct DataHealthUndoStatus {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DataHealthUndoSnapshot {
     sessions: Vec<DataHealthUndoSession>,
+    #[serde(default)]
+    organizations: Vec<SessionOrganizationSnapshot>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -360,6 +364,61 @@ struct DataHealthUndoSession {
     session: ActivitySession,
     #[serde(default)]
     category_override: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionOrganizationSnapshot {
+    session_id: i64,
+    project_id: Option<i64>,
+    tag_ids: Vec<i64>,
+}
+
+fn session_organization_snapshots(
+    connection: &Connection,
+    session_ids: &[i64],
+) -> AppResult<Vec<SessionOrganizationSnapshot>> {
+    let mut snapshots = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        let project_id = connection
+            .query_row(
+                "SELECT project_id FROM session_projects WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut tag_statement = connection
+            .prepare("SELECT tag_id FROM session_tags WHERE session_id = ?1 ORDER BY tag_id")?;
+        let tag_ids = tag_statement
+            .query_map([session_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        snapshots.push(SessionOrganizationSnapshot {
+            session_id: *session_id,
+            project_id,
+            tag_ids,
+        });
+    }
+    Ok(snapshots)
+}
+
+fn restore_session_organization_snapshots(
+    connection: &Connection,
+    snapshots: &[SessionOrganizationSnapshot],
+) -> AppResult<()> {
+    for snapshot in snapshots {
+        if let Some(project_id) = snapshot.project_id {
+            connection.execute(
+                "INSERT INTO session_projects (session_id, project_id) VALUES (?1, ?2)",
+                params![snapshot.session_id, project_id],
+            )?;
+        }
+        for tag_id in &snapshot.tag_ids {
+            connection.execute(
+                "INSERT INTO session_tags (session_id, tag_id) VALUES (?1, ?2)",
+                params![snapshot.session_id, tag_id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -443,6 +502,8 @@ const CATEGORY_RULES_REAPPLY_UNDO_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 struct TimelineUndoSnapshot {
     sessions: Vec<ActivitySession>,
     delete_session_ids: Vec<i64>,
+    #[serde(default)]
+    organizations: Vec<SessionOrganizationSnapshot>,
     #[serde(default)]
     operation_label: Option<String>,
 }
@@ -1636,11 +1697,19 @@ impl ActivityRepository {
                backup_path = excluded.backup_path,
                created_at_ms = excluded.created_at_ms",
             params![
-                serde_json::to_string(&DataHealthUndoSnapshot { sessions: snapshot }).map_err(
-                    |error| AppError::InvalidSession(format!(
-                        "could not create health repair snapshot: {error}"
-                    ))
-                )?,
+                serde_json::to_string(&DataHealthUndoSnapshot {
+                    organizations: session_organization_snapshots(
+                        &transaction,
+                        &snapshot
+                            .iter()
+                            .map(|saved| saved.session.id)
+                            .collect::<Vec<_>>(),
+                    )?,
+                    sessions: snapshot,
+                })
+                .map_err(|error| AppError::InvalidSession(format!(
+                    "could not create health repair snapshot: {error}"
+                )))?,
                 backup_path,
                 now_millis(),
             ],
@@ -1738,6 +1807,7 @@ impl ActivityRepository {
                 ],
             )?;
         }
+        restore_session_organization_snapshots(&transaction, &snapshot.organizations)?;
         transaction.execute("DELETE FROM data_health_undo WHERE singleton_id = 1", [])?;
         transaction.commit()?;
         Ok(snapshot.sessions.len())
@@ -2200,10 +2270,21 @@ impl ActivityRepository {
             ],
         )?;
         let new_id = transaction.last_insert_rowid();
+        let organizations = session_organization_snapshots(&transaction, &[session_id])?;
+        let copied_organizations = organizations
+            .iter()
+            .map(|snapshot| SessionOrganizationSnapshot {
+                session_id: new_id,
+                project_id: snapshot.project_id,
+                tag_ids: snapshot.tag_ids.clone(),
+            })
+            .collect::<Vec<_>>();
+        restore_session_organization_snapshots(&transaction, &copied_organizations)?;
         let token = format!("{}-{session_id}", now_millis());
         let snapshot = TimelineUndoSnapshot {
             sessions: vec![original],
             delete_session_ids: vec![session_id, new_id],
+            organizations,
             operation_label: Some("Split session".to_owned()),
         };
         transaction.execute(
@@ -2253,6 +2334,7 @@ impl ActivityRepository {
             }
             snapshot.push(session);
         }
+        let organizations = session_organization_snapshots(&transaction, &ids)?;
         let affected_count = operation(&transaction, &ids)?;
         let token = format!("{}-{}", now_millis(), snapshot[0].id);
         transaction.execute(
@@ -2266,6 +2348,7 @@ impl ActivityRepository {
                 serde_json::to_string(&TimelineUndoSnapshot {
                     sessions: snapshot,
                     delete_session_ids: ids.clone(),
+                    organizations,
                     operation_label: Some(operation_label.to_owned()),
                 })
                 .map_err(|error| {
@@ -2298,6 +2381,7 @@ impl ActivityRepository {
                     TimelineUndoSnapshot {
                         delete_session_ids: sessions.iter().map(|session| session.id).collect(),
                         sessions,
+                        organizations: Vec::new(),
                         operation_label: None,
                     }
                 })
@@ -2328,6 +2412,7 @@ impl ActivityRepository {
                 ],
             )?;
         }
+        restore_session_organization_snapshots(&transaction, &snapshot.organizations)?;
         transaction.execute("DELETE FROM timeline_undo WHERE token = ?1", [token])?;
         transaction.commit()?;
         Ok(snapshot.sessions.len())
@@ -2369,6 +2454,7 @@ impl ActivityRepository {
                                     .map(|session| session.id)
                                     .collect(),
                                 sessions,
+                                organizations: Vec::new(),
                                 operation_label: None,
                             },
                         )
@@ -5777,6 +5863,66 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].session.started_at_ms, 100);
         assert_eq!(restored[0].session.ended_at_ms, 300);
+    }
+
+    #[test]
+    fn split_and_undo_preserve_session_organization() {
+        let repository = repository();
+        let project = repository
+            .create_project(&ProjectInput {
+                name: "Project".to_owned(),
+                color: "#123456".to_owned(),
+            })
+            .unwrap();
+        let tag = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "Tag".to_owned(),
+                color: "#654321".to_owned(),
+            })
+            .unwrap();
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Idle,
+                application_id: None,
+                window_title: None,
+                category_override: None,
+                started_at_ms: 100,
+            })
+            .unwrap();
+        repository
+            .close_session(session.id, 300, ClosedReason::BecameActive)
+            .unwrap();
+        repository
+            .set_session_organization(session.id, Some(project.id), &[tag.id])
+            .unwrap();
+
+        let result = repository.split_closed_session(session.id, 200).unwrap();
+        let split = repository.records_overlapping(0, 400).unwrap();
+        assert_eq!(split.len(), 2);
+        for record in &split {
+            let organization = repository
+                .get_session_organization(record.session.id)
+                .unwrap();
+            assert_eq!(
+                organization.project.as_ref().map(|item| item.id),
+                Some(project.id)
+            );
+            assert_eq!(
+                organization
+                    .tags
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>(),
+                vec![tag.id]
+            );
+        }
+
+        repository
+            .undo_timeline_edit(result.undo_token.as_deref().unwrap())
+            .unwrap();
+        let organization = repository.get_session_organization(session.id).unwrap();
+        assert_eq!(organization.project.unwrap().id, project.id);
+        assert_eq!(organization.tags, vec![tag]);
     }
 
     #[test]

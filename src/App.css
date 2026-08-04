@@ -766,7 +766,8 @@ button {
 }
 
 .timeline-dialog input,
-.timeline-dialog textarea {
+.timeline-dialog textarea,
+.timeline-dialog select {
   width: 100%;
   padding: 9px 10px;
   border: 1px solid var(--border);
@@ -779,6 +780,127 @@ button {
 
 .timeline-dialog input {
   height: 38px;
+}
+
+.session-edit-dialog {
+  width: min(520px, 100%);
+}
+
+.session-organization {
+  min-width: 0;
+  margin: 2px 0 0;
+  padding: 14px;
+  display: grid;
+  gap: 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.session-organization legend {
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.session-organization select {
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface);
+  font: inherit;
+}
+
+.session-organization > p,
+.session-tag-field > p,
+.session-organization-error {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.session-tag-field {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.session-tag-options {
+  max-height: 132px;
+  padding: 3px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  overflow-y: auto;
+}
+
+.timeline-dialog .session-tag-option {
+  min-width: 0;
+  min-height: 32px;
+  padding: 5px 7px;
+  display: grid;
+  grid-template-columns: 16px 10px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: color-mix(in srgb, var(--surface-solid) 72%, transparent);
+  font-weight: 550;
+}
+
+.timeline-dialog .session-tag-option input {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  accent-color: var(--green-700);
+}
+
+.session-tag-option i {
+  width: 9px;
+  height: 9px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+}
+
+.session-tag-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-organization-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #a44843;
+}
+
+.session-organization-error span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.session-organization-error button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: var(--surface-solid);
+}
+
+.timeline-dialog-warning.error {
+  color: #a44843;
 }
 
 .timeline-dialog-actions {
@@ -807,6 +929,11 @@ button {
   border-color: #a34848;
   color: white;
   background: #a34848;
+}
+
+.timeline-dialog-actions button:disabled {
+  opacity: 0.48;
+  cursor: default;
 }
 
 .timeline-load-more {
@@ -2839,9 +2966,10 @@ button:focus-visible {
 .timeline-advanced-filters input,
 .application-preferences select,
 .application-preferences input[type="text"],
-.session-editor input,
-.timeline-dialog input,
-.timeline-dialog textarea,
+  .session-editor input,
+  .timeline-dialog input,
+  .timeline-dialog select,
+  .timeline-dialog textarea,
 .history-controls input,
 .custom-range input,
 .focus-plan-controls select,
@@ -2856,9 +2984,10 @@ button:focus-visible {
 .timeline-advanced-filters input:focus,
 .application-preferences select:focus,
 .application-preferences input[type="text"]:focus,
-.session-editor input:focus,
-.timeline-dialog input:focus,
-.timeline-dialog textarea:focus,
+  .session-editor input:focus,
+  .timeline-dialog input:focus,
+  .timeline-dialog select:focus,
+  .timeline-dialog textarea:focus,
 .history-controls input:focus,
 .custom-range input:focus,
 .focus-plan-controls select:focus,
@@ -3063,6 +3192,7 @@ button:focus-visible {
 :root[data-theme="dark"] .application-preferences input[type="text"],
 :root[data-theme="dark"] .session-editor input,
 :root[data-theme="dark"] .timeline-dialog input,
+:root[data-theme="dark"] .timeline-dialog select,
 :root[data-theme="dark"] .timeline-dialog textarea,
 :root[data-theme="dark"] .history-controls input,
 :root[data-theme="dark"] .custom-range input,
@@ -3802,6 +3932,10 @@ button:focus-visible {
     max-height: calc(100vh - 28px);
     padding: 18px;
     overflow-y: auto;
+  }
+
+  .session-tag-options {
+    grid-template-columns: 1fr;
   }
 
   .focus-plan-controls {

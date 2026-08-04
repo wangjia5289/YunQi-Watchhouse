@@ -128,6 +128,26 @@ pub fn update_timeline_session(
 }
 
 #[tauri::command]
+pub fn update_timeline_session_organization(
+    session_id: i64,
+    started_at_ms: i64,
+    ended_at_ms: i64,
+    project_id: Option<i64>,
+    tag_ids: Vec<i64>,
+    repository: State<'_, ActivityRepository>,
+) -> Result<(), String> {
+    repository
+        .update_closed_session_with_organization(
+            session_id,
+            started_at_ms,
+            ended_at_ms,
+            project_id,
+            &tag_ids,
+        )
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn preview_activity_import(
     contents: String,
     format: String,

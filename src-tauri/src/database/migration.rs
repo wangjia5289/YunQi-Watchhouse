@@ -40,5 +40,6 @@ pub(super) fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/0020_closed_session_retention_index.sql"
         )),
+        M::up(include_str!("../../migrations/0021_projects_and_tags.sql")),
     ])
 }

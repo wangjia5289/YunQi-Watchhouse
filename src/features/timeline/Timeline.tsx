@@ -7,14 +7,19 @@ import {
   shiftLocalDate,
 } from "../../lib/format";
 import {
+  ActivityTag,
   ActivityState,
+  Project,
   TimelineFilters,
   deleteTimelineSession,
   deleteTimelineSessions,
   errorMessage,
+  getSessionOrganization,
   getTimelineUndoHistory,
   importActivity,
   ImportPreview,
+  listActivityTags,
+  listProjects,
   TimelineUndoEntry,
   mergeTimelineSessions,
   previewActivityImport,
@@ -23,10 +28,17 @@ import {
   updateTimelineSessionCategories,
   updateTimelineSessionNotes,
   updateTimelineSession,
+  updateTimelineSessionOrganization,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { useLocale } from "../../lib/i18n";
 import { summarizeByHour } from "./timelineModel";
+import {
+  hasArchivedOrganizationSelection,
+  mergeOrganizationOptions,
+  organizationSelectionChanged,
+  toggleOrganizationId,
+} from "./sessionOrganizationModel";
 import { useTimeline } from "./useTimeline";
 import { ApplicationIcon } from "../applications/ApplicationIcon";
 
@@ -131,7 +143,18 @@ export function Timeline({
   const [splitAt, setSplitAt] = useState("");
   const [editStart, setEditStart] = useState("");
   const [editEnd, setEditEnd] = useState("");
+  const [initialEditStart, setInitialEditStart] = useState("");
+  const [initialEditEnd, setInitialEditEnd] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [organizationLoading, setOrganizationLoading] = useState(false);
+  const [organizationError, setOrganizationError] = useState<string | null>(null);
+  const [projectOptions, setProjectOptions] = useState<Project[]>([]);
+  const [tagOptions, setTagOptions] = useState<ActivityTag[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [selectedTagIds, setSelectedTagIds] = useState<Set<number>>(new Set());
+  const [initialProjectId, setInitialProjectId] = useState<number | null>(null);
+  const [initialTagIds, setInitialTagIds] = useState<Set<number>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [undoHistory, setUndoHistory] = useState<TimelineUndoEntry[]>([]);
   const [undoHistoryOpen, setUndoHistoryOpen] = useState(false);
@@ -147,6 +170,10 @@ export function Timeline({
     initialSessionId ?? null,
   );
   const locatedSessionRef = useRef<number | null>(null);
+  const organizationRequestRef = useRef(0);
+  const editorDialogRef = useRef<HTMLElement | null>(null);
+  const editStartInputRef = useRef<HTMLInputElement | null>(null);
+  const editorReturnFocusRef = useRef<HTMLElement | null>(null);
   const filteredEntries = entries;
   const hours = useMemo(() => summarizeByHour(filteredEntries), [filteredEntries]);
   const visibleEntries = filteredEntries;
@@ -195,6 +222,36 @@ export function Timeline({
   useEffect(() => {
     void getTimelineUndoHistory().then(setUndoHistory).catch(() => {});
   }, []);
+  useEffect(() => {
+    if (editingId === null) return;
+    const frame = window.requestAnimationFrame(() => editStartInputRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSessionEditor();
+        return;
+      }
+      if (event.key !== "Tab" || !editorDialogRef.current) return;
+      const focusable = [...editorDialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )].filter((element) => !element.hasAttribute("hidden"));
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [editingId]);
   const selected = [...selectedIds];
 
   const completeMutation = (message: string, token?: string | null) => {
@@ -213,6 +270,128 @@ export function Timeline({
       await operation();
     } catch (reason) {
       setEditError(errorMessage(reason));
+    }
+  };
+
+  const loadOrganization = async (sessionId: number) => {
+    const requestId = ++organizationRequestRef.current;
+    setOrganizationLoading(true);
+    setOrganizationError(null);
+    try {
+      const [projects, tags, organization] = await Promise.all([
+        listProjects(false),
+        listActivityTags(false),
+        getSessionOrganization(sessionId),
+      ]);
+      if (requestId !== organizationRequestRef.current) return;
+      setProjectOptions(mergeOrganizationOptions(
+        projects,
+        organization.project ? [organization.project] : [],
+      ));
+      setTagOptions(mergeOrganizationOptions(tags, organization.tags));
+      setSelectedProjectId(organization.project?.id ?? null);
+      setSelectedTagIds(new Set(organization.tags.map((tag) => tag.id)));
+      setInitialProjectId(organization.project?.id ?? null);
+      setInitialTagIds(new Set(organization.tags.map((tag) => tag.id)));
+    } catch (reason) {
+      if (requestId === organizationRequestRef.current) {
+        setOrganizationError(errorMessage(reason));
+      }
+    } finally {
+      if (requestId === organizationRequestRef.current) setOrganizationLoading(false);
+    }
+  };
+
+  const openSessionEditor = (sessionId: number, startedAtMs: number, endedAtMs: number) => {
+    editorReturnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const start = toLocalDateTimeInput(startedAtMs);
+    const end = toLocalDateTimeInput(endedAtMs);
+    setEditingId(sessionId);
+    setEditStart(start);
+    setEditEnd(end);
+    setInitialEditStart(start);
+    setInitialEditEnd(end);
+    setEditError(null);
+    setEditSaving(false);
+    setProjectOptions([]);
+    setTagOptions([]);
+    setSelectedProjectId(null);
+    setSelectedTagIds(new Set());
+    setInitialProjectId(null);
+    setInitialTagIds(new Set());
+    void loadOrganization(sessionId);
+  };
+
+  const closeSessionEditor = () => {
+    organizationRequestRef.current += 1;
+    setEditingId(null);
+    setEditError(null);
+    setOrganizationError(null);
+    const returnFocus = editorReturnFocusRef.current;
+    editorReturnFocusRef.current = null;
+    window.requestAnimationFrame(() => returnFocus?.focus());
+  };
+
+  const saveSessionEditor = async () => {
+    if (editingId === null || organizationLoading || organizationError) return;
+    const startedAtMs = new Date(editStart).getTime();
+    const endedAtMs = new Date(editEnd).getTime();
+    if (!Number.isFinite(startedAtMs) || endedAtMs <= startedAtMs) {
+      setEditError("Session end must be after its start.");
+      return;
+    }
+    const organizationDirty = organizationSelectionChanged(
+      initialProjectId,
+      selectedProjectId,
+      initialTagIds,
+      selectedTagIds,
+    );
+    const timeDirty = editStart !== initialEditStart || editEnd !== initialEditEnd;
+    if (
+      organizationDirty
+      && hasArchivedOrganizationSelection(
+        projectOptions,
+        tagOptions,
+        selectedProjectId,
+        selectedTagIds,
+      )
+    ) {
+      setEditError("Remove archived projects and tags before changing this organization.");
+      return;
+    }
+
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      const changed = timeDirty || organizationDirty;
+      if (organizationDirty) {
+        await updateTimelineSessionOrganization(
+          editingId,
+          startedAtMs,
+          endedAtMs,
+          selectedProjectId,
+          [...selectedTagIds],
+        );
+        setInitialEditStart(editStart);
+        setInitialEditEnd(editEnd);
+        setInitialProjectId(selectedProjectId);
+        setInitialTagIds(new Set(selectedTagIds));
+      } else if (timeDirty) {
+        await updateTimelineSession(editingId, startedAtMs, endedAtMs);
+        setInitialEditStart(editStart);
+        setInitialEditEnd(editEnd);
+      }
+      closeSessionEditor();
+      if (changed) {
+        notifyActivityDataChanged();
+        refresh();
+      }
+    } catch (reason) {
+      setEditError(errorMessage(reason));
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -699,12 +878,9 @@ export function Timeline({
                     type="button"
                     className="edit-session"
                     aria-label={t(`Edit ${name} session`)}
-                    title={t("Edit session time")}
+                    title={t("Edit session")}
                     onClick={() => {
-                      setEditingId(entry.sessionId);
-                      setEditStart(toLocalDateTimeInput(entry.startedAtMs));
-                      setEditEnd(toLocalDateTimeInput(entry.endedAtMs));
-                      setEditError(null);
+                      openSessionEditor(entry.sessionId, entry.startedAtMs, entry.endedAtMs);
                     }}
                   >{t("Edit")}</button>
                   <button
@@ -768,20 +944,22 @@ export function Timeline({
       {editingId !== null && (
         <div className="timeline-dialog-backdrop" role="presentation">
           <section
-            className="timeline-dialog"
+            className="timeline-dialog session-edit-dialog"
             role="dialog"
             aria-modal="true"
             aria-labelledby="edit-session-title"
+            ref={editorDialogRef}
           >
             <div>
               <p className="section-kicker">{t("Session")}</p>
-              <h2 id="edit-session-title">{t("Edit recorded time")}</h2>
-              <span>{t("Adjust the start and end of this closed session.")}</span>
+              <h2 id="edit-session-title">{t("Edit recorded session")}</h2>
+              <span>{t("Adjust its time and organize it for later review.")}</span>
             </div>
             <label>
               {t("Start")}
               <input
                 type="datetime-local"
+                ref={editStartInputRef}
                 value={editStart}
                 onChange={(event) => setEditStart(event.currentTarget.value)}
               />
@@ -794,24 +972,87 @@ export function Timeline({
                 onChange={(event) => setEditEnd(event.currentTarget.value)}
               />
             </label>
+            <fieldset
+              className="session-organization"
+              disabled={organizationLoading || editSaving}
+              aria-busy={organizationLoading}
+            >
+              <legend>{t("Organization")}</legend>
+              {organizationLoading ? (
+                <p>{t("Loading projects and tags…")}</p>
+              ) : organizationError ? (
+                <div className="session-organization-error" role="alert">
+                  <span>{t(organizationError)}</span>
+                  <button
+                    type="button"
+                    onClick={() => editingId !== null && void loadOrganization(editingId)}
+                  >
+                    {t("Retry")}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <label>
+                    {t("Project")}
+                    <select
+                      value={selectedProjectId ?? ""}
+                      onChange={(event) => {
+                        setSelectedProjectId(event.currentTarget.value
+                          ? Number(event.currentTarget.value)
+                          : null);
+                      }}
+                    >
+                      <option value="">{t("No project")}</option>
+                      {projectOptions.map((project) => (
+                        <option value={project.id} key={project.id}>
+                          {project.name}{project.archived ? ` (${t("Archived")})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="session-tag-field">
+                    <span>{t("Activity tags")}</span>
+                    {tagOptions.length === 0 ? (
+                      <p>{t("No activity tags available.")}</p>
+                    ) : (
+                      <div className="session-tag-options">
+                        {tagOptions.map((tag) => (
+                          <label className="session-tag-option" key={tag.id}>
+                            <input
+                              type="checkbox"
+                              checked={selectedTagIds.has(tag.id)}
+                              disabled={tag.archived && !selectedTagIds.has(tag.id)}
+                              onChange={() => {
+                                setSelectedTagIds((current) => toggleOrganizationId(current, tag.id));
+                              }}
+                            />
+                            <i style={{ backgroundColor: tag.color }} aria-hidden="true" />
+                            <span>
+                              {tag.name}{tag.archived ? ` (${t("Archived")})` : ""}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </fieldset>
+            {editError && (
+              <p className="timeline-dialog-warning error" role="alert">{t(editError)}</p>
+            )}
             <div className="timeline-dialog-actions">
-              <button type="button" onClick={() => setEditingId(null)}>{t("Cancel")}</button>
-              <button className="primary" type="button" onClick={() => {
-                const startedAtMs = new Date(editStart).getTime();
-                const endedAtMs = new Date(editEnd).getTime();
-                if (!Number.isFinite(startedAtMs) || endedAtMs <= startedAtMs) {
-                  setEditError("Session end must be after its start.");
-                  return;
-                }
-                void updateTimelineSession(editingId, startedAtMs, endedAtMs)
-                  .then(() => {
-                    setEditingId(null);
-                    setEditError(null);
-                    notifyActivityDataChanged();
-                    refresh();
-                  })
-                  .catch((reason) => setEditError(errorMessage(reason)));
-              }}>{t("Save changes")}</button>
+              <button type="button" disabled={editSaving} onClick={closeSessionEditor}>
+                {t("Cancel")}
+              </button>
+              <button
+                className="primary"
+                type="button"
+                disabled={editSaving || organizationLoading || organizationError !== null}
+                onClick={() => void saveSessionEditor()}
+              >
+                {t(editSaving ? "Saving…" : "Save changes")}
+              </button>
             </div>
           </section>
         </div>
