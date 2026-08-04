@@ -591,3 +591,33 @@ Validation:
   186 kB bootstrap, a 10 kB application shell, and independently loaded feature chunks.
 - 130 Rust tests passed; the deterministic performance baseline remained ignored by default.
 - Rust formatting and Clippy passed with warnings denied.
+
+## Phase 26: Backup Safety And Interaction Latency
+
+Status: Complete
+
+- [x] Cover manual plain and encrypted backup execution with the process-wide maintenance lease.
+- [x] Index closed sessions by end time for retention previews and expired-session deletion.
+- [x] Preload page chunks on navigation intent, deduplicate concurrent loads, and retry failed
+  preloads when the page is requested.
+- [x] Remove the duplicate initial maintenance-preview request from Settings.
+- [x] Split weekly-report persistence from the central Rust repository while preserving its public
+  database API.
+
+Decisions:
+
+- Manual backups acquire the maintenance lease after the save dialog closes, so user interaction
+  does not block maintenance while the SQLite snapshot itself cannot overlap restore or repair.
+- The retention index is partial and contains only closed sessions, keeping writes for the single
+  open session out of the index while matching the cleanup predicate exactly.
+- Navigation preloading is a hint: transient failures are swallowed during hover or focus and the
+  loader resets so actual navigation can retry.
+- Repository decomposition remains domain-based; weekly-report callers keep using the existing
+  re-exported types and `ActivityRepository` methods.
+
+Validation:
+
+- 47 frontend unit tests and 9 browser UI tests passed.
+- The frontend production build passed with independently loaded page chunks preserved.
+- 131 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting and Clippy passed with warnings denied.

@@ -108,7 +108,6 @@ export function Settings() {
     void getDiagnosticsSummary().then(setDiagnostics);
     void getDataHealthSummary().then(setDataHealth);
     void getDataHealthUndoStatus().then(setDataHealthUndo);
-    void getMaintenancePreview().then(setMaintenancePreview);
     void getMaintenanceStatus().then(setMaintenanceStatus);
     void getAccessibilityPermission().then(setAccessibilityPermission);
     void getNotificationPermission()

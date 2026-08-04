@@ -37,5 +37,8 @@ pub(super) fn migrations() -> Migrations<'static> {
         M::up(include_str!(
             "../../migrations/0019_focus_plan_history_query_index.sql"
         )),
+        M::up(include_str!(
+            "../../migrations/0020_closed_session_retention_index.sql"
+        )),
     ])
 }

@@ -13,21 +13,7 @@ import { PageErrorBoundary } from "./components/PageErrorBoundary";
 import { emit, listen } from "@tauri-apps/api/event";
 import { notifyActivityDataChanged } from "./lib/events";
 import { useLocale } from "./lib/i18n";
-
-const Dashboard = lazy(() => import("./features/dashboard/Dashboard")
-  .then((module) => ({ default: module.Dashboard })));
-const Timeline = lazy(() => import("./features/timeline/Timeline")
-  .then((module) => ({ default: module.Timeline })));
-const GlobalSearch = lazy(() => import("./features/search/GlobalSearch")
-  .then((module) => ({ default: module.GlobalSearch })));
-const Applications = lazy(() => import("./features/applications/Applications")
-  .then((module) => ({ default: module.Applications })));
-const History = lazy(() => import("./features/history/History")
-  .then((module) => ({ default: module.History })));
-const Reports = lazy(() => import("./features/reports/Reports")
-  .then((module) => ({ default: module.Reports })));
-const Settings = lazy(() => import("./features/settings/Settings")
-  .then((module) => ({ default: module.Settings })));
+import { createRetryableLoader, preloadSilently } from "./lib/lazyLoader";
 
 const navigation = [
   { label: "Today", icon: "today", page: "today", enabled: true },
@@ -39,6 +25,35 @@ const navigation = [
 ] as const;
 
 type Page = (typeof navigation)[number]["page"] | "settings";
+
+const pageLoaders = {
+  today: createRetryableLoader(() => import("./features/dashboard/Dashboard")
+    .then((module) => ({ default: module.Dashboard }))),
+  timeline: createRetryableLoader(() => import("./features/timeline/Timeline")
+    .then((module) => ({ default: module.Timeline }))),
+  search: createRetryableLoader(() => import("./features/search/GlobalSearch")
+    .then((module) => ({ default: module.GlobalSearch }))),
+  applications: createRetryableLoader(() => import("./features/applications/Applications")
+    .then((module) => ({ default: module.Applications }))),
+  history: createRetryableLoader(() => import("./features/history/History")
+    .then((module) => ({ default: module.History }))),
+  reports: createRetryableLoader(() => import("./features/reports/Reports")
+    .then((module) => ({ default: module.Reports }))),
+  settings: createRetryableLoader(() => import("./features/settings/Settings")
+    .then((module) => ({ default: module.Settings }))),
+};
+
+const Dashboard = lazy(pageLoaders.today);
+const Timeline = lazy(pageLoaders.timeline);
+const GlobalSearch = lazy(pageLoaders.search);
+const Applications = lazy(pageLoaders.applications);
+const History = lazy(pageLoaders.history);
+const Reports = lazy(pageLoaders.reports);
+const Settings = lazy(pageLoaders.settings);
+
+function preloadPage(page: Page): void {
+  preloadSilently(pageLoaders[page] as () => Promise<unknown>);
+}
 
 function NavIcon({ name }: { name: string }) {
   const paths: Record<string, React.ReactNode> = {
@@ -204,6 +219,8 @@ function MainApp() {
               key={item.label}
               aria-current={page === item.page ? "page" : undefined}
               disabled={!item.enabled}
+              onPointerEnter={() => preloadPage(item.page)}
+              onFocus={() => preloadPage(item.page)}
               onClick={() => setPage(item.page)}
             >
               <NavIcon name={item.icon} />
@@ -249,7 +266,10 @@ function MainApp() {
             </span>
           </button>
           <button className={`nav-item settings-link${page === "settings" ? " active" : ""}`}
-            type="button" onClick={() => setPage("settings")}>
+            type="button"
+            onPointerEnter={() => preloadPage("settings")}
+            onFocus={() => preloadPage("settings")}
+            onClick={() => setPage("settings")}>
             <NavIcon name="settings" />
             {t("Settings")}
           </button>

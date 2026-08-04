@@ -82,9 +82,10 @@ pub async fn create_encrypted_database_backup(
     if protected_password.chars().count() < 10 {
         return Err("Use at least 10 characters.".to_owned());
     }
-    let repository = repository.inner().clone();
+    let dialog_app = app.clone();
     let destination = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
+        dialog_app
+            .dialog()
             .file()
             .set_file_name("watchhouse-backup.yqbackup")
             .add_filter("YunQi Encrypted Backup", &["yqbackup"])
@@ -97,6 +98,8 @@ pub async fn create_encrypted_database_backup(
         return Ok(None);
     };
 
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
+    let repository = repository.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let plaintext_directory = tempfile::Builder::new()
             .prefix("watchhouse-backup-")

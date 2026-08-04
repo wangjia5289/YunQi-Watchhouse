@@ -760,22 +760,30 @@ pub async fn backup_database(
     app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<Option<String>, String> {
-    let repository = repository.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let destination = app
+    let dialog_app = app.clone();
+    let destination = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
             .dialog()
             .file()
             .set_file_name("watchhouse-backup.sqlite3")
             .add_filter("SQLite Database", &["sqlite3"])
-            .blocking_save_file();
-        let Some(path) = destination.and_then(|path| path.into_path().ok()) else {
-            return Ok(None);
-        };
+            .blocking_save_file()
+            .and_then(|path| path.into_path().ok())
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(path) = destination else {
+        return Ok(None);
+    };
+
+    let _maintenance_guard = app.state::<DatabaseMaintenanceState>().try_begin()?;
+    let repository = repository.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
         repository
             .backup_database(&path)
             .map_err(|error| error.to_string())?;
         log::info!("database backup completed");
-        Ok(Some(path.to_string_lossy().into_owned()))
+        Ok::<_, String>(Some(path.to_string_lossy().into_owned()))
     })
     .await
     .map_err(|error| error.to_string())?

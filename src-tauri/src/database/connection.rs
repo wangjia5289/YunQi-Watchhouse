@@ -82,7 +82,7 @@ mod tests {
             migrations()
                 .current_version(&connection)
                 .expect("schema version should be readable"),
-            SchemaVersion::Inside(std::num::NonZeroUsize::new(19).expect("nineteen is non-zero"))
+            SchemaVersion::Inside(std::num::NonZeroUsize::new(20).expect("twenty is non-zero"))
         );
         assert_eq!(
             connection
@@ -172,6 +172,56 @@ mod tests {
             query_plan
                 .iter()
                 .all(|detail| !detail.contains("USE TEMP B-TREE FOR ORDER BY"))
+        );
+    }
+
+    #[test]
+    fn retention_index_upgrades_existing_database_and_serves_cleanup_query() {
+        let mut connection = Connection::open_in_memory().expect("database should open");
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .expect("foreign keys should be enabled");
+        migrations()
+            .to_version(&mut connection, 19)
+            .expect("legacy schema should migrate");
+        connection
+            .execute(
+                "INSERT INTO activity_sessions (
+                    state, application_id, window_title, started_at_ms, ended_at_ms,
+                    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms
+                 ) VALUES ('IDLE', NULL, NULL, 100, 200, 100, 0, 'IDLE', 100, 200)",
+                [],
+            )
+            .expect("closed session should be inserted");
+
+        migrations()
+            .to_latest(&mut connection)
+            .expect("current schema should migrate");
+
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM activity_sessions", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("session should remain readable"),
+            1
+        );
+        let query_plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT COUNT(*) FROM activity_sessions
+                 WHERE is_open = 0 AND ended_at_ms < ?1",
+            )
+            .expect("query plan should prepare")
+            .query_map([1_000], |row| row.get::<_, String>(3))
+            .expect("query plan should run")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query plan should decode");
+        assert!(
+            query_plan
+                .iter()
+                .any(|detail| detail.contains("idx_sessions_closed_ended_at")),
+            "retention query should use the closed-session index: {query_plan:?}"
         );
     }
 
