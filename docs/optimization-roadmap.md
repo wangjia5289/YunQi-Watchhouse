@@ -650,3 +650,30 @@ Validation:
 - The frontend production build passed with lazy page chunks preserved.
 - 133 Rust tests passed; the deterministic performance baseline remained ignored by default.
 - Rust formatting, Clippy with warnings denied, workflow YAML parsing, and diff checks passed.
+
+## Phase 28: Linear Data Health Analysis
+
+Status: Complete
+
+- [x] Replace correlated overlap subqueries with one lightweight closed-session range scan.
+- [x] Detect every session participating in an overlap with an in-memory prefix-maximum analysis.
+- [x] Reuse the same analysis inside repair transactions while preserving the complete undo snapshot.
+- [x] Cover nested, chained, equal-start, touching, zero-duration, open-session, and large-history
+  behavior with exact regression tests.
+
+Decisions:
+
+- Overlap analysis sorts ranges by start time and then scans them once; the prefix maximum end time
+  finds non-adjacent nested overlaps that a neighboring-pair check would miss.
+- Existing behavior remains compatible: the result counts participating closed sessions rather than
+  overlap pairs, touching half-open ranges remain separate, and interior zero-duration records keep
+  their prior overlap classification until repair removes them.
+- The summary releases the SQLite mutex before sorting and analysis. Repair recomputes inside its
+  transaction, decodes full session text only for affected rows, and retains every overlap participant
+  in the undo snapshot even when a row itself does not require trimming.
+
+Validation:
+
+- 10 focused data-health tests passed, including a 50,001-range scaling regression.
+- 142 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting, Clippy with warnings denied, and diff checks passed.

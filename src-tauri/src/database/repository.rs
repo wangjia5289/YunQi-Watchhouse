@@ -362,6 +362,79 @@ struct DataHealthUndoSession {
     category_override: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct HealthSessionRange {
+    id: i64,
+    started_at_ms: i64,
+    ended_at_ms: i64,
+}
+
+const CLOSED_HEALTH_RANGES_QUERY: &str =
+    "SELECT id, started_at_ms, ended_at_ms FROM activity_sessions WHERE is_open = 0";
+const CLOSED_HEALTH_SESSIONS_QUERY: &str = "SELECT
+    id, state, application_id, window_title, started_at_ms, ended_at_ms,
+    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note,
+    category_override
+    FROM activity_sessions WHERE is_open = 0";
+
+fn overlapping_session_ids(mut ranges: Vec<HealthSessionRange>) -> HashSet<i64> {
+    ranges.sort_unstable_by_key(|range| (range.started_at_ms, range.id));
+    let mut overlapping = HashSet::new();
+    let mut prefix_max_end: Option<(i64, i64)> = None;
+    let mut group_start = 0;
+
+    while group_start < ranges.len() {
+        let started_at_ms = ranges[group_start].started_at_ms;
+        let mut group_end = group_start + 1;
+        while group_end < ranges.len() && ranges[group_end].started_at_ms == started_at_ms {
+            group_end += 1;
+        }
+        let group = &ranges[group_start..group_end];
+
+        if let Some((maximum_end, maximum_id)) = prefix_max_end
+            && maximum_end > started_at_ms
+        {
+            overlapping.insert(maximum_id);
+            overlapping.extend(group.iter().map(|range| range.id));
+        }
+
+        let positive_count = group
+            .iter()
+            .filter(|range| range.ended_at_ms > started_at_ms)
+            .count();
+        if positive_count > 1 {
+            overlapping.extend(
+                group
+                    .iter()
+                    .filter(|range| range.ended_at_ms > started_at_ms)
+                    .map(|range| range.id),
+            );
+        }
+
+        if let Some(group_maximum) = group.iter().max_by_key(|range| range.ended_at_ms)
+            && prefix_max_end.is_none_or(|(maximum_end, _)| group_maximum.ended_at_ms > maximum_end)
+        {
+            prefix_max_end = Some((group_maximum.ended_at_ms, group_maximum.id));
+        }
+        group_start = group_end;
+    }
+
+    overlapping
+}
+
+fn closed_health_ranges(connection: &Connection) -> AppResult<Vec<HealthSessionRange>> {
+    let mut statement = connection.prepare(CLOSED_HEALTH_RANGES_QUERY)?;
+    Ok(statement
+        .query_map([], |row| {
+            Ok(HealthSessionRange {
+                id: row.get(0)?,
+                started_at_ms: row.get(1)?,
+                ended_at_ms: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
 type OverlappingSession = (i64, String, Option<i64>, Option<String>, i64, i64);
 
 const CATEGORY_RULES_REAPPLY_UNDO_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
@@ -1512,22 +1585,13 @@ impl ActivityRepository {
 
     pub fn data_health_summary(&self) -> AppResult<DataHealthSummary> {
         let connection = self.database.lock()?;
-        let overlapping_session_count = connection.query_row(
-            "SELECT COUNT(*) FROM activity_sessions current
-             WHERE current.is_open = 0 AND EXISTS (
-               SELECT 1 FROM activity_sessions next
-               WHERE next.is_open = 0 AND next.id != current.id
-                 AND next.started_at_ms < current.ended_at_ms
-                 AND next.ended_at_ms > current.started_at_ms
-             )",
-            [],
-            |row| row.get(0),
-        )?;
-        let zero_duration_session_count = connection.query_row(
-            "SELECT COUNT(*) FROM activity_sessions WHERE is_open = 0 AND duration_ms = 0",
-            [],
-            |row| row.get(0),
-        )?;
+        let ranges = closed_health_ranges(&connection)?;
+        drop(connection);
+        let zero_duration_session_count = ranges
+            .iter()
+            .filter(|range| range.started_at_ms == range.ended_at_ms)
+            .count() as i64;
+        let overlapping_session_count = overlapping_session_ids(ranges).len() as i64;
         Ok(DataHealthSummary {
             overlapping_session_count,
             zero_duration_session_count,
@@ -1537,29 +1601,32 @@ impl ActivityRepository {
     pub fn repair_data_health(&self, backup_path: &str) -> AppResult<DataHealthRepairResult> {
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
-        let mut snapshot_statement = transaction.prepare(
-            "SELECT
-               id, state, application_id, window_title, started_at_ms, ended_at_ms,
-               duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note,
-               category_override
-             FROM activity_sessions
-             WHERE is_open = 0 AND (
-               duration_ms = 0 OR EXISTS (
-                 SELECT 1 FROM activity_sessions other
-                 WHERE other.is_open = 0 AND other.id != activity_sessions.id
-                   AND other.started_at_ms < activity_sessions.ended_at_ms
-                   AND other.ended_at_ms > activity_sessions.started_at_ms
-               )
-             ) ORDER BY started_at_ms, id",
-        )?;
+        let ranges = closed_health_ranges(&transaction)?;
+        let mut sessions = ranges
+            .iter()
+            .filter(|range| range.ended_at_ms > range.started_at_ms)
+            .map(|range| (range.id, range.started_at_ms, range.ended_at_ms))
+            .collect::<Vec<_>>();
+        sessions.sort_unstable_by_key(|(id, start, end)| (*start, *end, *id));
+        let overlapping_ids = overlapping_session_ids(ranges);
+        let mut snapshot_statement = transaction.prepare(CLOSED_HEALTH_SESSIONS_QUERY)?;
         let snapshot = snapshot_statement
             .query_map([], |row| {
-                Ok(DataHealthUndoSession {
-                    session: map_session(row)?,
-                    category_override: row.get(12)?,
-                })
+                let id = row.get::<_, i64>(0)?;
+                let duration_ms = row.get::<_, i64>(6)?;
+                if duration_ms == 0 || overlapping_ids.contains(&id) {
+                    Ok(Some(DataHealthUndoSession {
+                        session: map_session(row)?,
+                        category_override: row.get(12)?,
+                    }))
+                } else {
+                    Ok(None)
+                }
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         drop(snapshot_statement);
         transaction.execute(
             "INSERT INTO data_health_undo(singleton_id, snapshot_json, backup_path, created_at_ms)
@@ -1582,20 +1649,6 @@ impl ActivityRepository {
             "DELETE FROM activity_sessions WHERE is_open = 0 AND duration_ms = 0",
             [],
         )?;
-        let mut statement = transaction.prepare(
-            "SELECT id, started_at_ms, ended_at_ms FROM activity_sessions
-             WHERE is_open = 0 ORDER BY started_at_ms, ended_at_ms, id",
-        )?;
-        let sessions = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        drop(statement);
         let mut trimmed_session_count = 0;
         for pair in sessions.windows(2) {
             let (id, started_at_ms, ended_at_ms) = pair[0];
@@ -4765,6 +4818,129 @@ mod tests {
         assert_eq!(repository.usage_limit_rules().unwrap().len(), 1);
     }
 
+    fn health_ranges(intervals: &[(i64, i64)]) -> Vec<HealthSessionRange> {
+        intervals
+            .iter()
+            .enumerate()
+            .map(|(index, (started_at_ms, ended_at_ms))| HealthSessionRange {
+                id: index as i64 + 1,
+                started_at_ms: *started_at_ms,
+                ended_at_ms: *ended_at_ms,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn data_health_overlap_detection_marks_every_nested_participant() {
+        assert_eq!(
+            overlapping_session_ids(health_ranges(&[(0, 100), (10, 20), (30, 40)])),
+            HashSet::from([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn data_health_overlap_detection_handles_equal_starts_without_marking_empty_ranges() {
+        assert_eq!(
+            overlapping_session_ids(health_ranges(&[(10, 50), (10, 30), (10, 10)])),
+            HashSet::from([1, 2])
+        );
+    }
+
+    #[test]
+    fn data_health_overlap_detection_marks_every_chained_participant() {
+        assert_eq!(
+            overlapping_session_ids(health_ranges(&[(0, 10), (5, 15), (14, 20)])),
+            HashSet::from([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn data_health_overlap_detection_keeps_touching_ranges_separate() {
+        assert!(overlapping_session_ids(health_ranges(&[(0, 10), (10, 20), (20, 30)])).is_empty());
+    }
+
+    #[test]
+    fn data_health_overlap_detection_preserves_interior_zero_duration_behavior() {
+        assert_eq!(
+            overlapping_session_ids(health_ranges(&[(0, 100), (50, 50)])),
+            HashSet::from([1, 2])
+        );
+    }
+
+    #[test]
+    fn data_health_summary_ignores_open_sessions() {
+        let repository = repository();
+        {
+            let connection = repository.database.lock().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO activity_sessions (
+                       state, application_id, started_at_ms, ended_at_ms, duration_ms,
+                       is_open, closed_reason, created_at_ms, updated_at_ms
+                     ) VALUES ('IDLE', NULL, 0, 100, 100, 0, 'BECAME_ACTIVE', 0, 100)",
+                    [],
+                )
+                .unwrap();
+        }
+        repository
+            .create_session(&NewSession {
+                state: ActivityState::Idle,
+                application_id: None,
+                window_title: None,
+                category_override: None,
+                started_at_ms: 50,
+            })
+            .expect("open session should be created");
+
+        assert_eq!(
+            repository.data_health_summary().unwrap(),
+            DataHealthSummary {
+                overlapping_session_count: 0,
+                zero_duration_session_count: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn data_health_overlap_detection_scales_to_large_histories() {
+        let mut ranges = (0..50_000_i64)
+            .map(|index| HealthSessionRange {
+                id: index + 1,
+                started_at_ms: index * 10,
+                ended_at_ms: index * 10 + 10,
+            })
+            .collect::<Vec<_>>();
+        ranges.push(HealthSessionRange {
+            id: 50_001,
+            started_at_ms: 15,
+            ended_at_ms: 16,
+        });
+
+        assert_eq!(overlapping_session_ids(ranges), HashSet::from([2, 50_001]));
+    }
+
+    #[test]
+    fn data_health_queries_do_not_use_correlated_subqueries() {
+        let repository = repository();
+        let connection = repository.database.lock().unwrap();
+
+        for query in [CLOSED_HEALTH_RANGES_QUERY, CLOSED_HEALTH_SESSIONS_QUERY] {
+            let details = connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .expect("health query plan should prepare")
+                .query_map([], |row| row.get::<_, String>(3))
+                .expect("health query plan should run")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("health query plan should decode");
+            assert!(
+                details
+                    .iter()
+                    .all(|detail| !detail.to_ascii_uppercase().contains("CORRELATED")),
+                "health query must not use a correlated subquery: {details:?}"
+            );
+        }
+    }
+
     #[test]
     fn data_health_repair_trims_overlaps_and_removes_zero_duration_sessions() {
         let repository = repository();
@@ -4790,7 +4966,7 @@ mod tests {
                 .unwrap();
         }
         let summary = repository.data_health_summary().unwrap();
-        assert!(summary.overlapping_session_count >= 2);
+        assert_eq!(summary.overlapping_session_count, 2);
         assert_eq!(summary.zero_duration_session_count, 1);
 
         let repaired = repository
@@ -4824,6 +5000,53 @@ mod tests {
             .unwrap();
         assert_eq!(restored_category.as_deref(), Some("Manual review"));
         assert!(!repository.data_health_undo_status().unwrap().available);
+    }
+
+    #[test]
+    fn data_health_repair_snapshots_every_nested_overlap_participant() {
+        let repository = repository();
+        {
+            let connection = repository.database.lock().unwrap();
+            for (start, end) in [(0, 100), (10, 20), (30, 40)] {
+                connection
+                    .execute(
+                        "INSERT INTO activity_sessions (
+                           state, application_id, started_at_ms, ended_at_ms, duration_ms,
+                           is_open, closed_reason, created_at_ms, updated_at_ms
+                         ) VALUES ('IDLE', NULL, ?1, ?2, ?2 - ?1, 0, 'BECAME_ACTIVE', ?1, ?2)",
+                        params![start, end],
+                    )
+                    .unwrap();
+            }
+        }
+
+        assert_eq!(
+            repository
+                .data_health_summary()
+                .unwrap()
+                .overlapping_session_count,
+            3
+        );
+        let repaired = repository
+            .repair_data_health("/tmp/watchhouse-nested-health.sqlite3")
+            .unwrap();
+        assert_eq!(repaired.trimmed_session_count, 1);
+        assert_eq!(repaired.deleted_session_count, 0);
+        assert_eq!(
+            repository
+                .data_health_summary()
+                .unwrap()
+                .overlapping_session_count,
+            0
+        );
+        assert_eq!(repository.undo_data_health_repair().unwrap(), 3);
+        assert_eq!(
+            repository
+                .data_health_summary()
+                .unwrap()
+                .overlapping_session_count,
+            3
+        );
     }
 
     #[test]
