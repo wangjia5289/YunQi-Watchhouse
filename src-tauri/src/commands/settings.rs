@@ -578,7 +578,7 @@ pub fn open_log_directory(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_diagnostics_summary(
+pub async fn get_diagnostics_summary(
     app: AppHandle,
     repository: State<'_, ActivityRepository>,
 ) -> Result<DiagnosticsSummary, String> {
@@ -593,45 +593,55 @@ pub fn get_diagnostics_summary(
         .path()
         .app_log_dir()
         .map_err(|error| error.to_string())?;
-    let settings = repository.settings().map_err(|error| error.to_string())?;
-    let backups = settings
-        .backup_directory
-        .filter(|path| !path.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| app_data.join("backups"));
-    let (application_count, session_count) = repository
-        .record_counts()
-        .map_err(|error| error.to_string())?;
-    let database_integrity_ok = repository
-        .database_integrity_ok()
-        .map_err(|error| error.to_string())?;
     let notification_permission = app
         .notification()
         .permission_state()
         .map(NotificationPermission::from)
         .map_err(|error| error.to_string())?;
     let maintenance = app.state::<MaintenanceStatusState>().snapshot();
-    Ok(DiagnosticsSummary {
-        application_version: app.package_info().version.to_string(),
-        database_path: database.to_string_lossy().into_owned(),
-        database_bytes: file_size(&database),
-        wal_bytes: file_size(&wal),
-        icon_cache_bytes: directory_size(&icons),
-        log_bytes: directory_size(&logs),
-        automatic_backup_bytes: directory_size(&backups),
-        automatic_backup_count: file_count(&backups),
-        application_count,
-        session_count,
-        database_integrity_ok,
-        accessibility_permission: crate::platform::accessibility_permission(),
-        notification_permission,
-        tracking_paused: app.state::<MonitorHandle>().is_paused(),
-        automatic_backup_enabled: settings.automatic_backup_enabled,
-        last_backup_at_ms: settings.last_backup_at_ms,
-        backup_directory_available: directory_available(&backups),
-        log_directory_available: directory_available(&logs),
-        maintenance_last_error: maintenance.last_error,
+    let application_version = app.package_info().version.to_string();
+    let accessibility_permission = crate::platform::accessibility_permission();
+    let tracking_paused = app.state::<MonitorHandle>().is_paused();
+    let repository = repository.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = repository.settings().map_err(|error| error.to_string())?;
+        let backups = settings
+            .backup_directory
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| app_data.join("backups"));
+        let (application_count, session_count) = repository
+            .record_counts()
+            .map_err(|error| error.to_string())?;
+        let database_integrity_ok = repository
+            .database_integrity_ok()
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>(DiagnosticsSummary {
+            application_version,
+            database_path: database.to_string_lossy().into_owned(),
+            database_bytes: file_size(&database),
+            wal_bytes: file_size(&wal),
+            icon_cache_bytes: directory_size(&icons),
+            log_bytes: directory_size(&logs),
+            automatic_backup_bytes: directory_size(&backups),
+            automatic_backup_count: file_count(&backups),
+            application_count,
+            session_count,
+            database_integrity_ok,
+            accessibility_permission,
+            notification_permission,
+            tracking_paused,
+            automatic_backup_enabled: settings.automatic_backup_enabled,
+            last_backup_at_ms: settings.last_backup_at_ms,
+            backup_directory_available: directory_available(&backups),
+            log_directory_available: directory_available(&logs),
+            maintenance_last_error: maintenance.last_error,
+        })
     })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -714,29 +724,51 @@ fn file_size(path: &std::path::Path) -> u64 {
 }
 
 fn directory_size(path: &std::path::Path) -> u64 {
-    let Ok(entries) = fs::read_dir(path) else {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
         return 0;
     };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| {
-            let path = entry.path();
-            if path.is_dir() {
-                directory_size(&path)
-            } else {
-                file_size(&path)
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return 0;
+    }
+
+    let mut total = 0_u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
             }
-        })
-        .sum()
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file()
+                && let Ok(metadata) = entry.metadata()
+            {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    total
 }
 
 fn file_count(path: &std::path::Path) -> usize {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return 0;
+    }
     let Ok(entries) = fs::read_dir(path) else {
         return 0;
     };
     entries
         .filter_map(Result::ok)
-        .filter(|entry| entry.path().is_file())
+        .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_file()))
         .count()
 }
 
@@ -1116,5 +1148,42 @@ mod tests {
             .unwrap_err(),
             "secure storage unavailable"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn diagnostics_directory_size_skips_symbolic_link_loops_and_linked_files() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().expect("temporary directory should exist");
+        let nested = directory.path().join("nested");
+        fs::create_dir(&nested).expect("nested directory should be created");
+        fs::write(directory.path().join("root.bin"), b"root").expect("root file should be written");
+        fs::write(nested.join("nested.bin"), b"nested").expect("nested file should be written");
+        symlink(directory.path(), nested.join("loop"))
+            .expect("directory loop symlink should be created");
+        symlink(
+            nested.join("nested.bin"),
+            directory.path().join("linked.bin"),
+        )
+        .expect("file symlink should be created");
+
+        assert_eq!(directory_size(directory.path()), 10);
+        assert_eq!(file_count(directory.path()), 1);
+        assert_eq!(directory_size(&nested.join("loop")), 0);
+    }
+
+    #[test]
+    fn diagnostics_directory_size_handles_deep_directories_iteratively() {
+        let directory = tempfile::tempdir().expect("temporary directory should exist");
+        let mut nested = directory.path().to_path_buf();
+        for _ in 0..256 {
+            nested.push("d");
+            fs::create_dir(&nested).expect("deep directory should be created");
+        }
+        fs::write(nested.join("payload.bin"), b"deep payload")
+            .expect("deep file should be written");
+
+        assert_eq!(directory_size(directory.path()), 12);
     }
 }

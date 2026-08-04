@@ -621,3 +621,32 @@ Validation:
 - The frontend production build passed with independently loaded page chunks preserved.
 - 131 Rust tests passed; the deterministic performance baseline remained ignored by default.
 - Rust formatting and Clippy passed with warnings denied.
+
+## Phase 27: Runtime Scheduling And Release Gates
+
+Status: Complete
+
+- [x] Move diagnostics database checks and directory scans off the asynchronous command executor.
+- [x] Traverse diagnostic directories iteratively without following symbolic links.
+- [x] Run the Dashboard clock only for a visible, active, unpaused Focus session.
+- [x] Deduplicate concurrent tracking refreshes and isolate inactive pages from tracking polls.
+- [x] Require frontend and Rust verification to pass before a tagged release can access write
+  permissions or begin signing.
+
+Decisions:
+
+- Diagnostics capture lightweight application state before entering `spawn_blocking`; SQLite work
+  and filesystem traversal then execute together without blocking an asynchronous runtime thread.
+- Directory accounting skips symbolic links at both the configured root and nested entries, uses an
+  explicit traversal stack, and saturates byte totals instead of risking recursion or overflow.
+- The application shell still refreshes its global tracking control, while a memoized page boundary
+  receives tracking state only on Today and stable callbacks on every other page.
+- Release verification runs as a read-only job, and the signing job receives `contents: write` only
+  after all frontend tests, frontend build, Rust tests, formatting, and Clippy succeed.
+
+Validation:
+
+- 51 frontend unit tests and 9 browser UI tests passed.
+- The frontend production build passed with lazy page chunks preserved.
+- 133 Rust tests passed; the deterministic performance baseline remained ignored by default.
+- Rust formatting, Clippy with warnings denied, workflow YAML parsing, and diff checks passed.

@@ -218,12 +218,37 @@ export function Dashboard({
     const unlisten = listen<FocusModeStatus>("focus-mode-changed", (event) => {
       setFocusModeStatus(event.payload);
     });
-    const timer = window.setInterval(() => setClockRevision((value) => value + 1), 1_000);
     return () => {
-      window.clearInterval(timer);
       void unlisten.then((stop) => stop());
     };
   }, []);
+
+  useEffect(() => {
+    let timer: number | null = null;
+    const stopTicker = () => {
+      if (timer === null) return;
+      window.clearInterval(timer);
+      timer = null;
+    };
+    const syncTicker = () => {
+      if (!shouldRunFocusTicker(focusMode, document.visibilityState)) {
+        stopTicker();
+        return;
+      }
+      if (timer !== null) return;
+      setClockRevision((value) => value + 1);
+      timer = window.setInterval(() => {
+        setClockRevision((value) => value + 1);
+      }, 1_000);
+    };
+
+    syncTicker();
+    document.addEventListener("visibilitychange", syncTicker);
+    return () => {
+      document.removeEventListener("visibilitychange", syncTicker);
+      stopTicker();
+    };
+  }, [focusMode?.active, focusMode?.paused]);
   const runningSample =
     current?.monitor.status === "RUNNING" ? current.monitor.payload : null;
   const degraded =
@@ -581,6 +606,15 @@ export function Dashboard({
       </footer>
     </div>
   );
+}
+
+export function shouldRunFocusTicker(
+  focusMode: Pick<FocusModeStatus, "active" | "paused"> | null,
+  visibilityState: DocumentVisibilityState,
+): boolean {
+  return focusMode?.active === true
+    && focusMode.paused === false
+    && visibilityState === "visible";
 }
 
 function isQuietHours(start: string, end: string): boolean {

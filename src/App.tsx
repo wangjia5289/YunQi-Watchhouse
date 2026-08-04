@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import "./styles/tokens.css";
 import {
@@ -24,7 +24,36 @@ const navigation = [
   { label: "Reports", icon: "reports", page: "reports", enabled: true },
 ] as const;
 
-type Page = (typeof navigation)[number]["page"] | "settings";
+export type Page = (typeof navigation)[number]["page"] | "settings";
+
+interface TimelineTarget {
+  date?: string;
+  sessionId?: number;
+}
+
+export function createSingleFlight<T>(task: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | null = null;
+
+  return () => {
+    if (pending === null) {
+      try {
+        pending = task().finally(() => {
+          pending = null;
+        });
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+    return pending;
+  };
+}
+
+export function trackingForPage(
+  page: Page,
+  tracking: CurrentActivity | null,
+): CurrentActivity | null {
+  return page === "today" ? tracking : null;
+}
 
 const pageLoaders = {
   today: createRetryableLoader(() => import("./features/dashboard/Dashboard")
@@ -100,6 +129,44 @@ function PageLoading() {
   );
 }
 
+const PageViewport = memo(function PageViewport({
+  page,
+  tracking,
+  timelineTarget,
+  onTrackingChanged,
+  onTimelineDateChange,
+  onOpenDate,
+}: {
+  page: Page;
+  tracking: CurrentActivity | null;
+  timelineTarget: TimelineTarget;
+  onTrackingChanged: () => void | Promise<void>;
+  onTimelineDateChange: (date: string) => void;
+  onOpenDate: (date: string, sessionId?: number) => void;
+}) {
+  return (
+    <PageErrorBoundary resetKey={page}>
+      <Suspense fallback={<PageLoading />}>
+        {page === "today" && (
+          <Dashboard current={tracking} onTrackingChanged={onTrackingChanged} />
+        )}
+        {page === "timeline" && (
+          <Timeline
+            initialDate={timelineTarget.date}
+            initialSessionId={timelineTarget.sessionId}
+            onDateChange={onTimelineDateChange}
+          />
+        )}
+        {page === "search" && <GlobalSearch onOpenDate={onOpenDate} />}
+        {page === "applications" && <Applications />}
+        {page === "history" && <History />}
+        {page === "reports" && <Reports />}
+        {page === "settings" && <Settings />}
+      </Suspense>
+    </PageErrorBoundary>
+  );
+});
+
 function MainApp() {
   const { locale, setLocale, t } = useLocale();
   const [page, setPage] = useState<Page>("today");
@@ -107,17 +174,23 @@ function MainApp() {
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [tracking, setTracking] = useState<CurrentActivity | null>(null);
-  const [timelineTarget, setTimelineTarget] = useState<{
-    date?: string;
-    sessionId?: number;
-  }>({});
+  const [timelineTarget, setTimelineTarget] = useState<TimelineTarget>({});
 
-  const loadTracking = useCallback(async () => {
+  const loadTracking = useMemo(() => createSingleFlight(async () => {
     try {
       setTracking(await getCurrentActivity());
     } catch {
       // A later poll or activity event will retry transient status failures.
     }
+  }), []);
+
+  const handleTimelineDateChange = useCallback((date: string) => {
+    setTimelineTarget({ date });
+  }, []);
+
+  const handleOpenDate = useCallback((date: string, sessionId?: number) => {
+    setTimelineTarget({ date, sessionId });
+    setPage("timeline");
   }, []);
 
   function loadSettings() {
@@ -283,32 +356,14 @@ function MainApp() {
             <button type="button" onClick={loadSettings}>{t("Retry")}</button>
           </div>
         )}
-        <PageErrorBoundary resetKey={page}>
-          <Suspense fallback={<PageLoading />}>
-            {page === "today" && (
-              <Dashboard current={tracking} onTrackingChanged={loadTracking} />
-            )}
-            {page === "timeline" && (
-              <Timeline
-                initialDate={timelineTarget.date}
-                initialSessionId={timelineTarget.sessionId}
-                onDateChange={(date) => setTimelineTarget({ date })}
-              />
-            )}
-            {page === "search" && (
-              <GlobalSearch
-                onOpenDate={(date, sessionId) => {
-                  setTimelineTarget({ date, sessionId });
-                  setPage("timeline");
-                }}
-              />
-            )}
-            {page === "applications" && <Applications />}
-            {page === "history" && <History />}
-            {page === "reports" && <Reports />}
-            {page === "settings" && <Settings />}
-          </Suspense>
-        </PageErrorBoundary>
+        <PageViewport
+          page={page}
+          tracking={trackingForPage(page, tracking)}
+          timelineTarget={timelineTarget}
+          onTrackingChanged={loadTracking}
+          onTimelineDateChange={handleTimelineDateChange}
+          onOpenDate={handleOpenDate}
+        />
       </main>
     </div>
     {settingsLoaded && needsOnboarding && (
