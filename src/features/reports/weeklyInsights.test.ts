@@ -20,6 +20,12 @@ const report: ProductivityReport = {
     { category: "Work", durationMs: 9_000, applicationCount: 2 },
     { category: "Learning", durationMs: 3_000, applicationCount: 1 },
   ],
+  organizationInsights: {
+    projectUsage: [],
+    tagUsage: [],
+    unassignedActiveDurationMs: 0,
+    unassignedSessionCount: 0,
+  },
 };
 
 const focusHistory: FocusPlanHistorySummary = {

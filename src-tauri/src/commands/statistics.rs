@@ -160,6 +160,27 @@ pub async fn export_productivity_report_csv(
                 category.duration_ms
             ));
         }
+        csv.push_str(&format!(
+            "unassigned,unassigned,{},0,{}\n",
+            report.organization_insights.unassigned_active_duration_ms,
+            report.organization_insights.unassigned_session_count
+        ));
+        for project in report.organization_insights.project_usage {
+            csv.push_str(&format!(
+                "project,{},{},0,{}\n",
+                csv_field(&project.name),
+                project.duration_ms,
+                project.session_count
+            ));
+        }
+        for tag in report.organization_insights.tag_usage {
+            csv.push_str(&format!(
+                "tag,{},{},0,{}\n",
+                csv_field(&tag.name),
+                tag.duration_ms,
+                tag.session_count
+            ));
+        }
         for plan in repository
             .focus_plan_history(range.start_ms, range.end_ms)
             .map_err(|error| error.to_string())?

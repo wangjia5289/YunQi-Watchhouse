@@ -751,3 +751,27 @@ Validation:
 - 158 Rust tests passed and 1 deterministic performance baseline remained ignored, including a
   1,205-session batching, bulk update, and undo regression.
 - Rust formatting, Clippy with warnings denied, TypeScript checks, and diff checks passed.
+
+## Phase 31: Organization Reporting Insights
+
+Status: Complete
+
+- [x] Add project, activity-tag, and unassigned active-time insights to productivity reports.
+- [x] Keep archived historical organization entries visible in reports and CSV exports.
+- [x] Present project and tag allocation rankings responsively, with explicit overlapping-tag semantics.
+
+Decisions:
+
+- Organization insight aggregation reuses the existing range-clipped timeline entries and their
+  batched relationship hydration, so it stays consistent with timeline results without new per-row
+  queries.
+- Project durations are mutually exclusive. Tags receive the full duration of each assigned active
+  session and can therefore overlap; the report makes this distinction visible.
+- Unassigned activity means an active session with neither a project nor a tag, matching Timeline
+  and Global Search filtering.
+
+Validation:
+
+- Frontend unit tests, TypeScript checks, and desktop/narrow report browser tests passed.
+- Rust aggregation tests cover clipping, idle exclusion, archived history, overlapping tags, and
+  unassigned activity.

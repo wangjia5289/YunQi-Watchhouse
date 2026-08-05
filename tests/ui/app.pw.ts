@@ -18,6 +18,10 @@ test("opens reports and exposes weekly archive controls", async ({ page }) => {
   await page.getByRole("button", { name: "Reports", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Weekly insights" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Weekly report archive" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Projects & activity tags" })).toBeVisible();
+  await expect(page.getByText("Client launch", { exact: true })).toBeVisible();
+  await expect(page.getByText("Tags may overlap; durations do not add up.", { exact: true }))
+    .toBeVisible();
   await page.getByRole("button", { name: "Archive this week" }).click();
   await expect(page.getByText("Weekly report archived locally.")).toBeVisible();
 });

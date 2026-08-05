@@ -84,6 +84,25 @@ pub struct CategoryUsage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct OrganizationUsage {
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    pub duration_ms: i64,
+    pub session_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizationInsights {
+    pub project_usage: Vec<OrganizationUsage>,
+    pub tag_usage: Vec<OrganizationUsage>,
+    pub unassigned_active_duration_ms: i64,
+    pub unassigned_session_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FocusBlock {
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
@@ -132,6 +151,7 @@ pub struct ProductivityReport {
     pub daily_usage: Vec<DailyUsage>,
     pub hourly_usage: Vec<HourlyUsage>,
     pub category_usage: Vec<CategoryUsage>,
+    pub organization_insights: OrganizationInsights,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -660,6 +680,7 @@ impl StatisticsService {
                 })
                 .collect(),
             category_usage: self.category_usage(range)?,
+            organization_insights: organization_insights(&timeline),
         })
     }
 
@@ -814,6 +835,71 @@ fn timeline_entries(
             })
         })
         .collect()
+}
+
+fn organization_insights(entries: &[TimelineEntry]) -> OrganizationInsights {
+    let mut project_usage = HashMap::<i64, OrganizationUsage>::new();
+    let mut tag_usage = HashMap::<i64, OrganizationUsage>::new();
+    let mut unassigned_active_duration_ms = 0;
+    let mut unassigned_session_count = 0;
+
+    for entry in entries {
+        if entry.state != ActivityState::Active {
+            continue;
+        }
+
+        if let Some(project) = &entry.project {
+            let usage = project_usage
+                .entry(project.id)
+                .or_insert_with(|| OrganizationUsage {
+                    id: project.id,
+                    name: project.name.clone(),
+                    color: project.color.clone(),
+                    duration_ms: 0,
+                    session_count: 0,
+                });
+            usage.duration_ms += entry.duration_ms;
+            usage.session_count += 1;
+        }
+
+        for tag in &entry.tags {
+            let usage = tag_usage
+                .entry(tag.id)
+                .or_insert_with(|| OrganizationUsage {
+                    id: tag.id,
+                    name: tag.name.clone(),
+                    color: tag.color.clone(),
+                    duration_ms: 0,
+                    session_count: 0,
+                });
+            usage.duration_ms += entry.duration_ms;
+            usage.session_count += 1;
+        }
+
+        if entry.project.is_none() && entry.tags.is_empty() {
+            unassigned_active_duration_ms += entry.duration_ms;
+            unassigned_session_count += 1;
+        }
+    }
+
+    let mut project_usage = project_usage.into_values().collect::<Vec<_>>();
+    let mut tag_usage = tag_usage.into_values().collect::<Vec<_>>();
+    let compare_usage = |left: &OrganizationUsage, right: &OrganizationUsage| {
+        right
+            .duration_ms
+            .cmp(&left.duration_ms)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    };
+    project_usage.sort_by(compare_usage);
+    tag_usage.sort_by(compare_usage);
+
+    OrganizationInsights {
+        project_usage,
+        tag_usage,
+        unassigned_active_duration_ms,
+        unassigned_session_count,
+    }
 }
 
 fn clipped_bounds(record: &ActivityRecord, range: TimeRange) -> Option<(i64, i64)> {
@@ -1245,6 +1331,148 @@ mod tests {
         assert_eq!(report.idle_duration_ms, 50);
         assert_eq!(report.previous_active_duration_ms, 50);
         assert_eq!(report.hourly_usage.len(), 24);
+    }
+
+    #[test]
+    fn productivity_report_aggregates_clipped_active_organization_insights() {
+        let (service, repository, application_id) = setup();
+        let beta = repository
+            .create_project(&ProjectInput {
+                name: "Beta".to_owned(),
+                color: "#39796A".to_owned(),
+            })
+            .expect("project should be stored");
+        let alpha = repository
+            .create_project(&ProjectInput {
+                name: "Alpha".to_owned(),
+                color: "#8B5CF6".to_owned(),
+            })
+            .expect("project should be stored");
+        let focus = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "Focus".to_owned(),
+                color: "#0F766E".to_owned(),
+            })
+            .expect("tag should be stored");
+        let overlap = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "Overlap".to_owned(),
+                color: "#F97316".to_owned(),
+            })
+            .expect("tag should be stored");
+
+        let clipped = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(application_id),
+                window_title: None,
+                category_override: None,
+                started_at_ms: 50,
+            })
+            .expect("session should open");
+        repository
+            .close_session(clipped.id, 250, ClosedReason::AppChanged)
+            .expect("session should close");
+        repository
+            .set_session_organization(clipped.id, Some(beta.id), &[focus.id, overlap.id])
+            .expect("organization should be stored");
+
+        let alpha_session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(application_id),
+                window_title: None,
+                category_override: None,
+                started_at_ms: 100,
+            })
+            .expect("session should open");
+        repository
+            .close_session(alpha_session.id, 200, ClosedReason::AppChanged)
+            .expect("session should close");
+        repository
+            .set_session_organization(alpha_session.id, Some(alpha.id), &[focus.id])
+            .expect("organization should be stored");
+
+        store_session(
+            &repository,
+            ActivityState::Active,
+            Some(application_id),
+            150,
+            300,
+        );
+
+        let idle = repository
+            .create_session(&NewSession {
+                state: ActivityState::Idle,
+                application_id: None,
+                window_title: None,
+                category_override: None,
+                started_at_ms: 100,
+            })
+            .expect("idle session should open");
+        repository
+            .close_session(idle.id, 200, ClosedReason::BecameActive)
+            .expect("idle session should close");
+        repository
+            .set_session_organization(idle.id, Some(alpha.id), &[focus.id])
+            .expect("idle organization should be stored");
+
+        repository
+            .set_project_archived(beta.id, true)
+            .expect("project should archive");
+        repository
+            .set_activity_tag_archived(overlap.id, true)
+            .expect("tag should archive");
+
+        let report = service
+            .productivity_report(TimeRange::new(100, 200).expect("range should be valid"))
+            .expect("report should load");
+
+        assert_eq!(
+            report.organization_insights.project_usage,
+            vec![
+                OrganizationUsage {
+                    id: alpha.id,
+                    name: "Alpha".to_owned(),
+                    color: alpha.color,
+                    duration_ms: 100,
+                    session_count: 1,
+                },
+                OrganizationUsage {
+                    id: beta.id,
+                    name: "Beta".to_owned(),
+                    color: beta.color,
+                    duration_ms: 100,
+                    session_count: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            report.organization_insights.tag_usage,
+            vec![
+                OrganizationUsage {
+                    id: focus.id,
+                    name: "Focus".to_owned(),
+                    color: focus.color,
+                    duration_ms: 200,
+                    session_count: 2,
+                },
+                OrganizationUsage {
+                    id: overlap.id,
+                    name: "Overlap".to_owned(),
+                    color: overlap.color,
+                    duration_ms: 100,
+                    session_count: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            (
+                report.organization_insights.unassigned_active_duration_ms,
+                report.organization_insights.unassigned_session_count,
+            ),
+            (50, 1)
+        );
     }
 
     #[test]

@@ -240,6 +240,101 @@
   text-align: right;
 }
 
+.report-organization-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+}
+
+.report-organization-grid > div + div {
+  padding-left: 28px;
+  border-left: 1px solid var(--border);
+}
+
+.report-organization-heading {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.report-organization-heading h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.report-organization-heading span,
+.report-organization-value small,
+.report-unassigned-activity small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.report-organization-list {
+  display: grid;
+  gap: 10px;
+}
+
+.report-organization-list > div {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.85fr) minmax(50px, 1.4fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.report-organization-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-organization-name > i {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.report-organization-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--border);
+}
+
+.report-organization-track b {
+  height: 100%;
+  display: block;
+  background: var(--green-500);
+}
+
+.report-organization-value {
+  display: grid;
+  justify-items: end;
+  gap: 1px;
+  white-space: nowrap;
+}
+
+.report-unassigned-activity {
+  margin-top: 12px;
+  padding-top: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+}
+
+.report-unassigned-activity small {
+  grid-column: 1;
+}
+
 @media (max-width: 720px) {
   .report-custom-range {
     align-items: stretch;
@@ -285,5 +380,17 @@
 
   .report-categories > div {
     grid-template-columns: 90px minmax(0, 1fr) 58px;
+  }
+
+  .report-organization-grid {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .report-organization-grid > div + div {
+    padding-top: 22px;
+    padding-left: 0;
+    border-top: 1px solid var(--border);
+    border-left: 0;
   }
 }

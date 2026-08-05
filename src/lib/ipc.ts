@@ -357,6 +357,22 @@ export interface ProductivityReport {
   dailyUsage: DailyUsage[];
   hourlyUsage: { hour: number; activeDurationMs: number }[];
   categoryUsage: CategoryUsage[];
+  organizationInsights: OrganizationInsights;
+}
+
+export interface OrganizationUsage {
+  id: number;
+  name: string;
+  color: string;
+  durationMs: number;
+  sessionCount: number;
+}
+
+export interface OrganizationInsights {
+  projectUsage: OrganizationUsage[];
+  tagUsage: OrganizationUsage[];
+  unassignedActiveDurationMs: number;
+  unassignedSessionCount: number;
 }
 
 export interface WeeklyReportArchiveInput {

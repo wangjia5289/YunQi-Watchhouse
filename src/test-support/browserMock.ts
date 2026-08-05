@@ -203,6 +203,18 @@ const report = (startMs: number, endMs: number) => ({
     { category: "Development", durationMs: 18_000_000, applicationCount: 2 },
     { category: "Communication", durationMs: 10_800_000, applicationCount: 1 },
   ],
+  organizationInsights: {
+    projectUsage: [
+      { id: 1, name: "Client launch", color: "#39796A", durationMs: 16_200_000, sessionCount: 5 },
+      { id: 2, name: "Internal tools", color: "#2563EB", durationMs: 8_400_000, sessionCount: 3 },
+    ],
+    tagUsage: [
+      { id: 10, name: "Deep work", color: "#8B5CF6", durationMs: 14_400_000, sessionCount: 4 },
+      { id: 11, name: "Review", color: "#E05A47", durationMs: 10_800_000, sessionCount: 4 },
+    ],
+    unassignedActiveDurationMs: 4_200_000,
+    unassignedSessionCount: 2,
+  },
 });
 
 export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") {

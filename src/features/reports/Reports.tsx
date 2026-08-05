@@ -3,6 +3,7 @@ import { dateFromLocalIso, formatDuration, localIsoDate, shiftLocalDate } from "
 import {
   ProductivityReport,
   FocusPlanHistorySummary,
+  OrganizationUsage,
   errorMessage,
   exportProductivityReportCsv,
   getFocusPlanHistory,
@@ -50,6 +51,41 @@ function comparison(current: number, previous: number): string {
   if (previous === 0) return current === 0 ? "No change" : "New activity";
   const percent = Math.round(((current - previous) / previous) * 100);
   return `${percent >= 0 ? "+" : ""}${percent}% vs previous`;
+}
+
+function OrganizationUsageList({
+  items,
+  totalDurationMs,
+  locale,
+  t,
+  emptyCopy,
+}: {
+  items: OrganizationUsage[];
+  totalDurationMs: number;
+  locale: string;
+  t: (value: string) => string;
+  emptyCopy: string;
+}) {
+  if (!items.length) return <p className="report-empty">{t(emptyCopy)}</p>;
+  return (
+    <div className="report-organization-list">
+      {items.map((item) => (
+        <div key={item.id}>
+          <span className="report-organization-name">
+            <i style={{ backgroundColor: item.color }} aria-hidden="true" />
+            {item.name}
+          </span>
+          <i className="report-organization-track">
+            <b style={{ width: `${totalDurationMs ? item.durationMs / totalDurationMs * 100 : 0}%` }} />
+          </i>
+          <span className="report-organization-value">
+            <strong>{formatDuration(item.durationMs, locale)}</strong>
+            <small>{t(`${item.sessionCount} sessions`)}</small>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export function Reports() {
@@ -312,6 +348,47 @@ export function Reports() {
             </div>
           ))}
           {!report?.categoryUsage.length && <p>{t("No categorized activity in this period.")}</p>}
+        </div>
+      </section>
+
+      <section className="report-section report-organization" aria-labelledby="organization-report-title">
+        <div className="section-heading">
+          <div><p className="section-kicker">{t("Organization")}</p><h2 id="organization-report-title">{t("Projects & activity tags")}</h2></div>
+        </div>
+        <div className="report-organization-grid">
+          <div>
+            <div className="report-organization-heading">
+              <h3>{t("Projects")}</h3>
+              <span>{t("Active time")}</span>
+            </div>
+            <OrganizationUsageList
+              items={report?.organizationInsights.projectUsage ?? []}
+              totalDurationMs={report?.activeDurationMs ?? 0}
+              locale={locale}
+              t={t}
+              emptyCopy="No project activity in this period."
+            />
+            {(report?.organizationInsights.unassignedActiveDurationMs ?? 0) > 0 && (
+              <div className="report-unassigned-activity">
+                <span>{t("Unassigned activity")}</span>
+                <strong>{formatDuration(report?.organizationInsights.unassignedActiveDurationMs ?? 0, locale)}</strong>
+                <small>{t(`${report?.organizationInsights.unassignedSessionCount ?? 0} sessions`)}</small>
+              </div>
+            )}
+          </div>
+          <div>
+            <div className="report-organization-heading">
+              <h3>{t("Activity tags")}</h3>
+              <span>{t("Tags may overlap; durations do not add up.")}</span>
+            </div>
+            <OrganizationUsageList
+              items={report?.organizationInsights.tagUsage ?? []}
+              totalDurationMs={report?.activeDurationMs ?? 0}
+              locale={locale}
+              t={t}
+              emptyCopy="No tagged activity in this period."
+            />
+          </div>
         </div>
       </section>
     </div>
