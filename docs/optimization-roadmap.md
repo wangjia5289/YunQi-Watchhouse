@@ -709,3 +709,45 @@ Validation:
 - The production frontend build passed with independent Settings feature chunks.
 - 150 Rust tests passed and 1 deterministic performance baseline remained ignored.
 - Rust formatting, Clippy with warnings denied, and diff checks passed.
+
+## Phase 30: Organization Discovery And Safe Bulk Editing
+
+Status: Complete
+
+- [x] Filter Timeline and Global Search by project, activity tag, or sessions without an
+  organization, and retain those fields in saved searches.
+- [x] Show project and tag badges on session results, including archived historical organization
+  options in filters while excluding them from new assignments.
+- [x] Replace project and tags across selected sessions with one transaction and an
+  organization-only undo that preserves later time and note edits.
+- [x] Preserve organization through deletion, merge, split, and health-repair undo; merge tag sets
+  and reject sessions assigned to conflicting projects.
+- [x] Batch organization hydration and undo snapshots in bounded chunks, and harden dialogs,
+  localization, browser mocks, and stale pagination responses.
+
+Decisions:
+
+- Project and tag predicates use indexed relationship-table `EXISTS` queries, so combined filters
+  keep exact pagination and totals without multiplying session rows.
+- Timeline pages hydrate organization data in batches rather than per row. Unbounded timeline and
+  bulk-undo paths process at most 500 session IDs per query batch to stay below SQLite parameter
+  limits and avoid N+1 work.
+- Organization-only undo rewrites only relationship rows. A later note or time edit remains intact,
+  while an explicit organization edit can still be reverted.
+- Time-only session edits carry an explicit organization-change flag, so a concurrent organization
+  update from another window is not overwritten by stale editor state.
+- Saved-search deserialization accepts older records with missing organization fields, rejects
+  invalid identifiers and contradictory unassigned filters, and keeps archived historical targets
+  selectable for discovery.
+
+Validation:
+
+- 62 frontend unit tests passed.
+- 14 browser UI tests passed across desktop and narrow viewports; 8 intentionally duplicated cases
+  were skipped by project configuration.
+- Desktop and 390 x 844 browser inspection found no horizontal overflow, control overlap, or console
+  errors in organization filters and bulk editing dialogs.
+- The production frontend build passed with lazy feature chunks preserved.
+- 158 Rust tests passed and 1 deterministic performance baseline remained ignored, including a
+  1,205-session batching, bulk update, and undo regression.
+- Rust formatting, Clippy with warnings denied, TypeScript checks, and diff checks passed.

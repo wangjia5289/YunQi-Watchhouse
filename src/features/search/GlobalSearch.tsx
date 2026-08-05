@@ -7,9 +7,13 @@ import {
 } from "../../lib/format";
 import {
   ActivityState,
+  ActivityTag,
+  Project,
   TimelineEntry,
   TimelineFilters,
   errorMessage,
+  listActivityTags,
+  listProjects,
   searchTimelineRange,
 } from "../../lib/ipc";
 import { useLocale } from "../../lib/i18n";
@@ -38,6 +42,9 @@ interface SavedSearch {
   maximumMinutes: string;
   timeFrom: string;
   timeTo: string;
+  projectId?: number | null;
+  tagId?: number | null;
+  unassignedOnly?: boolean;
 }
 
 interface SearchState {
@@ -87,7 +94,17 @@ function readSavedSearches(): SavedSearch[] {
           && typeof candidate.minimumMinutes === "string"
           && typeof candidate.maximumMinutes === "string"
           && typeof candidate.timeFrom === "string"
-          && typeof candidate.timeTo === "string";
+          && typeof candidate.timeTo === "string"
+          && (candidate.projectId === undefined
+            || candidate.projectId === null
+            || (Number.isSafeInteger(candidate.projectId) && candidate.projectId > 0))
+          && (candidate.tagId === undefined
+            || candidate.tagId === null
+            || (Number.isSafeInteger(candidate.tagId) && candidate.tagId > 0))
+          && (candidate.unassignedOnly === undefined
+            || typeof candidate.unassignedOnly === "boolean")
+          && !(candidate.unassignedOnly
+            && (candidate.projectId != null || candidate.tagId != null));
       })
       .slice(0, MAX_SAVED_SEARCHES);
   } catch {
@@ -120,6 +137,11 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
   const [maximumMinutes, setMaximumMinutes] = useState("");
   const [timeFrom, setTimeFrom] = useState("");
   const [timeTo, setTimeTo] = useState("");
+  const [projectId, setProjectId] = useState<number | null>(null);
+  const [tagId, setTagId] = useState<number | null>(null);
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [tags, setTags] = useState<ActivityTag[]>([]);
   const [savedSearchName, setSavedSearchName] = useState("");
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(readSavedSearches);
   const [state, setState] = useState<SearchState>({
@@ -149,6 +171,9 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
     maximumDurationMs,
     timeFromMinutes,
     timeToMinutes,
+    projectId,
+    tagId,
+    unassignedOnly,
   }), [
     debouncedQuery,
     maximumDurationMs,
@@ -156,6 +181,9 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
     stateFilter,
     timeFromMinutes,
     timeToMinutes,
+    projectId,
+    tagId,
+    unassignedOnly,
   ]);
 
   const rangeIsValid = Boolean(startDate && endDate && startDate <= endDate);
@@ -223,6 +251,22 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    let active = true;
+    void Promise.all([listProjects(true), listActivityTags(true)])
+      .then(([nextProjects, nextTags]) => {
+        if (!active) return;
+        setProjects(nextProjects);
+        setTags(nextTags);
+      })
+      .catch((reason) => {
+        if (active) setState((current) => ({ ...current, error: errorMessage(reason) }));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const loadMore = async () => {
     if (state.loading || !state.hasMore || !searchIsValid) return;
     const revision = requestRevision.current;
@@ -267,6 +311,9 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
     setMaximumMinutes("");
     setTimeFrom("");
     setTimeTo("");
+    setProjectId(null);
+    setTagId(null);
+    setUnassignedOnly(false);
   };
 
   const persistSavedSearches = (next: SavedSearch[]) => {
@@ -296,6 +343,9 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
       maximumMinutes,
       timeFrom,
       timeTo,
+      projectId,
+      tagId,
+      unassignedOnly,
     };
     persistSavedSearches([
       saved,
@@ -320,11 +370,17 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
     setMaximumMinutes(saved.maximumMinutes);
     setTimeFrom(saved.timeFrom);
     setTimeTo(saved.timeTo);
+    setProjectId(saved.projectId ?? null);
+    setTagId(saved.tagId ?? null);
+    setUnassignedOnly(saved.unassignedOnly ?? false);
     setAdvancedOpen(Boolean(
       saved.minimumMinutes
         || saved.maximumMinutes
         || saved.timeFrom
-        || saved.timeTo,
+        || saved.timeTo
+        || saved.projectId
+        || saved.tagId
+        || saved.unassignedOnly,
     ));
   };
 
@@ -334,7 +390,10 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
       || minimumMinutes
       || maximumMinutes
       || timeFrom
-      || timeTo,
+      || timeTo
+      || projectId !== null
+      || tagId !== null
+      || unassignedOnly,
   );
   const groups = useMemo(() => groupEntriesByDate(state.entries), [state.entries]);
   const dateFormatter = useMemo(() => new Intl.DateTimeFormat(locale, {
@@ -479,7 +538,7 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
               type="search"
               value={query}
               maxLength={200}
-              placeholder={t("App, title, note, bundle, or category")}
+              placeholder={t("App, title, note, project, tag, bundle, or category")}
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </label>
@@ -544,6 +603,51 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
                 value={timeTo}
                 onChange={(event) => setTimeTo(event.currentTarget.value)}
               />
+            </label>
+            <label>
+              <span>{t("Project")}</span>
+              <select
+                value={projectId ?? ""}
+                disabled={unassignedOnly}
+                onChange={(event) => setProjectId(
+                  event.currentTarget.value ? Number(event.currentTarget.value) : null,
+                )}
+              >
+                <option value="">{t("All projects")}</option>
+                {projects.map((project) => (
+                  <option value={project.id} key={project.id}>{project.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{t("Activity tag")}</span>
+              <select
+                value={tagId ?? ""}
+                disabled={unassignedOnly}
+                onChange={(event) => setTagId(
+                  event.currentTarget.value ? Number(event.currentTarget.value) : null,
+                )}
+              >
+                <option value="">{t("All tags")}</option>
+                {tags.map((tag) => (
+                  <option value={tag.id} key={tag.id}>{tag.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="organization-unassigned-filter">
+              <input
+                type="checkbox"
+                checked={unassignedOnly}
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked;
+                  setUnassignedOnly(checked);
+                  if (checked) {
+                    setProjectId(null);
+                    setTagId(null);
+                  }
+                }}
+              />
+              <span>{t("Unassigned only")}</span>
             </label>
           </div>
         )}
@@ -639,6 +743,22 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
                       </span>
                       {entry.windowTitle && <small>{entry.windowTitle}</small>}
                       {entry.note && <small>{entry.note}</small>}
+                      {(entry.project || entry.tags.length > 0) && (
+                        <div className="session-organization-badges" aria-label={t("Organization")}>
+                          {entry.project && (
+                            <span className="session-project-badge">
+                              <i style={{ backgroundColor: entry.project.color }} aria-hidden="true" />
+                              {entry.project.name}
+                            </span>
+                          )}
+                          {entry.tags.map((tag) => (
+                            <span className="session-tag-badge" key={tag.id}>
+                              <i style={{ backgroundColor: tag.color }} aria-hidden="true" />
+                              {tag.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <span className="global-search-duration">
                       {formatDuration(entry.durationMs, locale)}

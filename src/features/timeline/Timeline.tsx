@@ -28,7 +28,7 @@ import {
   updateTimelineSessionCategories,
   updateTimelineSessionNotes,
   updateTimelineSession,
-  updateTimelineSessionOrganization,
+  setSessionsOrganization,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { useLocale } from "../../lib/i18n";
@@ -73,6 +73,32 @@ type TimelineActionDialog = {
   label: string;
 };
 
+const DIALOG_FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
+
+function trapDialogFocus(event: KeyboardEvent, dialog: HTMLElement | null) {
+  if (event.key !== "Tab" || !dialog) return;
+  const focusable = [...dialog.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)]
+    .filter((element) => !element.hasAttribute("hidden"));
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!dialog.contains(document.activeElement)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function optionalDurationMilliseconds(value: string): number | null {
   if (!value) return null;
   const minutes = Number(value);
@@ -111,6 +137,9 @@ export function Timeline({
   const [maximumMinutes, setMaximumMinutes] = useState("");
   const [timeFrom, setTimeFrom] = useState("");
   const [timeTo, setTimeTo] = useState("");
+  const [projectFilterId, setProjectFilterId] = useState<number | null>(null);
+  const [tagFilterId, setTagFilterId] = useState<number | null>(null);
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
   const timelineFilters = useMemo<TimelineFilters>(() => ({
     query: debouncedQuery.trim() || null,
     state: stateFilter === "ALL" ? null : stateFilter,
@@ -118,6 +147,9 @@ export function Timeline({
     maximumDurationMs: optionalDurationMilliseconds(maximumMinutes),
     timeFromMinutes: optionalClockMinutes(timeFrom),
     timeToMinutes: optionalClockMinutes(timeTo),
+    projectId: projectFilterId,
+    tagId: tagFilterId,
+    unassignedOnly,
   }), [
     debouncedQuery,
     maximumMinutes,
@@ -125,6 +157,9 @@ export function Timeline({
     stateFilter,
     timeFrom,
     timeTo,
+    projectFilterId,
+    tagFilterId,
+    unassignedOnly,
   ]);
   const {
     entries,
@@ -151,6 +186,8 @@ export function Timeline({
   const [organizationError, setOrganizationError] = useState<string | null>(null);
   const [projectOptions, setProjectOptions] = useState<Project[]>([]);
   const [tagOptions, setTagOptions] = useState<ActivityTag[]>([]);
+  const [organizationProjects, setOrganizationProjects] = useState<Project[]>([]);
+  const [organizationTags, setOrganizationTags] = useState<ActivityTag[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedTagIds, setSelectedTagIds] = useState<Set<number>>(new Set());
   const [initialProjectId, setInitialProjectId] = useState<number | null>(null);
@@ -160,6 +197,10 @@ export function Timeline({
   const [undoHistoryOpen, setUndoHistoryOpen] = useState(false);
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [actionDialog, setActionDialog] = useState<TimelineActionDialog | null>(null);
+  const [bulkOrganizationOpen, setBulkOrganizationOpen] = useState(false);
+  const [bulkProjectId, setBulkProjectId] = useState<number | null>(null);
+  const [bulkTagIds, setBulkTagIds] = useState<Set<number>>(new Set());
+  const [bulkOrganizationSaving, setBulkOrganizationSaving] = useState(false);
   const [dialogValue, setDialogValue] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [importContents, setImportContents] = useState("");
@@ -174,6 +215,9 @@ export function Timeline({
   const editorDialogRef = useRef<HTMLElement | null>(null);
   const editStartInputRef = useRef<HTMLInputElement | null>(null);
   const editorReturnFocusRef = useRef<HTMLElement | null>(null);
+  const bulkOrganizationDialogRef = useRef<HTMLElement | null>(null);
+  const bulkProjectInputRef = useRef<HTMLSelectElement | null>(null);
+  const bulkOrganizationReturnFocusRef = useRef<HTMLElement | null>(null);
   const filteredEntries = entries;
   const hours = useMemo(() => summarizeByHour(filteredEntries), [filteredEntries]);
   const visibleEntries = filteredEntries;
@@ -215,12 +259,38 @@ export function Timeline({
   }, [entries, hasMore, initialSessionId, loadAll, loading]);
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [date, maximumMinutes, minimumMinutes, query, stateFilter, timeFrom, timeTo]);
+  }, [
+    date,
+    maximumMinutes,
+    minimumMinutes,
+    projectFilterId,
+    query,
+    stateFilter,
+    tagFilterId,
+    timeFrom,
+    timeTo,
+    unassignedOnly,
+  ]);
   useEffect(() => {
     if (view === "overview" && hasMore && !loading) loadAll();
   }, [hasMore, loadAll, loading, view]);
   useEffect(() => {
     void getTimelineUndoHistory().then(setUndoHistory).catch(() => {});
+  }, []);
+  useEffect(() => {
+    let active = true;
+    void Promise.all([listProjects(true), listActivityTags(true)])
+      .then(([projects, tags]) => {
+        if (!active) return;
+        setOrganizationProjects(projects);
+        setOrganizationTags(tags);
+      })
+      .catch((reason) => {
+        if (active) setEditError(errorMessage(reason));
+      });
+    return () => {
+      active = false;
+    };
   }, []);
   useEffect(() => {
     if (editingId === null) return;
@@ -231,20 +301,7 @@ export function Timeline({
         closeSessionEditor();
         return;
       }
-      if (event.key !== "Tab" || !editorDialogRef.current) return;
-      const focusable = [...editorDialogRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )].filter((element) => !element.hasAttribute("hidden"));
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapDialogFocus(event, editorDialogRef.current);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
@@ -252,6 +309,23 @@ export function Timeline({
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [editingId]);
+  useEffect(() => {
+    if (!bulkOrganizationOpen) return;
+    const frame = window.requestAnimationFrame(() => bulkProjectInputRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeBulkOrganization();
+        return;
+      }
+      trapDialogFocus(event, bulkOrganizationDialogRef.current);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [bulkOrganizationOpen]);
   const selected = [...selectedIds];
 
   const completeMutation = (message: string, token?: string | null) => {
@@ -334,6 +408,23 @@ export function Timeline({
     window.requestAnimationFrame(() => returnFocus?.focus());
   };
 
+  const openBulkOrganization = () => {
+    bulkOrganizationReturnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    setBulkProjectId(null);
+    setBulkTagIds(new Set());
+    setBulkOrganizationOpen(true);
+    setEditError(null);
+  };
+
+  const closeBulkOrganization = () => {
+    setBulkOrganizationOpen(false);
+    const returnFocus = bulkOrganizationReturnFocusRef.current;
+    bulkOrganizationReturnFocusRef.current = null;
+    window.requestAnimationFrame(() => returnFocus?.focus());
+  };
+
   const saveSessionEditor = async () => {
     if (editingId === null || organizationLoading || organizationError) return;
     const startedAtMs = new Date(editStart).getTime();
@@ -366,11 +457,12 @@ export function Timeline({
     setEditError(null);
     try {
       const changed = timeDirty || organizationDirty;
-      if (organizationDirty) {
-        await updateTimelineSessionOrganization(
+      if (changed) {
+        await updateTimelineSession(
           editingId,
           startedAtMs,
           endedAtMs,
+          organizationDirty,
           selectedProjectId,
           [...selectedTagIds],
         );
@@ -378,10 +470,6 @@ export function Timeline({
         setInitialEditEnd(editEnd);
         setInitialProjectId(selectedProjectId);
         setInitialTagIds(new Set(selectedTagIds));
-      } else if (timeDirty) {
-        await updateTimelineSession(editingId, startedAtMs, endedAtMs);
-        setInitialEditStart(editStart);
-        setInitialEditEnd(editEnd);
       }
       closeSessionEditor();
       if (changed) {
@@ -392,6 +480,28 @@ export function Timeline({
       setEditError(errorMessage(reason));
     } finally {
       setEditSaving(false);
+    }
+  };
+
+  const saveBulkOrganization = async () => {
+    if (selected.length === 0 || bulkOrganizationSaving) return;
+    setBulkOrganizationSaving(true);
+    setEditError(null);
+    try {
+      const result = await setSessionsOrganization(
+        selected,
+        bulkProjectId,
+        [...bulkTagIds],
+      );
+      closeBulkOrganization();
+      completeMutation(
+        `Updated organization on ${result.affectedCount} sessions.`,
+        result.undoToken,
+      );
+    } catch (reason) {
+      setEditError(errorMessage(reason));
+    } finally {
+      setBulkOrganizationSaving(false);
     }
   };
 
@@ -421,7 +531,15 @@ export function Timeline({
   const dateValue = dateFromLocalIso(date);
   const isToday = date === today;
   const hasFilters = Boolean(
-    query.trim() || stateFilter !== "ALL" || minimumMinutes || maximumMinutes || timeFrom || timeTo,
+    query.trim()
+      || stateFilter !== "ALL"
+      || minimumMinutes
+      || maximumMinutes
+      || timeFrom
+      || timeTo
+      || projectFilterId !== null
+      || tagFilterId !== null
+      || unassignedOnly,
   );
   const activeTotal = activeDurationMs;
   const idleTotal = idleDurationMs;
@@ -612,7 +730,7 @@ export function Timeline({
             type="search"
             value={query}
             maxLength={200}
-            placeholder={t("App, title, note, bundle, or category")}
+            placeholder={t("App, title, note, project, tag, bundle, or category")}
             onChange={(event) => setQuery(event.currentTarget.value)}
           />
         </label>
@@ -642,6 +760,9 @@ export function Timeline({
             setMaximumMinutes("");
             setTimeFrom("");
             setTimeTo("");
+            setProjectFilterId(null);
+            setTagFilterId(null);
+            setUnassignedOnly(false);
           }}>{t("Clear")}</button>
         )}
       </div>
@@ -662,6 +783,55 @@ export function Timeline({
           <label>
             <span>{t("To")}</span>
             <input type="time" value={timeTo} onChange={(event) => setTimeTo(event.currentTarget.value)} />
+          </label>
+          <label>
+            <span>{t("Project")}</span>
+            <select
+              value={projectFilterId ?? ""}
+              disabled={unassignedOnly}
+              onChange={(event) => setProjectFilterId(
+                event.currentTarget.value ? Number(event.currentTarget.value) : null,
+              )}
+            >
+              <option value="">{t("All projects")}</option>
+              {organizationProjects.map((project) => (
+                <option value={project.id} key={project.id}>
+                  {project.name}{project.archived ? ` (${t("Archived")})` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>{t("Activity tag")}</span>
+            <select
+              value={tagFilterId ?? ""}
+              disabled={unassignedOnly}
+              onChange={(event) => setTagFilterId(
+                event.currentTarget.value ? Number(event.currentTarget.value) : null,
+              )}
+            >
+              <option value="">{t("All tags")}</option>
+              {organizationTags.map((tag) => (
+                <option value={tag.id} key={tag.id}>
+                  {tag.name}{tag.archived ? ` (${t("Archived")})` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="organization-unassigned-filter">
+            <input
+              type="checkbox"
+              checked={unassignedOnly}
+              onChange={(event) => {
+                const checked = event.currentTarget.checked;
+                setUnassignedOnly(checked);
+                if (checked) {
+                  setProjectFilterId(null);
+                  setTagFilterId(null);
+                }
+              }}
+            />
+            <span>{t("Unassigned only")}</span>
           </label>
         </div>
       )}
@@ -779,6 +949,7 @@ export function Timeline({
                   label: `${selected.length} selected sessions`,
                 });
               }}>{t("Category")}</button>
+              <button type="button" onClick={openBulkOrganization}>{t("Organize")}</button>
               <button className="danger" type="button" onClick={() => {
                 setActionDialog({
                   kind: "delete",
@@ -833,12 +1004,15 @@ export function Timeline({
                   type="checkbox"
                   checked={selectedIds.has(entry.sessionId)}
                   aria-label={t(`Select ${name} session`)}
-                  onChange={(event) => setSelectedIds((current) => {
-                    const next = new Set(current);
-                    if (event.currentTarget.checked) next.add(entry.sessionId);
-                    else next.delete(entry.sessionId);
-                    return next;
-                  })}
+                  onChange={(event) => {
+                    const checked = event.currentTarget.checked;
+                    setSelectedIds((current) => {
+                      const next = new Set(current);
+                      if (checked) next.add(entry.sessionId);
+                      else next.delete(entry.sessionId);
+                      return next;
+                    });
+                  }}
                 />
               )}
               <time>{formatClock(entry.startedAtMs, locale)}</time>
@@ -870,6 +1044,22 @@ export function Timeline({
                     <small className="session-note">{entry.windowTitle}</small>
                   )}
                   {entry.note && <small className="session-note">{entry.note}</small>}
+                  {(entry.project || entry.tags.length > 0) && (
+                    <div className="session-organization-badges" aria-label={t("Organization") }>
+                      {entry.project && (
+                        <span className="session-project-badge">
+                          <i style={{ backgroundColor: entry.project.color }} aria-hidden="true" />
+                          {entry.project.name}
+                        </span>
+                      )}
+                      {entry.tags.map((tag) => (
+                        <span className="session-tag-badge" key={tag.id}>
+                          <i style={{ backgroundColor: tag.color }} aria-hidden="true" />
+                          {tag.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <span className="session-duration">{formatDuration(entry.durationMs, locale)}</span>
                 {!entry.isOpen && (
@@ -1115,6 +1305,78 @@ export function Timeline({
               >
                 {t(actionDialog.kind === "delete" ? "Delete sessions" : "Apply changes")}
               </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {bulkOrganizationOpen && (
+        <div className="timeline-dialog-backdrop" role="presentation">
+          <section
+            className="timeline-dialog session-edit-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bulk-organization-title"
+            ref={bulkOrganizationDialogRef}
+          >
+            <div>
+              <p className="section-kicker">{t("Organization")}</p>
+              <h2 id="bulk-organization-title">{t("Organize selected sessions")}</h2>
+              <span>{t(`${selected.length} selected sessions`)}</span>
+            </div>
+            <label>
+              {t("Project")}
+              <select
+                ref={bulkProjectInputRef}
+                value={bulkProjectId ?? ""}
+                disabled={bulkOrganizationSaving}
+                onChange={(event) => setBulkProjectId(
+                  event.currentTarget.value ? Number(event.currentTarget.value) : null,
+                )}
+              >
+                <option value="">{t("No project")}</option>
+                {organizationProjects.filter((project) => !project.archived).map((project) => (
+                  <option value={project.id} key={project.id}>{project.name}</option>
+                ))}
+              </select>
+            </label>
+            <fieldset className="session-organization" disabled={bulkOrganizationSaving}>
+              <legend>{t("Activity tags")}</legend>
+              {organizationTags.every((tag) => tag.archived) ? (
+                <p>{t("No activity tags available.")}</p>
+              ) : (
+                <div className="session-tag-options">
+                  {organizationTags.filter((tag) => !tag.archived).map((tag) => (
+                    <label className="session-tag-option" key={tag.id}>
+                      <input
+                        type="checkbox"
+                        checked={bulkTagIds.has(tag.id)}
+                        onChange={() => setBulkTagIds((current) => (
+                          toggleOrganizationId(current, tag.id)
+                        ))}
+                      />
+                      <i style={{ backgroundColor: tag.color }} aria-hidden="true" />
+                      <span>{tag.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </fieldset>
+            <p className="timeline-dialog-warning">
+              {t("This replaces the project and tags on every selected session. You can undo it afterward.")}
+            </p>
+            {editError && <p className="timeline-dialog-warning error" role="alert">{t(editError)}</p>}
+            <div className="timeline-dialog-actions">
+              <button
+                type="button"
+                disabled={bulkOrganizationSaving}
+                onClick={closeBulkOrganization}
+              >{t("Cancel")}</button>
+              <button
+                className="primary"
+                type="button"
+                disabled={bulkOrganizationSaving}
+                onClick={() => void saveBulkOrganization()}
+              >{t(bulkOrganizationSaving ? "Saving…" : "Apply changes")}</button>
             </div>
           </section>
         </div>

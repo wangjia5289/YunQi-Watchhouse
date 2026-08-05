@@ -32,6 +32,11 @@ interface EditingDraft extends Draft {
   id: number;
 }
 
+type OperationFeedback = {
+  kind: "success" | "error";
+  message: string;
+};
+
 const EMPTY_PROJECT: Draft = { name: "", color: "#507A68" };
 const EMPTY_TAG: Draft = { name: "", color: "#6A71B8" };
 
@@ -105,6 +110,7 @@ function ManagerColumn({
   const { t } = useLocale();
   const singular = kind === "project" ? "project" : "tag";
   const heading = kind === "project" ? "Projects" : "Activity tags";
+  const activeCount = items.filter((item) => !item.archived).length;
   const visibleItems = items.filter((item) => showArchived || !item.archived);
 
   return (
@@ -112,7 +118,9 @@ function ManagerColumn({
       <div className="project-tag-group-heading">
         <div>
           <h3 id={`${kind}-manager-title`}>{t(heading)}</h3>
-          <span>{items.filter((item) => !item.archived).length} {t("active")}</span>
+          <span>{t(kind === "project"
+            ? `${activeCount} active projects`
+            : `${activeCount} active activity tags`)}</span>
         </div>
       </div>
 
@@ -121,8 +129,8 @@ function ManagerColumn({
           type="color"
           value={draft.color}
           disabled={disabled}
-          aria-label={`${t("New")} ${t(singular)} ${t("color")}`}
-          title={`${t("New")} ${t(singular)} ${t("color")}`}
+          aria-label={t(kind === "project" ? "New project color" : "New tag color")}
+          title={t(kind === "project" ? "New project color" : "New tag color")}
           onChange={(event) => onDraftChange({ ...draft, color: event.currentTarget.value })}
         />
         <input
@@ -130,7 +138,7 @@ function ManagerColumn({
           value={draft.name}
           maxLength={80}
           disabled={disabled}
-          aria-label={`${t("New")} ${t(singular)} ${t("name")}`}
+          aria-label={t(kind === "project" ? "New project name" : "New tag name")}
           placeholder={t(kind === "project" ? "New project" : "New tag")}
           onChange={(event) => onDraftChange({ ...draft, name: event.currentTarget.value })}
         />
@@ -138,8 +146,8 @@ function ManagerColumn({
           type="submit"
           className="project-tag-icon-button primary"
           disabled={disabled || organizationInput(draft.name, draft.color) === null}
-          aria-label={`${t("Add")} ${t(singular)}`}
-          title={`${t("Add")} ${t(singular)}`}
+          aria-label={t(kind === "project" ? "Add project" : "Add tag")}
+          title={t(kind === "project" ? "Add project" : "Add tag")}
         >
           <PlusIcon />
         </button>
@@ -162,8 +170,8 @@ function ManagerColumn({
                       className="project-tag-color-input"
                       value={editing.color}
                       disabled={disabled}
-                      aria-label={`${t("Edit")} ${t(singular)} ${t("color")}`}
-                      title={`${t("Edit")} ${t(singular)} ${t("color")}`}
+                      aria-label={t(kind === "project" ? "Edit project color" : "Edit tag color")}
+                      title={t(kind === "project" ? "Edit project color" : "Edit tag color")}
                       onChange={(event) => onEditChange({
                         ...editing,
                         color: event.currentTarget.value,
@@ -174,7 +182,7 @@ function ManagerColumn({
                       value={editing.name}
                       maxLength={80}
                       disabled={disabled}
-                      aria-label={`${t("Edit")} ${t(singular)} ${t("name")}`}
+                      aria-label={t(kind === "project" ? "Edit project name" : "Edit tag name")}
                       onChange={(event) => onEditChange({
                         ...editing,
                         name: event.currentTarget.value,
@@ -185,8 +193,8 @@ function ManagerColumn({
                         type="button"
                         className="project-tag-icon-button primary"
                         disabled={disabled || organizationInput(editing.name, editing.color) === null}
-                        aria-label={`${t("Save")} ${t(singular)}`}
-                        title={`${t("Save")} ${t(singular)}`}
+                        aria-label={t(kind === "project" ? "Save project" : "Save tag")}
+                        title={t(kind === "project" ? "Save project" : "Save tag")}
                         onClick={onSaveEdit}
                       >
                         <CheckIcon />
@@ -219,8 +227,8 @@ function ManagerColumn({
                         type="button"
                         className="project-tag-icon-button"
                         disabled={disabled}
-                        aria-label={`${t("Edit")} ${t(singular)} ${item.name}`}
-                        title={`${t("Edit")} ${t(singular)}`}
+                        aria-label={t(`Edit ${singular} ${item.name}`)}
+                        title={t(kind === "project" ? "Edit project" : "Edit tag")}
                         onClick={() => onEdit(item)}
                       >
                         <EditIcon />
@@ -231,8 +239,10 @@ function ManagerColumn({
                         aria-checked={!item.archived}
                         className={`project-tag-active-toggle${item.archived ? "" : " active"}`}
                         disabled={disabled}
-                        aria-label={`${t(singular)} ${item.name} ${t("active")}`}
-                        title={`${t(item.archived ? "Restore" : "Archive")} ${t(singular)}`}
+                        aria-label={t(`${singular} ${item.name} active`)}
+                        title={t(kind === "project"
+                          ? (item.archived ? "Restore project" : "Archive project")
+                          : (item.archived ? "Restore tag" : "Archive tag"))}
                         onClick={() => onArchivedChange(item, !item.archived)}
                       >
                         <span />
@@ -259,13 +269,13 @@ export function ProjectTagManager() {
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [operationError, setOperationError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [operationFeedback, setOperationFeedback] = useState<OperationFeedback | null>(null);
 
   async function loadItems() {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
+    setOperationFeedback(null);
     try {
       const [nextProjects, nextTags] = await Promise.all([
         listProjects(true),
@@ -274,7 +284,7 @@ export function ProjectTagManager() {
       setProjects(sortOrganizationItems(nextProjects));
       setTags(sortOrganizationItems(nextTags));
     } catch (reason) {
-      setError(errorMessage(reason));
+      setLoadError(errorMessage(reason));
     } finally {
       setLoading(false);
     }
@@ -288,8 +298,7 @@ export function ProjectTagManager() {
     const input = organizationInput(draft.name, draft.color);
     if (!input) return;
     setBusy(true);
-    setNotice(null);
-    setOperationError(null);
+    setOperationFeedback(null);
     try {
       if (kind === "project") {
         const created = await createProject(input);
@@ -300,9 +309,12 @@ export function ProjectTagManager() {
         setTags((current) => sortOrganizationItems([...current, created]));
         setTagDraft(EMPTY_TAG);
       }
-      setNotice(kind === "project" ? "Project added." : "Activity tag added.");
+      setOperationFeedback({
+        kind: "success",
+        message: kind === "project" ? "Project added." : "Activity tag added.",
+      });
     } catch (reason) {
-      setOperationError(errorMessage(reason));
+      setOperationFeedback({ kind: "error", message: errorMessage(reason) });
     } finally {
       setBusy(false);
     }
@@ -313,8 +325,7 @@ export function ProjectTagManager() {
     const input = organizationInput(editing.name, editing.color);
     if (!input) return;
     setBusy(true);
-    setNotice(null);
-    setOperationError(null);
+    setOperationFeedback(null);
     try {
       if (editing.kind === "project") {
         const updated = await updateProject(editing.id, input);
@@ -324,9 +335,12 @@ export function ProjectTagManager() {
         setTags((current) => replaceItem(current, updated));
       }
       setEditing(null);
-      setNotice(editing.kind === "project" ? "Project updated." : "Activity tag updated.");
+      setOperationFeedback({
+        kind: "success",
+        message: editing.kind === "project" ? "Project updated." : "Activity tag updated.",
+      });
     } catch (reason) {
-      setOperationError(errorMessage(reason));
+      setOperationFeedback({ kind: "error", message: errorMessage(reason) });
     } finally {
       setBusy(false);
     }
@@ -334,8 +348,7 @@ export function ProjectTagManager() {
 
   async function setArchived(kind: ItemKind, item: OrganizationItem, archived: boolean) {
     setBusy(true);
-    setNotice(null);
-    setOperationError(null);
+    setOperationFeedback(null);
     try {
       if (kind === "project") {
         const updated = await setProjectArchived(item.id, archived);
@@ -345,17 +358,20 @@ export function ProjectTagManager() {
         setTags((current) => replaceItem(current, updated));
       }
       if (editing?.kind === kind && editing.id === item.id) setEditing(null);
-      setNotice(archived
-        ? (kind === "project" ? "Project archived." : "Activity tag archived.")
-        : (kind === "project" ? "Project restored." : "Activity tag restored."));
+      setOperationFeedback({
+        kind: "success",
+        message: archived
+          ? (kind === "project" ? "Project archived." : "Activity tag archived.")
+          : (kind === "project" ? "Project restored." : "Activity tag restored."),
+      });
     } catch (reason) {
-      setOperationError(errorMessage(reason));
+      setOperationFeedback({ kind: "error", message: errorMessage(reason) });
     } finally {
       setBusy(false);
     }
   }
 
-  const actionsDisabled = loading || error !== null || busy;
+  const actionsDisabled = loading || loadError !== null || busy;
 
   return (
     <section className="settings-card project-tag-manager">
@@ -377,18 +393,22 @@ export function ProjectTagManager() {
         {t("Group recorded sessions into projects and reusable tags.")}
       </p>
 
-      {error && !loading && (
+      {loadError && !loading && (
         <div className="project-tag-error" role="alert">
-          <span>{t(error)}</span>
+          <span>{t(loadError)}</span>
           <button type="button" onClick={() => void loadItems()}>{t("Retry")}</button>
         </div>
       )}
-      {notice && <p className="project-tag-notice" role="status">{t(notice)}</p>}
-      {operationError && <p className="project-tag-error" role="alert">{t(operationError)}</p>}
+      {operationFeedback?.kind === "success" && (
+        <p className="project-tag-notice" role="status">{t(operationFeedback.message)}</p>
+      )}
+      {operationFeedback?.kind === "error" && (
+        <p className="project-tag-error" role="alert">{t(operationFeedback.message)}</p>
+      )}
 
       {loading ? (
         <p className="project-tag-loading">{t("Loading projects and tags…")}</p>
-      ) : error ? null : (
+      ) : loadError ? null : (
         <div className="project-tag-columns">
           <ManagerColumn
             kind="project"

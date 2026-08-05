@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     activity::ActivityState,
     database::{
-        ActivityRecord, ActivityRepository, TimelineSearch, UsageLimitRule, UsageLimitScopeType,
+        ActivityRecord, ActivityRepository, ActivityTag, Project, SessionOrganization,
+        TimelineSearch, UsageLimitRule, UsageLimitScopeType,
     },
     error::{AppError, AppResult},
 };
@@ -53,6 +54,8 @@ pub struct TimelineEntry {
     pub category: Option<String>,
     pub window_title: Option<String>,
     pub note: Option<String>,
+    pub project: Option<Project>,
+    pub tags: Vec<ActivityTag>,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub duration_ms: i64,
@@ -444,7 +447,13 @@ impl StatisticsService {
                 search,
             )?
         };
-        let entries = timeline_entries(records, range);
+        let organizations = self.repository.session_organizations(
+            &records
+                .iter()
+                .map(|record| record.session.id)
+                .collect::<Vec<_>>(),
+        )?;
+        let entries = timeline_entries(records, range, organizations);
         Ok(TimelinePage {
             has_more: offset.saturating_add(entries.len()) < total_count,
             entries,
@@ -456,11 +465,16 @@ impl StatisticsService {
     }
 
     pub fn timeline(&self, range: TimeRange) -> AppResult<Vec<TimelineEntry>> {
-        Ok(timeline_entries(
-            self.repository
-                .records_overlapping(range.start_ms, range.end_ms)?,
-            range,
-        ))
+        let records = self
+            .repository
+            .records_overlapping(range.start_ms, range.end_ms)?;
+        let organizations = self.repository.session_organizations(
+            &records
+                .iter()
+                .map(|record| record.session.id)
+                .collect::<Vec<_>>(),
+        )?;
+        Ok(timeline_entries(records, range, organizations))
     }
 
     pub fn app_usage(&self, range: TimeRange) -> AppResult<Vec<AppUsage>> {
@@ -757,11 +771,22 @@ fn usage_limit_progress(
     }
 }
 
-fn timeline_entries(records: Vec<ActivityRecord>, range: TimeRange) -> Vec<TimelineEntry> {
+fn timeline_entries(
+    records: Vec<ActivityRecord>,
+    range: TimeRange,
+    mut organizations: HashMap<i64, SessionOrganization>,
+) -> Vec<TimelineEntry> {
     records
         .into_iter()
         .filter_map(|record| {
             let (start, end) = clipped_bounds(&record, range)?;
+            let organization =
+                organizations
+                    .remove(&record.session.id)
+                    .unwrap_or(SessionOrganization {
+                        project: None,
+                        tags: Vec::new(),
+                    });
             Some(TimelineEntry {
                 session_id: record.session.id,
                 application_id: record
@@ -780,6 +805,8 @@ fn timeline_entries(records: Vec<ActivityRecord>, range: TimeRange) -> Vec<Timel
                 category: record.effective_category,
                 window_title: record.session.window_title,
                 note: record.session.note,
+                project: organization.project,
+                tags: organization.tags,
                 started_at_ms: start,
                 ended_at_ms: end,
                 duration_ms: end - start,
@@ -838,7 +865,7 @@ fn resolve_local_midnight(date: NaiveDate) -> AppResult<i64> {
 mod tests {
     use crate::{
         activity::{ClosedReason, NewApplication, NewSession},
-        database::Database,
+        database::{ActivityTagInput, Database, ProjectInput},
     };
 
     use super::*;
@@ -922,6 +949,56 @@ mod tests {
                 timeline[0].duration_ms,
             ),
             (100, 200, 100)
+        );
+    }
+
+    #[test]
+    fn timeline_entries_include_session_organization() {
+        let (service, repository, application_id) = setup();
+        let project = repository
+            .create_project(&ProjectInput {
+                name: "Client launch".to_owned(),
+                color: "#39796A".to_owned(),
+            })
+            .expect("project should be stored");
+        let tag = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "Deep work".to_owned(),
+                color: "#8B5CF6".to_owned(),
+            })
+            .expect("tag should be stored");
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Active,
+                application_id: Some(application_id),
+                window_title: None,
+                category_override: None,
+                started_at_ms: 100,
+            })
+            .expect("session should open");
+        repository
+            .close_session(session.id, 200, ClosedReason::AppChanged)
+            .expect("session should close");
+        repository
+            .set_session_organization(session.id, Some(project.id), &[tag.id])
+            .expect("organization should be stored");
+
+        let timeline = service
+            .timeline(TimeRange::new(0, 300).expect("range should be valid"))
+            .expect("timeline should load");
+
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(
+            timeline[0].project.as_ref().map(|item| item.id),
+            Some(project.id)
+        );
+        assert_eq!(
+            timeline[0]
+                .tags
+                .iter()
+                .map(|item| item.id)
+                .collect::<Vec<_>>(),
+            vec![tag.id]
         );
     }
 

@@ -16,6 +16,10 @@ describe("translateText", () => {
     expect(translateText("8 active time blocks")).toBe("8 个活跃时间块");
     expect(translateText("2h remaining")).toBe("剩余 2 小时");
     expect(translateText("Select Safari session")).toBe("选择“Safari”会话");
+    expect(translateText("2 active projects")).toBe("2 个启用项目");
+    expect(translateText("3 active activity tags")).toBe("3 个启用标签");
+    expect(translateText("Edit project Client launch")).toBe("编辑项目“Client launch”");
+    expect(translateText("tag Deep work active")).toBe("标签“Deep work”启用状态");
     expect(translateText("Show more sessions (200 of 450)")).toBe(
       "显示更多会话（200/450）",
     );
@@ -73,6 +77,9 @@ describe("translateText", () => {
     );
     expect(translateText("notification permission has not been granted")).toBe(
       "尚未获得通知权限。",
+    );
+    expect(translateText("sessions assigned to different projects cannot be merged")).toBe(
+      "已归属不同项目的会话无法合并。",
     );
   });
 

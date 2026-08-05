@@ -146,6 +146,8 @@ export interface TimelineEntry {
   category: string | null;
   windowTitle: string | null;
   note: string | null;
+  project: Project | null;
+  tags: ActivityTag[];
   startedAtMs: number;
   endedAtMs: number;
   durationMs: number;
@@ -521,6 +523,9 @@ export interface TimelineFilters {
   maximumDurationMs?: number | null;
   timeFromMinutes?: number | null;
   timeToMinutes?: number | null;
+  projectId?: number | null;
+  tagId?: number | null;
+  unassignedOnly?: boolean;
 }
 
 export function getTimelinePage(
@@ -678,21 +683,15 @@ export function updateTimelineSession(
   sessionId: number,
   startedAtMs: number,
   endedAtMs: number,
-): Promise<void> {
-  return invoke("update_timeline_session", { sessionId, startedAtMs, endedAtMs });
-}
-
-export function updateTimelineSessionOrganization(
-  sessionId: number,
-  startedAtMs: number,
-  endedAtMs: number,
+  organizationChanged: boolean,
   projectId: number | null,
   tagIds: number[],
 ): Promise<void> {
-  return invoke("update_timeline_session_organization", {
+  return invoke("update_timeline_session", {
     sessionId,
     startedAtMs,
     endedAtMs,
+    organizationChanged,
     projectId,
     tagIds,
   });
@@ -746,6 +745,14 @@ export function setSessionOrganization(
   tagIds: number[],
 ): Promise<SessionOrganization> {
   return invoke("set_session_organization", { sessionId, projectId, tagIds });
+}
+
+export function setSessionsOrganization(
+  sessionIds: number[],
+  projectId: number | null,
+  tagIds: number[],
+): Promise<TimelineMutationResult> {
+  return invoke("set_sessions_organization", { sessionIds, projectId, tagIds });
 }
 
 export function getAppUsage(

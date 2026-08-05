@@ -1,7 +1,11 @@
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    path::Path,
+    time::Duration,
+};
 
 use chrono::NaiveDate;
-use rusqlite::{Connection, OptionalExtension, Row, backup::Backup, params};
+use rusqlite::{Connection, OptionalExtension, Row, backup::Backup, params, params_from_iter};
 
 use crate::{
     activity::{
@@ -96,6 +100,10 @@ pub struct TimelineSearch {
     pub maximum_duration_ms: Option<i64>,
     pub time_from_minutes: Option<i64>,
     pub time_to_minutes: Option<i64>,
+    pub project_id: Option<i64>,
+    pub tag_id: Option<i64>,
+    #[serde(default)]
+    pub unassigned_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -366,7 +374,9 @@ struct DataHealthUndoSession {
     category_override: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+const SESSION_QUERY_BATCH_SIZE: usize = 500;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct SessionOrganizationSnapshot {
     session_id: i64,
     project_id: Option<i64>,
@@ -377,27 +387,100 @@ fn session_organization_snapshots(
     connection: &Connection,
     session_ids: &[i64],
 ) -> AppResult<Vec<SessionOrganizationSnapshot>> {
-    let mut snapshots = Vec::with_capacity(session_ids.len());
-    for session_id in session_ids {
-        let project_id = connection
-            .query_row(
-                "SELECT project_id FROM session_projects WHERE session_id = ?1",
-                [session_id],
-                |row| row.get(0),
+    let session_ids = session_ids.iter().copied().collect::<BTreeSet<_>>();
+    let mut snapshots = session_ids
+        .iter()
+        .map(|session_id| {
+            (
+                *session_id,
+                SessionOrganizationSnapshot {
+                    session_id: *session_id,
+                    project_id: None,
+                    tag_ids: Vec::new(),
+                },
             )
-            .optional()?;
-        let mut tag_statement = connection
-            .prepare("SELECT tag_id FROM session_tags WHERE session_id = ?1 ORDER BY tag_id")?;
-        let tag_ids = tag_statement
-            .query_map([session_id], |row| row.get(0))?
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let session_ids = session_ids.into_iter().collect::<Vec<_>>();
+    for batch in session_ids.chunks(SESSION_QUERY_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut project_statement = connection.prepare(&format!(
+            "SELECT session_id, project_id FROM session_projects
+             WHERE session_id IN ({placeholders})"
+        ))?;
+        let projects = project_statement
+            .query_map(params_from_iter(batch.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        snapshots.push(SessionOrganizationSnapshot {
-            session_id: *session_id,
-            project_id,
-            tag_ids,
-        });
+        for (session_id, project_id) in projects {
+            snapshots
+                .get_mut(&session_id)
+                .expect("queried project must belong to the requested batch")
+                .project_id = Some(project_id);
+        }
+
+        let mut tag_statement = connection.prepare(&format!(
+            "SELECT session_id, tag_id FROM session_tags
+             WHERE session_id IN ({placeholders})
+             ORDER BY session_id, tag_id"
+        ))?;
+        let tags = tag_statement
+            .query_map(params_from_iter(batch.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (session_id, tag_id) in tags {
+            snapshots
+                .get_mut(&session_id)
+                .expect("queried tag must belong to the requested batch")
+                .tag_ids
+                .push(tag_id);
+        }
     }
-    Ok(snapshots)
+    Ok(snapshots.into_values().collect())
+}
+
+fn closed_session_snapshots(
+    connection: &Connection,
+    session_ids: &[i64],
+) -> AppResult<Vec<ActivitySession>> {
+    let session_ids = session_ids.iter().copied().collect::<BTreeSet<_>>();
+    let mut sessions = BTreeMap::new();
+    let batched_ids = session_ids.iter().copied().collect::<Vec<_>>();
+    for batch in batched_ids.chunks(SESSION_QUERY_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement =
+            connection.prepare(&format!("{SESSION_SELECT} WHERE id IN ({placeholders})"))?;
+        let batch_sessions = statement
+            .query_map(params_from_iter(batch.iter()), map_session)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        sessions.extend(
+            batch_sessions
+                .into_iter()
+                .map(|session| (session.id, session)),
+        );
+    }
+
+    session_ids
+        .into_iter()
+        .map(|session_id| {
+            let session = sessions
+                .remove(&session_id)
+                .ok_or(AppError::SessionNotFound(session_id))?;
+            if session.is_open {
+                return Err(AppError::InvalidSession(
+                    "open sessions cannot be changed".to_owned(),
+                ));
+            }
+            Ok(session)
+        })
+        .collect()
 }
 
 fn restore_session_organization_snapshots(
@@ -504,6 +587,8 @@ struct TimelineUndoSnapshot {
     delete_session_ids: Vec<i64>,
     #[serde(default)]
     organizations: Vec<SessionOrganizationSnapshot>,
+    #[serde(default)]
+    organization_only: bool,
     #[serde(default)]
     operation_label: Option<String>,
 }
@@ -2215,6 +2300,27 @@ impl ActivityRepository {
                 .filter(|note| !note.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n");
+            let organizations = session_organization_snapshots(
+                transaction,
+                &sessions
+                    .iter()
+                    .map(|session| session.id)
+                    .collect::<Vec<_>>(),
+            )?;
+            let project_ids = organizations
+                .iter()
+                .filter_map(|organization| organization.project_id)
+                .collect::<BTreeSet<_>>();
+            if project_ids.len() > 1 {
+                return Err(AppError::InvalidSession(
+                    "sessions assigned to different projects cannot be merged".to_owned(),
+                ));
+            }
+            let project_id = project_ids.into_iter().next();
+            let tag_ids = organizations
+                .iter()
+                .flat_map(|organization| organization.tag_ids.iter().copied())
+                .collect::<BTreeSet<_>>();
             transaction.execute(
                 "UPDATE activity_sessions SET ended_at_ms = ?2, duration_ms = ?2 - started_at_ms,
                  note = NULLIF(?3, ''), updated_at_ms = ?2 WHERE id = ?1",
@@ -2222,6 +2328,23 @@ impl ActivityRepository {
             )?;
             for session in sessions.iter().skip(1) {
                 transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session.id])?;
+            }
+            transaction.execute(
+                "DELETE FROM session_projects WHERE session_id = ?1",
+                [first.id],
+            )?;
+            if let Some(project_id) = project_id {
+                transaction.execute(
+                    "INSERT INTO session_projects (session_id, project_id) VALUES (?1, ?2)",
+                    params![first.id, project_id],
+                )?;
+            }
+            transaction.execute("DELETE FROM session_tags WHERE session_id = ?1", [first.id])?;
+            for tag_id in tag_ids {
+                transaction.execute(
+                    "INSERT INTO session_tags (session_id, tag_id) VALUES (?1, ?2)",
+                    params![first.id, tag_id],
+                )?;
             }
             Ok(sessions.len())
         })
@@ -2285,6 +2408,7 @@ impl ActivityRepository {
             sessions: vec![original],
             delete_session_ids: vec![session_id, new_id],
             organizations,
+            organization_only: false,
             operation_label: Some("Split session".to_owned()),
         };
         transaction.execute(
@@ -2313,6 +2437,31 @@ impl ActivityRepository {
     where
         F: FnOnce(&rusqlite::Transaction<'_>, &[i64]) -> AppResult<usize>,
     {
+        self.session_edit_with_undo(session_ids, operation_label, false, operation)
+    }
+
+    fn organization_session_edit<F>(
+        &self,
+        session_ids: &[i64],
+        operation_label: &str,
+        operation: F,
+    ) -> AppResult<TimelineMutationResult>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>, &[i64]) -> AppResult<usize>,
+    {
+        self.session_edit_with_undo(session_ids, operation_label, true, operation)
+    }
+
+    fn session_edit_with_undo<F>(
+        &self,
+        session_ids: &[i64],
+        operation_label: &str,
+        organization_only: bool,
+        operation: F,
+    ) -> AppResult<TimelineMutationResult>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>, &[i64]) -> AppResult<usize>,
+    {
         if session_ids.is_empty() {
             return Ok(TimelineMutationResult {
                 affected_count: 0,
@@ -2324,16 +2473,7 @@ impl ActivityRepository {
         ids.dedup();
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
-        let mut snapshot = Vec::with_capacity(ids.len());
-        for id in &ids {
-            let session = find_session(&transaction, *id)?.ok_or(AppError::SessionNotFound(*id))?;
-            if session.is_open {
-                return Err(AppError::InvalidSession(
-                    "open sessions cannot be changed".to_owned(),
-                ));
-            }
-            snapshot.push(session);
-        }
+        let snapshot = closed_session_snapshots(&transaction, &ids)?;
         let organizations = session_organization_snapshots(&transaction, &ids)?;
         let affected_count = operation(&transaction, &ids)?;
         let token = format!("{}-{}", now_millis(), snapshot[0].id);
@@ -2349,6 +2489,7 @@ impl ActivityRepository {
                     sessions: snapshot,
                     delete_session_ids: ids.clone(),
                     organizations,
+                    organization_only,
                     operation_label: Some(operation_label.to_owned()),
                 })
                 .map_err(|error| {
@@ -2382,35 +2523,49 @@ impl ActivityRepository {
                         delete_session_ids: sessions.iter().map(|session| session.id).collect(),
                         sessions,
                         organizations: Vec::new(),
+                        organization_only: false,
                         operation_label: None,
                     }
                 })
             })
             .map_err(|error| AppError::InvalidSession(format!("invalid undo snapshot: {error}")))?;
-        for session_id in &snapshot.delete_session_ids {
-            transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session_id])?;
-        }
-        for session in &snapshot.sessions {
-            transaction.execute(
-                "INSERT INTO activity_sessions (
-                    id, state, application_id, window_title, started_at_ms, ended_at_ms,
-                    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
-                    session.id,
-                    session.state.as_db_str(),
-                    session.application_id,
-                    session.window_title,
-                    session.started_at_ms,
-                    session.ended_at_ms,
-                    session.duration_ms,
-                    session.is_open,
-                    session.closed_reason.map(ClosedReason::as_db_str),
-                    session.created_at_ms,
-                    session.updated_at_ms,
-                    session.note,
-                ],
-            )?;
+        if snapshot.organization_only {
+            for session_id in &snapshot.delete_session_ids {
+                transaction.execute(
+                    "DELETE FROM session_projects WHERE session_id = ?1",
+                    [session_id],
+                )?;
+                transaction.execute(
+                    "DELETE FROM session_tags WHERE session_id = ?1",
+                    [session_id],
+                )?;
+            }
+        } else {
+            for session_id in &snapshot.delete_session_ids {
+                transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session_id])?;
+            }
+            for session in &snapshot.sessions {
+                transaction.execute(
+                    "INSERT INTO activity_sessions (
+                        id, state, application_id, window_title, started_at_ms, ended_at_ms,
+                        duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        session.id,
+                        session.state.as_db_str(),
+                        session.application_id,
+                        session.window_title,
+                        session.started_at_ms,
+                        session.ended_at_ms,
+                        session.duration_ms,
+                        session.is_open,
+                        session.closed_reason.map(ClosedReason::as_db_str),
+                        session.created_at_ms,
+                        session.updated_at_ms,
+                        session.note,
+                    ],
+                )?;
+            }
         }
         restore_session_organization_snapshots(&transaction, &snapshot.organizations)?;
         transaction.execute("DELETE FROM timeline_undo WHERE token = ?1", [token])?;
@@ -2455,6 +2610,7 @@ impl ActivityRepository {
                                     .collect(),
                                 sessions,
                                 organizations: Vec::new(),
+                                organization_only: false,
                                 operation_label: None,
                             },
                         )
@@ -2938,7 +3094,7 @@ impl ActivityRepository {
              LEFT JOIN applications a ON a.id = s.application_id
              WHERE {TIMELINE_SEARCH_WHERE}
              ORDER BY s.started_at_ms {order}, s.id {order}
-             LIMIT ?9 OFFSET ?10"
+             LIMIT ?12 OFFSET ?13"
         ))?;
         Ok(statement
             .query_map(
@@ -2951,6 +3107,9 @@ impl ActivityRepository {
                     parameters.time_from_minutes,
                     parameters.time_to_minutes,
                     parameters.query_pattern,
+                    parameters.project_id,
+                    parameters.tag_id,
+                    parameters.unassigned_only,
                     limit as i64,
                     offset as i64,
                 ],
@@ -3001,6 +3160,9 @@ impl ActivityRepository {
                     parameters.time_from_minutes,
                     parameters.time_to_minutes,
                     parameters.query_pattern,
+                    parameters.project_id,
+                    parameters.tag_id,
+                    parameters.unassigned_only,
                 ],
                 |row| Ok((row.get::<_, i64>(0)? as usize, row.get(1)?, row.get(2)?)),
             )
@@ -3063,6 +3225,34 @@ const TIMELINE_SEARCH_WHERE: &str = r#"
       OR COALESCE(s.category_override, a.category, '') LIKE ?8 ESCAPE '\'
       OR COALESCE(s.window_title, '') LIKE ?8 ESCAPE '\'
       OR COALESCE(s.note, '') LIKE ?8 ESCAPE '\'
+      OR EXISTS (
+        SELECT 1 FROM session_projects search_sp
+        JOIN projects search_p ON search_p.id = search_sp.project_id
+        WHERE search_sp.session_id = s.id AND search_p.name LIKE ?8 ESCAPE '\'
+      )
+      OR EXISTS (
+        SELECT 1 FROM session_tags search_st
+        JOIN activity_tags search_t ON search_t.id = search_st.tag_id
+        WHERE search_st.session_id = s.id AND search_t.name LIKE ?8 ESCAPE '\'
+      )
+    )
+    AND (
+      ?9 IS NULL OR EXISTS (
+        SELECT 1 FROM session_projects filter_sp
+        WHERE filter_sp.session_id = s.id AND filter_sp.project_id = ?9
+      )
+    )
+    AND (
+      ?10 IS NULL OR EXISTS (
+        SELECT 1 FROM session_tags filter_st
+        WHERE filter_st.session_id = s.id AND filter_st.tag_id = ?10
+      )
+    )
+    AND (
+      ?11 = 0 OR (
+        NOT EXISTS (SELECT 1 FROM session_projects unassigned_sp WHERE unassigned_sp.session_id = s.id)
+        AND NOT EXISTS (SELECT 1 FROM session_tags unassigned_st WHERE unassigned_st.session_id = s.id)
+      )
     )
 "#;
 
@@ -3073,6 +3263,9 @@ struct TimelineSearchParameters {
     time_from_minutes: Option<i64>,
     time_to_minutes: Option<i64>,
     query_pattern: Option<String>,
+    project_id: Option<i64>,
+    tag_id: Option<i64>,
+    unassigned_only: bool,
 }
 
 impl TimelineSearchParameters {
@@ -3084,6 +3277,20 @@ impl TimelineSearchParameters {
         {
             return Err(AppError::InvalidTimeRange(
                 "timeline search query cannot exceed 200 characters".to_owned(),
+            ));
+        }
+        if [search.project_id, search.tag_id]
+            .into_iter()
+            .flatten()
+            .any(|id| id <= 0)
+        {
+            return Err(AppError::InvalidTimeRange(
+                "timeline organization filters must use positive identifiers".to_owned(),
+            ));
+        }
+        if search.unassigned_only && (search.project_id.is_some() || search.tag_id.is_some()) {
+            return Err(AppError::InvalidTimeRange(
+                "unassigned sessions cannot be combined with project or tag filters".to_owned(),
             ));
         }
         if [search.minimum_duration_ms, search.maximum_duration_ms]
@@ -3136,6 +3343,9 @@ impl TimelineSearchParameters {
             time_from_minutes: search.time_from_minutes,
             time_to_minutes: search.time_to_minutes,
             query_pattern,
+            project_id: search.project_id,
+            tag_id: search.tag_id,
+            unassigned_only: search.unassigned_only,
         })
     }
 }
@@ -3788,6 +3998,25 @@ mod tests {
                 seen_at_ms,
             })
             .expect("application should be stored")
+    }
+
+    fn closed_idle_session(
+        repository: &ActivityRepository,
+        started_at_ms: i64,
+        ended_at_ms: i64,
+    ) -> ActivitySession {
+        let session = repository
+            .create_session(&NewSession {
+                state: ActivityState::Idle,
+                application_id: None,
+                window_title: None,
+                category_override: None,
+                started_at_ms,
+            })
+            .expect("session should open");
+        repository
+            .close_session(session.id, ended_at_ms, ClosedReason::BecameActive)
+            .expect("session should close")
     }
 
     fn application_usage_limit(
@@ -5030,8 +5259,21 @@ mod tests {
     #[test]
     fn data_health_repair_trims_overlaps_and_removes_zero_duration_sessions() {
         let repository = repository();
-        {
+        let project = repository
+            .create_project(&ProjectInput {
+                name: "Health repair".to_owned(),
+                color: "#123456".to_owned(),
+            })
+            .unwrap();
+        let tag = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "Preserved".to_owned(),
+                color: "#654321".to_owned(),
+            })
+            .unwrap();
+        let session_ids = {
             let connection = repository.database.lock().unwrap();
+            let mut session_ids = Vec::new();
             for (start, end) in [(100, 300), (200, 400), (500, 500)] {
                 connection
                     .execute(
@@ -5042,6 +5284,7 @@ mod tests {
                         params![start, end],
                     )
                     .unwrap();
+                session_ids.push(connection.last_insert_rowid());
             }
             connection
                 .execute(
@@ -5049,6 +5292,12 @@ mod tests {
                      WHERE started_at_ms = 100",
                     [],
                 )
+                .unwrap();
+            session_ids
+        };
+        for session_id in &session_ids {
+            repository
+                .set_session_organization(*session_id, Some(project.id), &[tag.id])
                 .unwrap();
         }
         let summary = repository.data_health_summary().unwrap();
@@ -5085,6 +5334,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(restored_category.as_deref(), Some("Manual review"));
+        for session_id in session_ids {
+            let organization = repository.get_session_organization(session_id).unwrap();
+            assert_eq!(
+                organization.project.as_ref().map(|item| item.id),
+                Some(project.id)
+            );
+            assert_eq!(organization.tags, vec![tag.clone()]);
+        }
         assert!(!repository.data_health_undo_status().unwrap().available);
     }
 
@@ -5402,6 +5659,12 @@ mod tests {
         assert_eq!(first_page.len(), 2);
         assert_eq!(second_page.len(), 1);
         assert!(first_page[1].session.id < second_page[0].session.id);
+    }
+
+    #[test]
+    fn timeline_search_defaults_fields_missing_from_older_ipc_payloads() {
+        let search: TimelineSearch = serde_json::from_str("{}").unwrap();
+        assert_eq!(search, TimelineSearch::default());
     }
 
     #[test]
@@ -5802,6 +6065,18 @@ mod tests {
     #[test]
     fn destructive_batch_edit_can_be_undone() {
         let repository = repository();
+        let project = repository
+            .create_project(&ProjectInput {
+                name: "Restored".to_owned(),
+                color: "#123456".to_owned(),
+            })
+            .unwrap();
+        let tag = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "Undo".to_owned(),
+                color: "#654321".to_owned(),
+            })
+            .unwrap();
         let session = repository
             .create_session(&NewSession {
                 state: ActivityState::Idle,
@@ -5813,6 +6088,9 @@ mod tests {
             .unwrap();
         repository
             .close_session(session.id, 200, ClosedReason::BecameActive)
+            .unwrap();
+        repository
+            .set_session_organization(session.id, Some(project.id), &[tag.id])
             .unwrap();
         let result = repository.delete_closed_sessions(&[session.id]).unwrap();
         assert!(repository.records_overlapping(0, 300).unwrap().is_empty());
@@ -5828,6 +6106,116 @@ mod tests {
             1
         );
         assert_eq!(repository.records_overlapping(0, 300).unwrap().len(), 1);
+        let organization = repository.get_session_organization(session.id).unwrap();
+        assert_eq!(organization.project.unwrap(), project);
+        assert_eq!(organization.tags, vec![tag]);
+    }
+
+    #[test]
+    fn merge_unions_tags_preserves_project_and_restores_each_organization_on_undo() {
+        let repository = repository();
+        let project = repository
+            .create_project(&ProjectInput {
+                name: "Merged".to_owned(),
+                color: "#123456".to_owned(),
+            })
+            .unwrap();
+        let first_tag = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "First".to_owned(),
+                color: "#111111".to_owned(),
+            })
+            .unwrap();
+        let second_tag = repository
+            .create_activity_tag(&ActivityTagInput {
+                name: "Second".to_owned(),
+                color: "#222222".to_owned(),
+            })
+            .unwrap();
+        let first = closed_idle_session(&repository, 100, 200);
+        let second = closed_idle_session(&repository, 300, 400);
+        repository
+            .set_session_organization(first.id, None, &[first_tag.id])
+            .unwrap();
+        repository
+            .set_session_organization(second.id, Some(project.id), &[second_tag.id])
+            .unwrap();
+
+        let result = repository
+            .merge_closed_sessions(&[first.id, second.id])
+            .unwrap();
+        let merged = repository.get_session_organization(first.id).unwrap();
+        assert_eq!(
+            merged.project.as_ref().map(|item| item.id),
+            Some(project.id)
+        );
+        assert_eq!(merged.tags, vec![first_tag.clone(), second_tag.clone()]);
+        assert!(matches!(
+            repository.get_session_organization(second.id),
+            Err(AppError::SessionNotFound(id)) if id == second.id
+        ));
+
+        assert_eq!(
+            repository
+                .undo_timeline_edit(result.undo_token.as_deref().unwrap())
+                .unwrap(),
+            2
+        );
+        let restored_first = repository.get_session_organization(first.id).unwrap();
+        assert!(restored_first.project.is_none());
+        assert_eq!(restored_first.tags, vec![first_tag]);
+        let restored_second = repository.get_session_organization(second.id).unwrap();
+        assert_eq!(restored_second.project.unwrap(), project);
+        assert_eq!(restored_second.tags, vec![second_tag]);
+    }
+
+    #[test]
+    fn merge_rejects_sessions_from_different_projects_without_changes() {
+        let repository = repository();
+        let first_project = repository
+            .create_project(&ProjectInput {
+                name: "First".to_owned(),
+                color: "#111111".to_owned(),
+            })
+            .unwrap();
+        let second_project = repository
+            .create_project(&ProjectInput {
+                name: "Second".to_owned(),
+                color: "#222222".to_owned(),
+            })
+            .unwrap();
+        let first = closed_idle_session(&repository, 100, 200);
+        let second = closed_idle_session(&repository, 300, 400);
+        repository
+            .set_session_organization(first.id, Some(first_project.id), &[])
+            .unwrap();
+        repository
+            .set_session_organization(second.id, Some(second_project.id), &[])
+            .unwrap();
+
+        assert!(matches!(
+            repository.merge_closed_sessions(&[first.id, second.id]),
+            Err(AppError::InvalidSession(message))
+                if message.contains("different projects")
+        ));
+        assert_eq!(repository.records_overlapping(0, 500).unwrap().len(), 2);
+        assert_eq!(
+            repository
+                .get_session_organization(first.id)
+                .unwrap()
+                .project
+                .unwrap(),
+            first_project
+        );
+        assert_eq!(
+            repository
+                .get_session_organization(second.id)
+                .unwrap()
+                .project
+                .unwrap(),
+            second_project
+        );
+        assert!(repository.timeline_undo_history().unwrap().is_empty());
     }
 
     #[test]

@@ -1,14 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::error::{AppError, AppResult};
 
-use super::{ActivityRepository, now_millis};
+use super::{ActivityRepository, SESSION_QUERY_BATCH_SIZE, TimelineMutationResult, now_millis};
 
 const ORGANIZATION_NAME_MAX_CHARS: usize = 80;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: i64,
@@ -26,7 +26,7 @@ pub struct ProjectInput {
     pub color: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityTag {
     pub id: i64,
@@ -187,6 +187,14 @@ impl ActivityRepository {
         session_organization_from_connection(&connection, session_id)
     }
 
+    pub fn session_organizations(
+        &self,
+        session_ids: &[i64],
+    ) -> AppResult<HashMap<i64, SessionOrganization>> {
+        let connection = self.database.lock()?;
+        session_organizations_from_connection(&connection, session_ids)
+    }
+
     pub fn set_session_organization(
         &self,
         session_id: i64,
@@ -204,11 +212,42 @@ impl ActivityRepository {
         Ok(organization)
     }
 
+    pub fn set_sessions_organization(
+        &self,
+        session_ids: &[i64],
+        project_id: Option<i64>,
+        tag_ids: &[i64],
+    ) -> AppResult<TimelineMutationResult> {
+        let unique_tag_ids = tag_ids.iter().copied().collect::<BTreeSet<_>>();
+        self.organization_session_edit(
+            session_ids,
+            "Updated session organization",
+            |transaction, ids| {
+                if let Some(project_id) = project_id {
+                    ensure_project_assignable(transaction, project_id)?;
+                }
+                for tag_id in &unique_tag_ids {
+                    ensure_activity_tag_assignable(transaction, *tag_id)?;
+                }
+                for session_id in ids {
+                    replace_session_organization_unchecked(
+                        transaction,
+                        *session_id,
+                        project_id,
+                        &unique_tag_ids,
+                    )?;
+                }
+                Ok(ids.len())
+            },
+        )
+    }
+
     pub fn update_closed_session_with_organization(
         &self,
         session_id: i64,
         started_at_ms: i64,
         ended_at_ms: i64,
+        organization_changed: bool,
         project_id: Option<i64>,
         tag_ids: &[i64],
     ) -> AppResult<()> {
@@ -217,7 +256,6 @@ impl ActivityRepository {
                 "session end must be after its start".to_owned(),
             ));
         }
-        let unique_tag_ids = tag_ids.iter().copied().collect::<BTreeSet<_>>();
         let mut connection = self.database.lock()?;
         let transaction = connection.transaction()?;
         ensure_closed_session(&transaction, session_id)?;
@@ -234,7 +272,10 @@ impl ActivityRepository {
                 "edited session cannot overlap another session".to_owned(),
             ));
         }
-        replace_session_organization(&transaction, session_id, project_id, &unique_tag_ids)?;
+        if organization_changed {
+            let unique_tag_ids = tag_ids.iter().copied().collect::<BTreeSet<_>>();
+            replace_session_organization(&transaction, session_id, project_id, &unique_tag_ids)?;
+        }
         transaction.execute(
             "UPDATE activity_sessions
              SET started_at_ms = ?2, ended_at_ms = ?3,
@@ -260,6 +301,15 @@ fn replace_session_organization(
         ensure_activity_tag_assignable(connection, *tag_id)?;
     }
 
+    replace_session_organization_unchecked(connection, session_id, project_id, tag_ids)
+}
+
+fn replace_session_organization_unchecked(
+    connection: &Connection,
+    session_id: i64,
+    project_id: Option<i64>,
+    tag_ids: &BTreeSet<i64>,
+) -> AppResult<()> {
     connection.execute(
         "DELETE FROM session_projects WHERE session_id = ?1",
         [session_id],
@@ -440,6 +490,97 @@ fn session_organization_from_connection(
     Ok(SessionOrganization { project, tags })
 }
 
+fn session_organizations_from_connection(
+    connection: &Connection,
+    session_ids: &[i64],
+) -> AppResult<HashMap<i64, SessionOrganization>> {
+    let session_ids = session_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if session_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut organizations = session_ids
+        .iter()
+        .map(|session_id| {
+            (
+                *session_id,
+                SessionOrganization {
+                    project: None,
+                    tags: Vec::new(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for batch in session_ids.chunks(SESSION_QUERY_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut project_statement = connection.prepare(&format!(
+            "SELECT sp.session_id, p.id, p.name, p.color, p.archived, p.created_at_ms, p.updated_at_ms
+             FROM session_projects sp
+             JOIN projects p ON p.id = sp.project_id
+             WHERE sp.session_id IN ({placeholders})"
+        ))?;
+        let projects = project_statement
+            .query_map(params_from_iter(batch.iter()), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    Project {
+                        id: row.get(1)?,
+                        name: row.get(2)?,
+                        color: row.get(3)?,
+                        archived: row.get(4)?,
+                        created_at_ms: row.get(5)?,
+                        updated_at_ms: row.get(6)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (session_id, project) in projects {
+            organizations
+                .get_mut(&session_id)
+                .expect("queried project must belong to the requested batch")
+                .project = Some(project);
+        }
+
+        let mut tag_statement = connection.prepare(&format!(
+            "SELECT st.session_id, t.id, t.name, t.color, t.archived, t.created_at_ms, t.updated_at_ms
+             FROM session_tags st
+             JOIN activity_tags t ON t.id = st.tag_id
+             WHERE st.session_id IN ({placeholders})
+             ORDER BY st.session_id, t.name COLLATE NOCASE, t.id"
+        ))?;
+        let tags = tag_statement
+            .query_map(params_from_iter(batch.iter()), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    ActivityTag {
+                        id: row.get(1)?,
+                        name: row.get(2)?,
+                        color: row.get(3)?,
+                        archived: row.get(4)?,
+                        created_at_ms: row.get(5)?,
+                        updated_at_ms: row.get(6)?,
+                    },
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (session_id, tag) in tags {
+            organizations
+                .get_mut(&session_id)
+                .expect("queried tag must belong to the requested batch")
+                .tags
+                .push(tag);
+        }
+    }
+    Ok(organizations)
+}
+
 fn find_project(connection: &Connection, project_id: i64) -> AppResult<Option<Project>> {
     connection
         .query_row(
@@ -490,7 +631,7 @@ fn map_activity_tag(row: &Row<'_>) -> rusqlite::Result<ActivityTag> {
 mod tests {
     use crate::{
         activity::{ActivityState, ClosedReason, NewSession},
-        database::Database,
+        database::{Database, TimelineSearch},
     };
 
     use super::*;
@@ -726,6 +867,7 @@ mod tests {
                     session_id,
                     120,
                     220,
+                    true,
                     Some(replacement_project.id),
                     &[archived_tag.id],
                 )
@@ -742,7 +884,291 @@ mod tests {
         assert_eq!((session.started_at_ms, session.ended_at_ms), (100, 200));
         let organization = repository.get_session_organization(session_id).unwrap();
         assert_eq!(organization.project.unwrap().id, original_project.id);
-        assert_eq!(organization.tags, vec![active_tag]);
+        assert_eq!(organization.tags, vec![active_tag.clone()]);
+
+        repository
+            .set_project_archived(original_project.id, true)
+            .unwrap();
+        repository
+            .set_activity_tag_archived(active_tag.id, true)
+            .unwrap();
+        repository
+            .update_closed_session_with_organization(
+                session_id,
+                120,
+                220,
+                false,
+                Some(original_project.id),
+                &[active_tag.id],
+            )
+            .expect("time-only edits should preserve unchanged archived organization");
+        let session = repository
+            .records_overlapping(0, 300)
+            .unwrap()
+            .into_iter()
+            .find(|record| record.session.id == session_id)
+            .unwrap()
+            .session;
+        assert_eq!((session.started_at_ms, session.ended_at_ms), (120, 220));
+    }
+
+    #[test]
+    fn time_only_update_does_not_overwrite_a_concurrent_organization_change() {
+        let repository = repository();
+        let stale_project = repository
+            .create_project(&project_input("Stale", "#111111"))
+            .unwrap();
+        let concurrent_project = repository
+            .create_project(&project_input("Concurrent", "#222222"))
+            .unwrap();
+        let stale_tag = repository
+            .create_activity_tag(&tag_input("Stale", "#333333"))
+            .unwrap();
+        let concurrent_tag = repository
+            .create_activity_tag(&tag_input("Concurrent", "#444444"))
+            .unwrap();
+        let session_id = closed_session(&repository, 100);
+        repository
+            .set_session_organization(session_id, Some(stale_project.id), &[stale_tag.id])
+            .unwrap();
+
+        repository
+            .set_session_organization(
+                session_id,
+                Some(concurrent_project.id),
+                &[concurrent_tag.id],
+            )
+            .unwrap();
+        repository
+            .update_closed_session_with_organization(
+                session_id,
+                120,
+                220,
+                false,
+                Some(stale_project.id),
+                &[stale_tag.id],
+            )
+            .unwrap();
+
+        let organization = repository.get_session_organization(session_id).unwrap();
+        assert_eq!(organization.project.unwrap(), concurrent_project);
+        assert_eq!(organization.tags, vec![concurrent_tag]);
+    }
+
+    #[test]
+    fn batched_session_organizations_load_and_restore_more_than_one_thousand_sessions() {
+        const SESSION_COUNT: usize = 1_205;
+
+        let repository = repository();
+        let original_project = repository
+            .create_project(&project_input("Original", "#111111"))
+            .unwrap();
+        let replacement_project = repository
+            .create_project(&project_input("Replacement", "#222222"))
+            .unwrap();
+        let first_tag = repository
+            .create_activity_tag(&tag_input("Alpha", "#333333"))
+            .unwrap();
+        let second_tag = repository
+            .create_activity_tag(&tag_input("Beta", "#444444"))
+            .unwrap();
+        let replacement_tag = repository
+            .create_activity_tag(&tag_input("Gamma", "#555555"))
+            .unwrap();
+        let session_ids = {
+            let mut connection = repository.database.lock().unwrap();
+            let transaction = connection.transaction().unwrap();
+            let mut session_ids = Vec::with_capacity(SESSION_COUNT);
+            {
+                let mut insert_session = transaction
+                    .prepare(
+                        "INSERT INTO activity_sessions (
+                           state, application_id, started_at_ms, ended_at_ms, duration_ms,
+                           is_open, closed_reason, created_at_ms, updated_at_ms
+                         ) VALUES ('IDLE', NULL, ?1, ?2, 100, 0, 'BECAME_ACTIVE', ?1, ?2)",
+                    )
+                    .unwrap();
+                let mut insert_project = transaction
+                    .prepare(
+                        "INSERT INTO session_projects (session_id, project_id) VALUES (?1, ?2)",
+                    )
+                    .unwrap();
+                let mut insert_tag = transaction
+                    .prepare("INSERT INTO session_tags (session_id, tag_id) VALUES (?1, ?2)")
+                    .unwrap();
+                for index in 0..SESSION_COUNT {
+                    let started_at_ms = index as i64 * 200;
+                    insert_session
+                        .execute(params![started_at_ms, started_at_ms + 100])
+                        .unwrap();
+                    let session_id = transaction.last_insert_rowid();
+                    session_ids.push(session_id);
+                    insert_project
+                        .execute(params![session_id, original_project.id])
+                        .unwrap();
+                    insert_tag
+                        .execute(params![session_id, first_tag.id])
+                        .unwrap();
+                    if index % 2 == 0 {
+                        insert_tag
+                            .execute(params![session_id, second_tag.id])
+                            .unwrap();
+                    }
+                }
+            }
+            transaction.commit().unwrap();
+            session_ids
+        };
+        let mut requested_ids = session_ids.iter().rev().copied().collect::<Vec<_>>();
+        requested_ids.push(session_ids[0]);
+
+        let organizations = repository.session_organizations(&requested_ids).unwrap();
+        assert_eq!(organizations.len(), SESSION_COUNT);
+        for (index, session_id) in session_ids.iter().enumerate() {
+            let organization = organizations.get(session_id).unwrap();
+            assert_eq!(organization.project.as_ref(), Some(&original_project));
+            let expected_tags = if index % 2 == 0 {
+                vec![first_tag.clone(), second_tag.clone()]
+            } else {
+                vec![first_tag.clone()]
+            };
+            assert_eq!(organization.tags, expected_tags);
+        }
+
+        let result = repository
+            .set_sessions_organization(
+                &requested_ids,
+                Some(replacement_project.id),
+                &[replacement_tag.id],
+            )
+            .unwrap();
+        assert_eq!(result.affected_count, SESSION_COUNT);
+        assert_eq!(
+            repository
+                .undo_timeline_edit(result.undo_token.as_deref().unwrap())
+                .unwrap(),
+            SESSION_COUNT
+        );
+        let restored = repository.session_organizations(&session_ids).unwrap();
+        for (index, session_id) in session_ids.iter().enumerate() {
+            let organization = restored.get(session_id).unwrap();
+            assert_eq!(organization.project.as_ref(), Some(&original_project));
+            assert!(organization.tags.contains(&first_tag));
+            assert_eq!(organization.tags.contains(&second_tag), index % 2 == 0);
+        }
+    }
+
+    #[test]
+    fn project_tag_filters_apply_to_timeline_totals_and_text_search() {
+        let repository = repository();
+        let project = repository
+            .create_project(&project_input("Client Launch", "#123456"))
+            .unwrap();
+        let tag = repository
+            .create_activity_tag(&tag_input("Deep Work", "#654321"))
+            .unwrap();
+        let assigned_id = closed_session(&repository, 100);
+        let unassigned_id = closed_session(&repository, 300);
+        repository
+            .set_session_organization(assigned_id, Some(project.id), &[tag.id])
+            .unwrap();
+
+        for search in [
+            TimelineSearch {
+                project_id: Some(project.id),
+                ..TimelineSearch::default()
+            },
+            TimelineSearch {
+                tag_id: Some(tag.id),
+                ..TimelineSearch::default()
+            },
+            TimelineSearch {
+                query: Some("client launch".to_owned()),
+                ..TimelineSearch::default()
+            },
+            TimelineSearch {
+                query: Some("deep work".to_owned()),
+                ..TimelineSearch::default()
+            },
+        ] {
+            assert_eq!(
+                repository
+                    .timeline_page_totals_filtered(0, 1_000, &search)
+                    .unwrap()
+                    .0,
+                1
+            );
+        }
+        let unassigned = repository
+            .records_overlapping_page_filtered(
+                0,
+                1_000,
+                0,
+                10,
+                &TimelineSearch {
+                    unassigned_only: true,
+                    ..TimelineSearch::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(unassigned.len(), 1);
+        assert_eq!(unassigned[0].session.id, unassigned_id);
+    }
+
+    #[test]
+    fn bulk_organization_undo_preserves_later_session_edits() {
+        let repository = repository();
+        let original_project = repository
+            .create_project(&project_input("Original", "#111111"))
+            .unwrap();
+        let next_project = repository
+            .create_project(&project_input("Next", "#222222"))
+            .unwrap();
+        let original_tag = repository
+            .create_activity_tag(&tag_input("Original", "#333333"))
+            .unwrap();
+        let next_tag = repository
+            .create_activity_tag(&tag_input("Next", "#444444"))
+            .unwrap();
+        let first_id = closed_session(&repository, 100);
+        let second_id = closed_session(&repository, 300);
+        repository
+            .set_session_organization(first_id, Some(original_project.id), &[original_tag.id])
+            .unwrap();
+
+        let result = repository
+            .set_sessions_organization(
+                &[first_id, second_id],
+                Some(next_project.id),
+                &[next_tag.id],
+            )
+            .unwrap();
+        assert_eq!(result.affected_count, 2);
+        repository
+            .update_session_notes(&[first_id], Some("Later note"))
+            .unwrap();
+        assert_eq!(
+            repository
+                .undo_timeline_edit(result.undo_token.as_deref().unwrap())
+                .unwrap(),
+            2
+        );
+
+        let first = repository.get_session_organization(first_id).unwrap();
+        assert_eq!(first.project.unwrap().id, original_project.id);
+        assert_eq!(first.tags, vec![original_tag]);
+        let second = repository.get_session_organization(second_id).unwrap();
+        assert!(second.project.is_none());
+        assert!(second.tags.is_empty());
+        let note = repository
+            .records_overlapping(0, 1_000)
+            .unwrap()
+            .into_iter()
+            .find(|record| record.session.id == first_id)
+            .unwrap()
+            .session
+            .note;
+        assert_eq!(note.as_deref(), Some("Later note"));
     }
 
     #[test]

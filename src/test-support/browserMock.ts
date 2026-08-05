@@ -39,6 +39,7 @@ const settings = {
 let trackingPaused = false;
 let archiveSaved = false;
 let nextOrganizationId = 20;
+let nextOrganizationUndoId = 1;
 
 const projects = [
   {
@@ -85,14 +86,51 @@ type SessionOrganizationState = {
 
 const sessionOrganizations = new Map<number, SessionOrganizationState>();
 
-function organizationItemInput(args: Record<string, unknown>) {
-  const input = args.input as { name: string; color: string };
-  const name = input.name.trim();
-  const color = input.color.trim().toUpperCase();
-  if (!name || [...name].length > 80 || !/^#[0-9A-F]{6}$/.test(color)) {
+function organizationItemInput(args: Record<string, unknown>, entity: "project" | "tag") {
+  const input = args.input;
+  if (
+    typeof input !== "object"
+    || input === null
+    || !("name" in input)
+    || !("color" in input)
+    || typeof input.name !== "string"
+    || typeof input.color !== "string"
+  ) {
     throw new Error("invalid organization input");
   }
+  const name = input.name.trim();
+  const color = input.color.trim().toUpperCase();
+  if (!name || [...name].length > 80) {
+    throw new Error(`${entity} name must contain between 1 and 80 characters`);
+  }
+  if (!/^#[0-9A-F]{6}$/.test(color)) {
+    throw new Error(`${entity} color must use #RRGGBB`);
+  }
   return { name, color };
+}
+
+function asciiNoCase(value: string): string {
+  return value.replace(/[A-Z]/g, (character) => character.toLowerCase());
+}
+
+function sameOrganizationName(left: string, right: string): boolean {
+  return asciiNoCase(left) === asciiNoCase(right);
+}
+
+function sortedOrganizationItems<T extends { archived: boolean; name: string; id: number }>(
+  items: T[],
+): T[] {
+  return [...items].sort((left, right) => (
+    Number(left.archived) - Number(right.archived)
+      || left.name.localeCompare(right.name, "en", { sensitivity: "accent" })
+      || left.id - right.id
+  ));
+}
+
+function sortedTags(tags: (typeof activityTags)[number][]) {
+  return [...tags].sort((left, right) => (
+    left.name.localeCompare(right.name, "en", { sensitivity: "accent" }) || left.id - right.id
+  ));
 }
 
 const currentActivity = () => ({
@@ -178,11 +216,36 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
     category: "Development",
     windowTitle: "Watchhouse - Timeline.tsx",
     note: null,
+    project: null,
+    tags: [],
     startedAtMs: dayStart.getTime() + 9 * 3_600_000,
     endedAtMs: dayStart.getTime() + 10 * 3_600_000,
     durationMs: 3_600_000,
     isOpen: false,
   }] : [];
+  const undoOrganizations = new Map<string, Map<number, SessionOrganizationState>>();
+  const undoHistory: Array<{
+    token: string;
+    createdAtMs: number;
+    sessionCount: number;
+    operationLabel: string;
+  }> = [];
+  const hydratedTimelineEntries = () => timelineEntries.map((entry) => {
+    const organization = sessionOrganizations.get(entry.sessionId);
+    return {
+      ...entry,
+      project: organization?.project ? { ...organization.project } : null,
+      tags: organization?.tags.map((tag) => ({ ...tag })) ?? [],
+    };
+  });
+  const filteredTimelineEntries = (filters: Record<string, unknown> = {}) => (
+    hydratedTimelineEntries().filter((entry) => {
+      if (filters.projectId != null && entry.project?.id !== Number(filters.projectId)) return false;
+      if (filters.tagId != null && !entry.tags.some((tag) => tag.id === Number(filters.tagId))) return false;
+      if (filters.unassignedOnly && (entry.project || entry.tags.length > 0)) return false;
+      return true;
+    })
+  );
   mockWindows(windowLabel);
   mockIPC((command, payload) => {
     const args = (payload ?? {}) as Record<string, unknown>;
@@ -194,20 +257,24 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
       case "set_tracking_paused": trackingPaused = Boolean(args.paused); return null;
       case "get_today_summary": return todaySummary;
       case "get_today_focus_summary": return focusSummary;
-      case "get_timeline": return timelineEntries;
-      case "get_timeline_page": return {
-        entries: Number(args.offset ?? 0) === 0 ? timelineEntries : [],
-        totalCount: timelineEntries.length,
-        activeDurationMs: timelineEntries.reduce((total, entry) => total + entry.durationMs, 0),
+      case "get_timeline": return hydratedTimelineEntries();
+      case "get_timeline_page": {
+        const filtered = filteredTimelineEntries((args.filters ?? {}) as Record<string, unknown>);
+        return {
+        entries: Number(args.offset ?? 0) === 0 ? filtered : [],
+        totalCount: filtered.length,
+        activeDurationMs: filtered.reduce((total, entry) => total + entry.durationMs, 0),
         idleDurationMs: 0,
         offset: Number(args.offset ?? 0),
         hasMore: false,
-      };
-      case "update_timeline_session": return null;
-      case "list_projects": return projects.filter((item) => Boolean(args.includeArchived) || !item.archived);
+        };
+      }
+      case "list_projects": return sortedOrganizationItems(
+        projects.filter((item) => Boolean(args.includeArchived) || !item.archived),
+      ).map((item) => ({ ...item }));
       case "create_project": {
-        const input = organizationItemInput(args);
-        if (projects.some((item) => item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+        const input = organizationItemInput(args, "project");
+        if (projects.some((item) => sameOrganizationName(item.name, input.name))) {
           throw new Error("a project with this name already exists");
         }
         const created = {
@@ -223,8 +290,8 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
       case "update_project": {
         const project = projects.find((item) => item.id === Number(args.projectId));
         if (!project) throw new Error("project was not found");
-        const input = organizationItemInput(args);
-        if (projects.some((item) => item.id !== project.id && item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+        const input = organizationItemInput(args, "project");
+        if (projects.some((item) => item.id !== project.id && sameOrganizationName(item.name, input.name))) {
           throw new Error("a project with this name already exists");
         }
         Object.assign(project, input, { updatedAtMs: now.getTime() });
@@ -237,10 +304,12 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
         project.updatedAtMs = now.getTime();
         return { ...project };
       }
-      case "list_activity_tags": return activityTags.filter((item) => Boolean(args.includeArchived) || !item.archived);
+      case "list_activity_tags": return sortedOrganizationItems(
+        activityTags.filter((item) => Boolean(args.includeArchived) || !item.archived),
+      ).map((item) => ({ ...item }));
       case "create_activity_tag": {
-        const input = organizationItemInput(args);
-        if (activityTags.some((item) => item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+        const input = organizationItemInput(args, "tag");
+        if (activityTags.some((item) => sameOrganizationName(item.name, input.name))) {
           throw new Error("an activity tag with this name already exists");
         }
         const created = {
@@ -256,8 +325,8 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
       case "update_activity_tag": {
         const tag = activityTags.find((item) => item.id === Number(args.tagId));
         if (!tag) throw new Error("activity tag was not found");
-        const input = organizationItemInput(args);
-        if (activityTags.some((item) => item.id !== tag.id && item.name.localeCompare(input.name, undefined, { sensitivity: "accent" }) === 0)) {
+        const input = organizationItemInput(args, "tag");
+        if (activityTags.some((item) => item.id !== tag.id && sameOrganizationName(item.name, input.name))) {
           throw new Error("an activity tag with this name already exists");
         }
         Object.assign(tag, input, { updatedAtMs: now.getTime() });
@@ -278,47 +347,125 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
         const organization = sessionOrganizations.get(sessionId) ?? { project: null, tags: [] };
         return {
           project: organization.project ? { ...organization.project } : null,
-          tags: organization.tags.map((tag) => ({ ...tag })),
+          tags: sortedTags(organization.tags).map((tag) => ({ ...tag })),
         };
       }
       case "set_session_organization":
-      case "update_timeline_session_organization": {
+      case "update_timeline_session": {
         const sessionId = Number(args.sessionId);
         if (!timelineEntries.some((entry) => entry.sessionId === sessionId)) {
           throw new Error("session was not found");
         }
-        const projectId = args.projectId === null ? null : Number(args.projectId);
-        const tagIds = [...new Set(args.tagIds as number[])];
-        const project = projectId === null ? null : projects.find((item) => item.id === projectId);
-        if (projectId !== null && (!project || project.archived)) {
-          throw new Error(project ? "archived projects cannot be assigned" : "project was not found");
+        if (timelineEntries.find((entry) => entry.sessionId === sessionId)?.isOpen) {
+          throw new Error("projects and tags can only be assigned to closed sessions");
         }
-        const tags = tagIds.map((tagId) => activityTags.find((item) => item.id === tagId));
-        const missingTag = tags.some((tag) => !tag);
-        const archivedTag = tags.some((tag) => tag?.archived);
-        if (missingTag || archivedTag) {
-          throw new Error(archivedTag ? "archived activity tags cannot be assigned" : "activity tag was not found");
+        const organizationChanged = command === "set_session_organization"
+          || Boolean(args.organizationChanged);
+        let organization = sessionOrganizations.get(sessionId) ?? { project: null, tags: [] };
+        if (organizationChanged) {
+          const projectId = args.projectId === null ? null : Number(args.projectId);
+          const tagIds = [...new Set(args.tagIds as number[])];
+          const project = projectId === null ? null : projects.find((item) => item.id === projectId);
+          if (projectId !== null && (!project || project.archived)) {
+            throw new Error(project ? "archived projects cannot be assigned" : "project was not found");
+          }
+          const tags = tagIds.map((tagId) => activityTags.find((item) => item.id === tagId));
+          const missingTag = tags.some((tag) => !tag);
+          const archivedTag = tags.some((tag) => tag?.archived);
+          if (missingTag || archivedTag) {
+            throw new Error(archivedTag ? "archived activity tags cannot be assigned" : "activity tag was not found");
+          }
+          organization = {
+            project: project ?? null,
+            tags: sortedTags(tags as (typeof activityTags)[number][]),
+          };
+          sessionOrganizations.set(sessionId, organization);
         }
-        const organization: SessionOrganizationState = {
-          project: project ?? null,
-          tags: tags as (typeof activityTags)[number][],
-        };
-        sessionOrganizations.set(sessionId, organization);
-        if (command === "update_timeline_session_organization") return null;
+        if (command === "update_timeline_session") {
+          const entry = timelineEntries.find((item) => item.sessionId === sessionId)!;
+          entry.startedAtMs = Number(args.startedAtMs);
+          entry.endedAtMs = Number(args.endedAtMs);
+          entry.durationMs = entry.endedAtMs - entry.startedAtMs;
+          return null;
+        }
         return {
           project: organization.project ? { ...organization.project } : null,
           tags: organization.tags.map((tag) => ({ ...tag })),
         };
       }
-      case "search_timeline_range": return {
-        entries: [],
-        totalCount: 0,
-        activeDurationMs: 0,
-        idleDurationMs: 0,
-        offset: Number(args.offset ?? 0),
-        hasMore: false,
-      };
-      case "get_timeline_undo_history": return [];
+      case "set_sessions_organization": {
+        const sessionIds = [...new Set(args.sessionIds as number[])];
+        if (sessionIds.length === 0) return { affectedCount: 0, undoToken: null };
+        const projectId = args.projectId === null ? null : Number(args.projectId);
+        const tagIds = [...new Set(args.tagIds as number[])];
+        if (sessionIds.some((sessionId) => !timelineEntries.some((entry) => entry.sessionId === sessionId))) {
+          throw new Error("session was not found");
+        }
+        if (sessionIds.some((sessionId) => timelineEntries.find((entry) => entry.sessionId === sessionId)?.isOpen)) {
+          throw new Error("open sessions cannot be changed");
+        }
+        const project = projectId === null ? null : projects.find((item) => item.id === projectId);
+        const tags = tagIds.map((tagId) => activityTags.find((item) => item.id === tagId));
+        if (projectId !== null && (!project || project.archived)) {
+          throw new Error(project ? "archived projects cannot be assigned" : "project was not found");
+        }
+        const missingTag = tags.some((tag) => !tag);
+        const archivedTag = tags.some((tag) => tag?.archived);
+        if (missingTag || archivedTag) {
+          throw new Error(archivedTag ? "archived activity tags cannot be assigned" : "activity tag was not found");
+        }
+        const token = `organization-${Date.now()}-${nextOrganizationUndoId++}`;
+        undoOrganizations.set(token, new Map(sessionIds.map((sessionId) => [
+          sessionId,
+          sessionOrganizations.get(sessionId) ?? { project: null, tags: [] },
+        ])));
+        for (const sessionId of sessionIds) {
+          sessionOrganizations.set(sessionId, {
+            project: project ?? null,
+            tags: sortedTags(tags as (typeof activityTags)[number][]),
+          });
+        }
+        undoHistory.push({
+          token,
+          createdAtMs: Date.now(),
+          sessionCount: sessionIds.length,
+          operationLabel: "Updated session organization",
+        });
+        return { affectedCount: sessionIds.length, undoToken: token };
+      }
+      case "search_timeline_range": {
+        const offset = Number(args.offset ?? 0);
+        const limit = Number(args.limit ?? 200);
+        const filtered = filteredTimelineEntries(
+          (args.filters ?? {}) as Record<string, unknown>,
+        );
+        const entries = filtered.slice(offset, offset + limit);
+        return {
+          entries,
+          totalCount: filtered.length,
+          activeDurationMs: filtered
+            .filter((entry) => entry.state === "ACTIVE")
+            .reduce((total, entry) => total + entry.durationMs, 0),
+          idleDurationMs: filtered
+            .filter((entry) => entry.state === "IDLE")
+            .reduce((total, entry) => total + entry.durationMs, 0),
+          offset,
+          hasMore: offset + entries.length < filtered.length,
+        };
+      }
+      case "get_timeline_undo_history": return undoHistory.map((entry) => ({ ...entry }));
+      case "undo_timeline_edit": {
+        const token = String(args.undoToken);
+        const snapshot = undoOrganizations.get(token);
+        if (!snapshot) throw new Error("undo is no longer available");
+        for (const [sessionId, organization] of snapshot) {
+          sessionOrganizations.set(sessionId, organization);
+        }
+        undoOrganizations.delete(token);
+        const index = undoHistory.findIndex((entry) => entry.token === token);
+        if (index >= 0) undoHistory.splice(index, 1);
+        return snapshot.size;
+      }
       case "get_app_usage": return [];
       case "get_category_usage": return [];
       case "get_application_daily_usage": return [];

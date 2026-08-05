@@ -2,6 +2,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::database::{
     ActivityRepository, ActivityTag, ActivityTagInput, Project, ProjectInput, SessionOrganization,
+    TimelineMutationResult,
 };
 
 use super::{IpcResult, run_blocking};
@@ -124,4 +125,21 @@ pub async fn set_session_organization(
             .await?;
     let _ = app.emit("activity-data-changed", ());
     Ok(organization)
+}
+
+#[tauri::command]
+pub async fn set_sessions_organization(
+    session_ids: Vec<i64>,
+    project_id: Option<i64>,
+    tag_ids: Vec<i64>,
+    app: AppHandle,
+    repository: State<'_, ActivityRepository>,
+) -> IpcResult<TimelineMutationResult> {
+    let repository = repository.inner().clone();
+    let result = run_blocking(move || {
+        repository.set_sessions_organization(&session_ids, project_id, &tag_ids)
+    })
+    .await?;
+    let _ = app.emit("activity-data-changed", ());
+    Ok(result)
 }

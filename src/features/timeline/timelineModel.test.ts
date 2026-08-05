@@ -19,6 +19,8 @@ function activeEntry(startedAtMs: number, endedAtMs: number): TimelineEntry {
     category: null,
     windowTitle: null,
     note: null,
+    project: null,
+    tags: [],
     startedAtMs,
     endedAtMs,
     durationMs: endedAtMs - startedAtMs,

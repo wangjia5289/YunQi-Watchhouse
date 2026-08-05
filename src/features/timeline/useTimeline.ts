@@ -39,6 +39,9 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
     maximumDurationMs: filters.maximumDurationMs ?? null,
     timeFromMinutes: filters.timeFromMinutes ?? null,
     timeToMinutes: filters.timeToMinutes ?? null,
+    projectId: filters.projectId ?? null,
+    tagId: filters.tagId ?? null,
+    unassignedOnly: filters.unassignedOnly ?? false,
   }), [
     filters.maximumDurationMs,
     filters.minimumDurationMs,
@@ -46,6 +49,9 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
     filters.state,
     filters.timeFromMinutes,
     filters.timeToMinutes,
+    filters.projectId,
+    filters.tagId,
+    filters.unassignedOnly,
   ]);
 
   const load = useCallback(async () => {
@@ -88,6 +94,7 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
         hasMore: page.hasMore,
       }));
     } catch (error) {
+      if (revision !== requestRevision.current) return;
       setState((current) => ({ ...current, loading: false, error: errorMessage(error) }));
     }
   }, [date, requestFilters, state.entries.length, state.hasMore, state.loading]);
@@ -107,6 +114,7 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
         hasMore: remaining.hasMore,
       }));
     } catch (error) {
+      if (revision !== requestRevision.current) return;
       setState((current) => ({ ...current, loading: false, error: errorMessage(error) }));
     }
   }, [date, requestFilters, state.entries.length, state.hasMore, state.loading]);

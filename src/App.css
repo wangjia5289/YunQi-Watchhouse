@@ -439,7 +439,8 @@ button {
   font-weight: 600;
 }
 
-.timeline-advanced-filters input {
+.timeline-advanced-filters input,
+.timeline-advanced-filters select {
   width: 100%;
   height: 36px;
   padding: 0 10px;
@@ -448,6 +449,21 @@ button {
   color: inherit;
   background: var(--surface-solid);
   font: inherit;
+}
+
+.timeline-advanced-filters .organization-unassigned-filter {
+  min-height: 36px;
+  align-content: center;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-advanced-filters .organization-unassigned-filter input {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  accent-color: var(--green-700);
 }
 
 .session-editor {
@@ -1872,6 +1888,43 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.session-organization-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.session-project-badge,
+.session-tag-badge {
+  max-width: 180px;
+  min-height: 20px;
+  padding: 2px 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  background: var(--surface-solid);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-project-badge i,
+.session-tag-badge i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+.session-project-badge {
+  color: var(--green-900);
+  font-weight: 650;
+}
+
 .open-session {
   padding: 2px 5px;
   border-radius: 5px;
@@ -2964,6 +3017,7 @@ button:focus-visible {
 .timeline-filters input,
 .timeline-filters select,
 .timeline-advanced-filters input,
+.timeline-advanced-filters select,
 .application-preferences select,
 .application-preferences input[type="text"],
   .session-editor input,
@@ -2982,6 +3036,7 @@ button:focus-visible {
 .timeline-filters input:focus,
 .timeline-filters select:focus,
 .timeline-advanced-filters input:focus,
+.timeline-advanced-filters select:focus,
 .application-preferences select:focus,
 .application-preferences input[type="text"]:focus,
   .session-editor input:focus,

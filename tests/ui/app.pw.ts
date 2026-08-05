@@ -139,11 +139,19 @@ test("creates, edits, archives, and restores a project", async ({ page }, testIn
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("tab", { name: "Classification", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Projects & activity tags", exact: true })).toBeVisible();
+  const manager = page.locator(".project-tag-manager");
+
+  await page.getByLabel("New project name", { exact: true }).fill("client launch");
+  await page.getByRole("button", { name: "Add project", exact: true }).click();
+  await expect(manager.getByRole("alert")).toHaveText("a project with this name already exists");
+  await expect(manager.getByRole("status")).toHaveCount(0);
 
   await page.getByLabel("New project name", { exact: true }).fill("Website refresh");
   await page.getByLabel("New project color", { exact: true }).fill("#39796a");
   await page.getByRole("button", { name: "Add project", exact: true }).click();
   await expect(page.getByText("Website refresh", { exact: true })).toBeVisible();
+  await expect(manager.getByRole("alert")).toHaveCount(0);
+  await expect(manager.getByRole("status")).toHaveText("Project added.");
 
   await page.getByRole("button", { name: "Edit project Website refresh", exact: true }).click();
   await page.getByLabel("Edit project name", { exact: true }).fill("Website relaunch");
@@ -157,23 +165,149 @@ test("creates, edits, archives, and restores a project", async ({ page }, testIn
   await page.getByRole("switch", { name: "project Website relaunch active", exact: true }).click();
   await expect(page.getByRole("switch", { name: "project Website relaunch active", exact: true }))
     .toHaveAttribute("aria-checked", "true");
+
+  await page.getByRole("button", { name: "中文", exact: true }).click();
+  await expect(manager.getByText("2 个启用项目", { exact: true })).toBeVisible();
+  await expect(manager.getByRole("button", { name: "编辑项目“Client launch”", exact: true }))
+    .toBeVisible();
+  await expect(manager.getByRole("switch", { name: "项目“Client launch”启用状态", exact: true }))
+    .toBeVisible();
 });
 
 test("edits a session project and tags on demand", async ({ page }) => {
   await page.goto("./?browser-mock&organization-flow");
   await page.getByRole("button", { name: "Timeline", exact: true }).click();
   await page.getByRole("button", { name: "Details", exact: true }).click();
-  await page.getByRole("button", { name: "Edit Visual Studio Code session", exact: true }).click();
+  const editButton = page.getByRole("button", {
+    name: "Edit Visual Studio Code session",
+    exact: true,
+  });
+  await editButton.click();
 
   const dialog = page.getByRole("dialog", { name: "Edit recorded session" });
+  await expect(dialog.getByLabel("Start", { exact: true })).toBeFocused();
   await expect(dialog.getByRole("combobox", { name: "Project", exact: true })).toBeVisible();
   await dialog.getByRole("combobox", { name: "Project", exact: true }).selectOption({ label: "Client launch" });
   await dialog.getByRole("checkbox", { name: "Deep work", exact: true }).check();
   await dialog.getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(dialog).toHaveCount(0);
+  await expect(editButton).toBeFocused();
 
-  await page.getByRole("button", { name: "Edit Visual Studio Code session", exact: true }).click();
+  await editButton.click();
   const reopened = page.getByRole("dialog", { name: "Edit recorded session" });
+  await expect(reopened.getByLabel("Start", { exact: true })).toBeFocused();
   await expect(reopened.getByRole("combobox", { name: "Project", exact: true })).toHaveValue("1");
   await expect(reopened.getByRole("checkbox", { name: "Deep work", exact: true })).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(reopened).toHaveCount(0);
+  await expect(editButton).toBeFocused();
+
+  await expect(page.getByText("Client launch", { exact: true })).toBeVisible();
+  await expect(page.getByText("Deep work", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Advanced", exact: true }).click();
+  await page.getByRole("combobox", { name: "Project", exact: true })
+    .selectOption({ label: "Client launch" });
+  const organizationBadges = page.locator(".session-organization-badges");
+  await expect(page.getByText("Visual Studio Code", { exact: true })).toBeVisible();
+
+  await page.getByRole("checkbox", { name: "Select Visual Studio Code session", exact: true })
+    .check();
+  const organizeButton = page.getByRole("button", { name: "Organize", exact: true });
+  await organizeButton.click();
+  let bulkDialog = page.getByRole("dialog", { name: "Organize selected sessions" });
+  await expect(bulkDialog.getByRole("combobox", { name: "Project", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(bulkDialog).toHaveCount(0);
+  await expect(organizeButton).toBeFocused();
+
+  await organizeButton.click();
+  bulkDialog = page.getByRole("dialog", { name: "Organize selected sessions" });
+  await bulkDialog.getByRole("combobox", { name: "Project", exact: true })
+    .selectOption({ label: "Client launch" });
+  await bulkDialog.getByRole("checkbox", { name: "Review", exact: true }).check();
+  await bulkDialog.getByRole("button", { name: "Apply changes", exact: true }).click();
+  await expect(bulkDialog).toHaveCount(0);
+  await expect(organizationBadges.getByText("Review", { exact: true })).toBeVisible();
+  await expect(organizationBadges.getByText("Deep work", { exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Undo (1)", exact: true }).click();
+  await expect(organizationBadges.getByText("Client launch", { exact: true })).toBeVisible();
+  await expect(organizationBadges.getByText("Deep work", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  const searchResults = page.getByRole("region", { name: "Search results", exact: true });
+  const searchBadges = searchResults.locator(".session-organization-badges");
+  await expect(searchBadges.getByText("Client launch", { exact: true })).toBeVisible();
+  await expect(searchBadges.getByText("Deep work", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Advanced", exact: true }).click();
+  const searchFilters = page.getByRole("region", { name: "Search filters", exact: true });
+  const projectFilter = searchFilters.getByRole("combobox", { name: "Project", exact: true });
+  const tagFilter = searchFilters.getByRole("combobox", { name: "Activity tag", exact: true });
+  await projectFilter.selectOption({ label: "Client launch" });
+  await tagFilter.selectOption({ label: "Deep work" });
+  await expect(searchBadges.getByText("Deep work", { exact: true })).toBeVisible();
+
+  await tagFilter.selectOption({ label: "Review" });
+  await expect(searchResults.getByRole("heading", { name: "No matching activity" })).toBeVisible();
+  await tagFilter.selectOption({ label: "Deep work" });
+  await expect(searchBadges.getByText("Deep work", { exact: true })).toBeVisible();
+
+  await searchFilters.getByRole("checkbox", { name: "Unassigned only", exact: true }).check();
+  await expect(projectFilter).toBeDisabled();
+  await expect(tagFilter).toBeDisabled();
+  await expect(searchResults.getByRole("heading", { name: "No matching activity" })).toBeVisible();
+});
+
+test("restores compatible saved searches and rejects contradictory organization filters", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === "narrow", "saved-search compatibility runs once on desktop");
+  await page.addInitScript(() => {
+    const base = {
+      preset: "7_DAYS",
+      startDate: "2026-07-30",
+      endDate: "2026-08-05",
+      query: "",
+      stateFilter: "ALL",
+      minimumMinutes: "",
+      maximumMinutes: "",
+      timeFrom: "",
+      timeTo: "",
+    };
+    localStorage.setItem("watchhouse.globalSearch.saved.v1", JSON.stringify([
+      { ...base, id: "legacy", name: "Legacy search" },
+      {
+        ...base,
+        id: "organized",
+        name: "Organized work",
+        projectId: 1,
+        tagId: 10,
+        unassignedOnly: false,
+      },
+      {
+        ...base,
+        id: "contradictory",
+        name: "Contradictory search",
+        projectId: 1,
+        unassignedOnly: true,
+      },
+    ]));
+  });
+
+  await page.goto("./?browser-mock&organization-flow");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  const savedSearches = page.getByRole("region", { name: "Saved searches", exact: true });
+  await expect(savedSearches.getByRole("button", { name: "Legacy search", exact: true }))
+    .toBeVisible();
+  await expect(savedSearches.getByRole("button", { name: "Contradictory search", exact: true }))
+    .toHaveCount(0);
+
+  await savedSearches.getByRole("button", { name: "Organized work", exact: true }).click();
+  const filters = page.getByRole("region", { name: "Search filters", exact: true });
+  await expect(filters.getByRole("combobox", { name: "Project", exact: true })).toHaveValue("1");
+  await expect(filters.getByRole("combobox", { name: "Activity tag", exact: true }))
+    .toHaveValue("10");
+  await expect(filters.getByRole("checkbox", { name: "Unassigned only", exact: true }))
+    .not.toBeChecked();
 });

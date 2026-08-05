@@ -30,7 +30,7 @@ pub use focus::{get_focus_mode, set_focus_mode};
 pub use projects::{
     create_activity_tag, create_project, get_session_organization, list_activity_tags,
     list_projects, set_activity_tag_archived, set_project_archived, set_session_organization,
-    update_activity_tag, update_project,
+    set_sessions_organization, update_activity_tag, update_project,
 };
 pub use restore_preview::{
     cancel_prepared_database_restore, preview_database_restore, preview_encrypted_database_restore,
@@ -51,7 +51,6 @@ pub use timeline::{
     delete_timeline_session, delete_timeline_sessions, import_activity, merge_timeline_sessions,
     preview_activity_import, undo_timeline_edit, update_timeline_session,
     update_timeline_session_categories, update_timeline_session_notes,
-    update_timeline_session_organization,
 };
 pub use updater::{check_for_updates, install_update};
 pub use usage_limits::{

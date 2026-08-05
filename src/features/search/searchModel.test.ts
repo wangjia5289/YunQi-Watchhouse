@@ -16,6 +16,8 @@ function entry(sessionId: number, startedAtMs: number): TimelineEntry {
     category: null,
     windowTitle: null,
     note: null,
+    project: null,
+    tags: [],
     startedAtMs,
     endedAtMs: startedAtMs + 1_000,
     durationMs: 1_000,
