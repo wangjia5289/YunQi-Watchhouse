@@ -10,8 +10,8 @@ pub use repository::{
     CategoryRulesReapplyResult, CategoryRulesReapplyUndoStatus, DataHealthRepairResult,
     DataHealthSummary, DataHealthUndoStatus, FocusPlanHistoryEntry, FocusPlanTemplate,
     ImportRecord, MaintenancePreview, MaintenanceResult, PersistedFocusMode, Project, ProjectInput,
-    RecoveryOutcome, SessionOrganization, Settings, ShortcutSettings, TimelineMutationResult,
-    TimelineSearch, TimelineUndoEntry, UsageLimitDailyException, UsageLimitReminderHistoryEntry,
-    UsageLimitRule, UsageLimitRuleInput, UsageLimitScopeType, UsageLimitTargets,
-    WeeklyReportArchive, WeeklyReportArchiveInput,
+    RecoveryOutcome, SessionOrganization, SessionTagUpdateMode, Settings, ShortcutSettings,
+    TimelineMutationResult, TimelineSearch, TimelineUndoEntry, UsageLimitDailyException,
+    UsageLimitReminderHistoryEntry, UsageLimitRule, UsageLimitRuleInput, UsageLimitScopeType,
+    UsageLimitTargets, WeeklyReportArchive, WeeklyReportArchiveInput,
 };

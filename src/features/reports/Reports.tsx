@@ -11,6 +11,7 @@ import {
   startFocusPlan,
 } from "../../lib/ipc";
 import { useLocale } from "../../lib/i18n";
+import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
 import { WeeklyInsights } from "./WeeklyInsights";
 import { WeeklyArchivePanel } from "./WeeklyArchivePanel";
 import { shiftReportRangeByDays } from "./weeklyInsightModel";
@@ -100,10 +101,27 @@ export function Reports() {
   const [focusHistory, setFocusHistory] = useState<FocusPlanHistorySummary | null>(null);
   const [focusMessage, setFocusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dataRevision, setDataRevision] = useState(0);
   const range = useMemo(
     () => reportRange(period, customStart, customEnd),
     [customEnd, customStart, period],
   );
+
+  useEffect(() => {
+    let refreshTimeout: number | null = null;
+    const refresh = () => {
+      if (refreshTimeout !== null) return;
+      refreshTimeout = window.setTimeout(() => {
+        refreshTimeout = null;
+        setDataRevision((revision) => revision + 1);
+      }, 250);
+    };
+    window.addEventListener(ACTIVITY_DATA_CHANGED, refresh);
+    return () => {
+      window.removeEventListener(ACTIVITY_DATA_CHANGED, refresh);
+      if (refreshTimeout !== null) window.clearTimeout(refreshTimeout);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,7 +148,7 @@ export function Reports() {
     return () => {
       cancelled = true;
     };
-  }, [period, range.endMs, range.startMs]);
+  }, [dataRevision, period, range.endMs, range.startMs]);
 
   const dailyMaximum = Math.max(
     1,

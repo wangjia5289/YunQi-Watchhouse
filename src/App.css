@@ -819,6 +819,36 @@ button {
   font-weight: 650;
 }
 
+.bulk-tag-mode {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.bulk-tag-mode legend {
+  grid-column: 1 / -1;
+}
+
+.timeline-dialog .bulk-tag-mode label {
+  min-height: 42px;
+  padding: 7px;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: inherit;
+  background: color-mix(in srgb, var(--surface-solid) 72%, transparent);
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.timeline-dialog .bulk-tag-mode input {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  accent-color: var(--green-700);
+}
+
 .session-organization select {
   width: 100%;
   height: 38px;

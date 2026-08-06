@@ -51,6 +51,13 @@ pub struct SessionOrganization {
     pub tags: Vec<ActivityTag>,
 }
 
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionTagUpdateMode {
+    Append,
+    Remove,
+}
+
 impl ActivityRepository {
     pub fn list_projects(&self, include_archived: bool) -> AppResult<Vec<Project>> {
         let connection = self.database.lock()?;
@@ -240,6 +247,60 @@ impl ActivityRepository {
                 Ok(ids.len())
             },
         )
+    }
+
+    pub fn update_sessions_tags(
+        &self,
+        session_ids: &[i64],
+        tag_ids: &[i64],
+        mode: SessionTagUpdateMode,
+    ) -> AppResult<TimelineMutationResult> {
+        let unique_tag_ids = tag_ids.iter().copied().collect::<BTreeSet<_>>();
+        if unique_tag_ids.is_empty() {
+            return Ok(TimelineMutationResult {
+                affected_count: 0,
+                undo_token: None,
+            });
+        }
+        let operation_label = match mode {
+            SessionTagUpdateMode::Append => "Added activity tags",
+            SessionTagUpdateMode::Remove => "Removed activity tags",
+        };
+        self.organization_session_edit(session_ids, operation_label, |transaction, ids| {
+            for tag_id in &unique_tag_ids {
+                match mode {
+                    SessionTagUpdateMode::Append => {
+                        ensure_activity_tag_assignable(transaction, *tag_id)?;
+                    }
+                    SessionTagUpdateMode::Remove => {
+                        if find_activity_tag(transaction, *tag_id)?.is_none() {
+                            return Err(AppError::InvalidSession(
+                                "activity tag was not found".to_owned(),
+                            ));
+                        }
+                    }
+                }
+            }
+            for session_id in ids {
+                for tag_id in &unique_tag_ids {
+                    match mode {
+                        SessionTagUpdateMode::Append => {
+                            transaction.execute(
+                                "INSERT OR IGNORE INTO session_tags (session_id, tag_id) VALUES (?1, ?2)",
+                                params![session_id, tag_id],
+                            )?;
+                        }
+                        SessionTagUpdateMode::Remove => {
+                            transaction.execute(
+                                "DELETE FROM session_tags WHERE session_id = ?1 AND tag_id = ?2",
+                                params![session_id, tag_id],
+                            )?;
+                        }
+                    }
+                }
+            }
+            Ok(ids.len())
+        })
     }
 
     pub fn update_closed_session_with_organization(
@@ -1169,6 +1230,85 @@ mod tests {
             .session
             .note;
         assert_eq!(note.as_deref(), Some("Later note"));
+    }
+
+    #[test]
+    fn bulk_tag_updates_preserve_projects_and_unselected_tags_and_can_be_undone() {
+        let repository = repository();
+        let first_project = repository
+            .create_project(&project_input("First project", "#111111"))
+            .unwrap();
+        let second_project = repository
+            .create_project(&project_input("Second project", "#222222"))
+            .unwrap();
+        let first_tag = repository
+            .create_activity_tag(&tag_input("First tag", "#333333"))
+            .unwrap();
+        let second_tag = repository
+            .create_activity_tag(&tag_input("Second tag", "#444444"))
+            .unwrap();
+        let added_tag = repository
+            .create_activity_tag(&tag_input("Added tag", "#555555"))
+            .unwrap();
+        let first_id = closed_session(&repository, 100);
+        let second_id = closed_session(&repository, 300);
+        repository
+            .set_session_organization(first_id, Some(first_project.id), &[first_tag.id])
+            .unwrap();
+        repository
+            .set_session_organization(second_id, Some(second_project.id), &[second_tag.id])
+            .unwrap();
+
+        let appended = repository
+            .update_sessions_tags(
+                &[first_id, second_id],
+                &[added_tag.id, added_tag.id],
+                SessionTagUpdateMode::Append,
+            )
+            .unwrap();
+        assert_eq!(appended.affected_count, 2);
+        let first = repository.get_session_organization(first_id).unwrap();
+        let second = repository.get_session_organization(second_id).unwrap();
+        assert_eq!(first.project, Some(first_project.clone()));
+        assert_eq!(second.project, Some(second_project.clone()));
+        assert_eq!(first.tags, vec![added_tag.clone(), first_tag.clone()]);
+        assert_eq!(second.tags, vec![added_tag.clone(), second_tag.clone()]);
+
+        repository
+            .undo_timeline_edit(appended.undo_token.as_deref().unwrap())
+            .unwrap();
+        let first = repository.get_session_organization(first_id).unwrap();
+        let second = repository.get_session_organization(second_id).unwrap();
+        assert_eq!(first.project, Some(first_project.clone()));
+        assert_eq!(second.project, Some(second_project.clone()));
+        assert_eq!(first.tags, vec![first_tag.clone()]);
+        assert_eq!(second.tags, vec![second_tag.clone()]);
+
+        let removed = repository
+            .update_sessions_tags(
+                &[first_id, second_id],
+                &[first_tag.id],
+                SessionTagUpdateMode::Remove,
+            )
+            .unwrap();
+        let first = repository.get_session_organization(first_id).unwrap();
+        let second = repository.get_session_organization(second_id).unwrap();
+        assert_eq!(first.project, Some(first_project.clone()));
+        assert_eq!(second.project, Some(second_project.clone()));
+        assert!(first.tags.is_empty());
+        assert_eq!(second.tags, vec![second_tag.clone()]);
+
+        repository
+            .undo_timeline_edit(removed.undo_token.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(
+            repository.get_session_organization(first_id).unwrap().tags,
+            vec![first_tag],
+        );
+        assert_eq!(
+            repository.get_session_organization(second_id).unwrap().tags,
+            vec![second_tag],
+        );
     }
 
     #[test]

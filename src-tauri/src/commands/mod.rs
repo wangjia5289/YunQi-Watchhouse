@@ -30,7 +30,7 @@ pub use focus::{get_focus_mode, set_focus_mode};
 pub use projects::{
     create_activity_tag, create_project, get_session_organization, list_activity_tags,
     list_projects, set_activity_tag_archived, set_project_archived, set_session_organization,
-    set_sessions_organization, update_activity_tag, update_project,
+    set_sessions_organization, update_activity_tag, update_project, update_sessions_tags,
 };
 pub use restore_preview::{
     cancel_prepared_database_restore, preview_database_restore, preview_encrypted_database_restore,

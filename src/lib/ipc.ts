@@ -771,6 +771,16 @@ export function setSessionsOrganization(
   return invoke("set_sessions_organization", { sessionIds, projectId, tagIds });
 }
 
+export type SessionTagUpdateMode = "append" | "remove";
+
+export function updateSessionsTags(
+  sessionIds: number[],
+  tagIds: number[],
+  mode: SessionTagUpdateMode,
+): Promise<TimelineMutationResult> {
+  return invoke("update_sessions_tags", { sessionIds, tagIds, mode });
+}
+
 export function getAppUsage(
   rangeStartMs: number,
   rangeEndMs: number,

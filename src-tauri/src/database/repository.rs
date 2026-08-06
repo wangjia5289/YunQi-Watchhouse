@@ -21,7 +21,9 @@ mod projects;
 mod weekly_reports;
 
 pub use focus_plans::{FocusPlanHistoryEntry, FocusPlanTemplate, PersistedFocusMode};
-pub use projects::{ActivityTag, ActivityTagInput, Project, ProjectInput, SessionOrganization};
+pub use projects::{
+    ActivityTag, ActivityTagInput, Project, ProjectInput, SessionOrganization, SessionTagUpdateMode,
+};
 pub use weekly_reports::{WeeklyReportArchive, WeeklyReportArchiveInput};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -502,6 +504,39 @@ fn restore_session_organization_snapshots(
         }
     }
     Ok(())
+}
+
+fn session_ids_matching_snapshots(
+    connection: &Connection,
+    snapshots: &[ActivitySession],
+) -> AppResult<BTreeSet<i64>> {
+    let expected_created_at_ms = snapshots
+        .iter()
+        .map(|session| (session.id, session.created_at_ms))
+        .collect::<BTreeMap<_, _>>();
+    let mut matching_ids = BTreeSet::new();
+    let session_ids = expected_created_at_ms.keys().copied().collect::<Vec<_>>();
+
+    for batch in session_ids.chunks(SESSION_QUERY_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", batch.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = connection.prepare(&format!(
+            "SELECT id, created_at_ms FROM activity_sessions WHERE id IN ({placeholders})"
+        ))?;
+        let sessions = statement
+            .query_map(params_from_iter(batch.iter()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (session_id, created_at_ms) in sessions {
+            if expected_created_at_ms.get(&session_id) == Some(&created_at_ms) {
+                matching_ids.insert(session_id);
+            }
+        }
+    }
+
+    Ok(matching_ids)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2529,8 +2564,13 @@ impl ActivityRepository {
                 })
             })
             .map_err(|error| AppError::InvalidSession(format!("invalid undo snapshot: {error}")))?;
-        if snapshot.organization_only {
-            for session_id in &snapshot.delete_session_ids {
+        let affected_count = if snapshot.organization_only {
+            // A later deletion can leave an organization-only undo snapshot pointing at a
+            // missing session. IDs can also be reused by SQLite, so require the original
+            // creation timestamp before changing the current record's organization.
+            let matching_session_ids =
+                session_ids_matching_snapshots(&transaction, &snapshot.sessions)?;
+            for session_id in &matching_session_ids {
                 transaction.execute(
                     "DELETE FROM session_projects WHERE session_id = ?1",
                     [session_id],
@@ -2540,6 +2580,14 @@ impl ActivityRepository {
                     [session_id],
                 )?;
             }
+            let matching_organizations = snapshot
+                .organizations
+                .iter()
+                .filter(|organization| matching_session_ids.contains(&organization.session_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            restore_session_organization_snapshots(&transaction, &matching_organizations)?;
+            matching_session_ids.len()
         } else {
             for session_id in &snapshot.delete_session_ids {
                 transaction.execute("DELETE FROM activity_sessions WHERE id = ?1", [session_id])?;
@@ -2566,11 +2614,12 @@ impl ActivityRepository {
                     ],
                 )?;
             }
-        }
-        restore_session_organization_snapshots(&transaction, &snapshot.organizations)?;
+            restore_session_organization_snapshots(&transaction, &snapshot.organizations)?;
+            snapshot.sessions.len()
+        };
         transaction.execute("DELETE FROM timeline_undo WHERE token = ?1", [token])?;
         transaction.commit()?;
-        Ok(snapshot.sessions.len())
+        Ok(affected_count)
     }
 
     pub fn timeline_undo_tokens(&self) -> AppResult<Vec<String>> {
@@ -6109,6 +6158,68 @@ mod tests {
         let organization = repository.get_session_organization(session.id).unwrap();
         assert_eq!(organization.project.unwrap(), project);
         assert_eq!(organization.tags, vec![tag]);
+    }
+
+    #[test]
+    fn organization_undo_skips_deleted_or_reused_session_ids() {
+        let repository = repository();
+        let original_project = repository
+            .create_project(&ProjectInput {
+                name: "Original".to_owned(),
+                color: "#123456".to_owned(),
+            })
+            .unwrap();
+        let replacement_project = repository
+            .create_project(&ProjectInput {
+                name: "Replacement".to_owned(),
+                color: "#654321".to_owned(),
+            })
+            .unwrap();
+        let first = closed_idle_session(&repository, 100, 200);
+        let deleted = closed_idle_session(&repository, 300, 400);
+        repository
+            .set_sessions_organization(&[first.id, deleted.id], Some(replacement_project.id), &[])
+            .unwrap();
+        let undo_token = repository
+            .set_sessions_organization(&[first.id, deleted.id], Some(original_project.id), &[])
+            .unwrap()
+            .undo_token
+            .unwrap();
+
+        repository.delete_closed_sessions(&[deleted.id]).unwrap();
+        let replacement_created_at_ms = deleted.created_at_ms.saturating_add(1);
+        repository
+            .database
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO activity_sessions (
+                    id, state, application_id, window_title, started_at_ms, ended_at_ms,
+                    duration_ms, is_open, closed_reason, created_at_ms, updated_at_ms, note
+                 ) VALUES (?1, 'IDLE', NULL, NULL, 500, 600, 100, 0, 'BECAME_ACTIVE', ?2, ?2, NULL)",
+                params![deleted.id, replacement_created_at_ms],
+            )
+            .unwrap();
+
+        assert_eq!(repository.undo_timeline_edit(&undo_token).unwrap(), 1);
+        assert_eq!(
+            repository
+                .get_session_organization(first.id)
+                .unwrap()
+                .project
+                .unwrap(),
+            replacement_project
+        );
+        let reused = repository.get_session_organization(deleted.id).unwrap();
+        assert!(reused.project.is_none());
+        assert!(reused.tags.is_empty());
+        assert!(
+            repository
+                .timeline_undo_history()
+                .unwrap()
+                .iter()
+                .all(|entry| entry.token != undo_token)
+        );
     }
 
     #[test]

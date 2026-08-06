@@ -54,14 +54,16 @@ pub fn archive_due_weekly_report(
         .ok_or_else(|| "weekly report date is outside the supported range".to_owned())?;
     let week_start_text = week_start.format("%Y-%m-%d").to_string();
 
+    let start_range =
+        crate::statistics::local_day_range(week_start).map_err(|error| error.to_string())?;
+    let end_range =
+        crate::statistics::local_day_range(week_end).map_err(|error| error.to_string())?;
     let existing = repository
         .weekly_report_archive(&week_start_text)
         .map_err(|error| error.to_string())?;
-    if existing.is_none() {
-        let start_range =
-            crate::statistics::local_day_range(week_start).map_err(|error| error.to_string())?;
-        let end_range =
-            crate::statistics::local_day_range(week_end).map_err(|error| error.to_string())?;
+    let needs_final_archive =
+        existing.is_none_or(|archive| archive.generated_at_ms < end_range.end_ms);
+    if needs_final_archive {
         let range = TimeRange::new(start_range.start_ms, end_range.end_ms)
             .map_err(|error| error.to_string())?;
         let report = statistics
@@ -420,6 +422,38 @@ mod tests {
                 .expect("archive lookup should succeed")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn automatic_archive_replaces_a_partial_snapshot_after_the_week_ends() {
+        let (repository, statistics) = weekly_report_setup();
+        let partial_created_at_ms = local_timestamp(2026, 7, 29, 12, 0);
+        repository
+            .archive_weekly_report(&WeeklyReportArchiveInput {
+                week_start_date: "2026-07-27".to_owned(),
+                week_end_date: "2026-08-02".to_owned(),
+                generated_at_ms: partial_created_at_ms,
+                active_duration_ms: 1,
+                idle_duration_ms: 0,
+                previous_week_active_duration_ms: 0,
+                strongest_day_date: None,
+                peak_hour: None,
+                leading_category: None,
+                focus_completion_rate: None,
+                payload_json: "{}".to_owned(),
+            })
+            .expect("partial archive should save");
+
+        let finalized_at_ms = local_timestamp(2026, 8, 3, 8, 0);
+        archive_due_weekly_report(&repository, &statistics, finalized_at_ms)
+            .expect("automatic archive should succeed");
+
+        let archive = repository
+            .weekly_report_archive("2026-07-27")
+            .expect("archive lookup should succeed")
+            .expect("archive should exist");
+        assert_eq!(archive.generated_at_ms, finalized_at_ms);
+        assert_eq!(archive.active_duration_ms, 0);
     }
 
     #[test]

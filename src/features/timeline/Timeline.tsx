@@ -29,6 +29,7 @@ import {
   updateTimelineSessionNotes,
   updateTimelineSession,
   setSessionsOrganization,
+  updateSessionsTags,
 } from "../../lib/ipc";
 import { notifyActivityDataChanged } from "../../lib/events";
 import { useLocale } from "../../lib/i18n";
@@ -72,6 +73,8 @@ type TimelineActionDialog = {
   sessionIds: number[];
   label: string;
 };
+
+type BulkOrganizationMode = "replace" | "append" | "remove";
 
 const DIALOG_FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -198,6 +201,7 @@ export function Timeline({
   const [operationMessage, setOperationMessage] = useState<string | null>(null);
   const [actionDialog, setActionDialog] = useState<TimelineActionDialog | null>(null);
   const [bulkOrganizationOpen, setBulkOrganizationOpen] = useState(false);
+  const [bulkOrganizationMode, setBulkOrganizationMode] = useState<BulkOrganizationMode>("replace");
   const [bulkProjectId, setBulkProjectId] = useState<number | null>(null);
   const [bulkTagIds, setBulkTagIds] = useState<Set<number>>(new Set());
   const [bulkOrganizationSaving, setBulkOrganizationSaving] = useState(false);
@@ -414,6 +418,7 @@ export function Timeline({
       : null;
     setBulkProjectId(null);
     setBulkTagIds(new Set());
+    setBulkOrganizationMode("replace");
     setBulkOrganizationOpen(true);
     setEditError(null);
   };
@@ -488,14 +493,16 @@ export function Timeline({
     setBulkOrganizationSaving(true);
     setEditError(null);
     try {
-      const result = await setSessionsOrganization(
-        selected,
-        bulkProjectId,
-        [...bulkTagIds],
-      );
+      const result = bulkOrganizationMode === "replace"
+        ? await setSessionsOrganization(selected, bulkProjectId, [...bulkTagIds])
+        : await updateSessionsTags(selected, [...bulkTagIds], bulkOrganizationMode);
       closeBulkOrganization();
       completeMutation(
-        `Updated organization on ${result.affectedCount} sessions.`,
+        bulkOrganizationMode === "append"
+          ? `Added tags to ${result.affectedCount} sessions.`
+          : bulkOrganizationMode === "remove"
+            ? `Removed tags from ${result.affectedCount} sessions.`
+            : `Updated organization on ${result.affectedCount} sessions.`,
         result.undoToken,
       );
     } catch (reason) {
@@ -1323,22 +1330,42 @@ export function Timeline({
               <h2 id="bulk-organization-title">{t("Organize selected sessions")}</h2>
               <span>{t(`${selected.length} selected sessions`)}</span>
             </div>
-            <label>
-              {t("Project")}
-              <select
-                ref={bulkProjectInputRef}
-                value={bulkProjectId ?? ""}
-                disabled={bulkOrganizationSaving}
-                onChange={(event) => setBulkProjectId(
-                  event.currentTarget.value ? Number(event.currentTarget.value) : null,
-                )}
-              >
-                <option value="">{t("No project")}</option>
-                {organizationProjects.filter((project) => !project.archived).map((project) => (
-                  <option value={project.id} key={project.id}>{project.name}</option>
-                ))}
-              </select>
-            </label>
+            <fieldset className="session-organization bulk-tag-mode" disabled={bulkOrganizationSaving}>
+              <legend>{t("Apply mode")}</legend>
+              {([
+                ["replace", "Replace project and tags"],
+                ["append", "Add selected tags"],
+                ["remove", "Remove selected tags"],
+              ] as const).map(([mode, label]) => (
+                <label key={mode}>
+                  <input
+                    type="radio"
+                    name="bulk-organization-mode"
+                    checked={bulkOrganizationMode === mode}
+                    onChange={() => setBulkOrganizationMode(mode)}
+                  />
+                  <span>{t(label)}</span>
+                </label>
+              ))}
+            </fieldset>
+            {bulkOrganizationMode === "replace" && (
+              <label>
+                {t("Project")}
+                <select
+                  ref={bulkProjectInputRef}
+                  value={bulkProjectId ?? ""}
+                  disabled={bulkOrganizationSaving}
+                  onChange={(event) => setBulkProjectId(
+                    event.currentTarget.value ? Number(event.currentTarget.value) : null,
+                  )}
+                >
+                  <option value="">{t("No project")}</option>
+                  {organizationProjects.filter((project) => !project.archived).map((project) => (
+                    <option value={project.id} key={project.id}>{project.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <fieldset className="session-organization" disabled={bulkOrganizationSaving}>
               <legend>{t("Activity tags")}</legend>
               {organizationTags.every((tag) => tag.archived) ? (
@@ -1362,7 +1389,9 @@ export function Timeline({
               )}
             </fieldset>
             <p className="timeline-dialog-warning">
-              {t("This replaces the project and tags on every selected session. You can undo it afterward.")}
+              {t(bulkOrganizationMode === "replace"
+                ? "This replaces the project and tags on every selected session. You can undo it afterward."
+                : "Projects and other tags remain unchanged. You can undo this afterward.")}
             </p>
             {editError && <p className="timeline-dialog-warning error" role="alert">{t(editError)}</p>}
             <div className="timeline-dialog-actions">
@@ -1374,7 +1403,7 @@ export function Timeline({
               <button
                 className="primary"
                 type="button"
-                disabled={bulkOrganizationSaving}
+                disabled={bulkOrganizationSaving || (bulkOrganizationMode !== "replace" && bulkTagIds.size === 0)}
                 onClick={() => void saveBulkOrganization()}
               >{t(bulkOrganizationSaving ? "Saving…" : "Apply changes")}</button>
             </div>

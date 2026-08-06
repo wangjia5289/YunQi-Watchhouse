@@ -445,6 +445,45 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
         });
         return { affectedCount: sessionIds.length, undoToken: token };
       }
+      case "update_sessions_tags": {
+        const sessionIds = [...new Set(args.sessionIds as number[])];
+        if (sessionIds.length === 0) return { affectedCount: 0, undoToken: null };
+        const tagIds = [...new Set(args.tagIds as number[])];
+        if (tagIds.length === 0) return { affectedCount: 0, undoToken: null };
+        const mode = args.mode;
+        if (mode !== "append" && mode !== "remove") throw new Error("invalid tag update mode");
+        if (sessionIds.some((sessionId) => !timelineEntries.some((entry) => entry.sessionId === sessionId))) {
+          throw new Error("session was not found");
+        }
+        if (sessionIds.some((sessionId) => timelineEntries.find((entry) => entry.sessionId === sessionId)?.isOpen)) {
+          throw new Error("open sessions cannot be changed");
+        }
+        const tags = tagIds.map((tagId) => activityTags.find((item) => item.id === tagId));
+        if (tags.some((tag) => !tag)) throw new Error("activity tag was not found");
+        if (mode === "append" && tags.some((tag) => tag?.archived)) {
+          throw new Error("archived activity tags cannot be assigned");
+        }
+        const token = `organization-${Date.now()}-${nextOrganizationUndoId++}`;
+        undoOrganizations.set(token, new Map(sessionIds.map((sessionId) => [
+          sessionId,
+          sessionOrganizations.get(sessionId) ?? { project: null, tags: [] },
+        ])));
+        for (const sessionId of sessionIds) {
+          const organization = sessionOrganizations.get(sessionId) ?? { project: null, tags: [] };
+          const nextTags = mode === "append"
+            ? sortedTags([...organization.tags, ...(tags as (typeof activityTags)[number][])]
+              .filter((tag, index, list) => list.findIndex((item) => item.id === tag.id) === index))
+            : organization.tags.filter((tag) => !tagIds.includes(tag.id));
+          sessionOrganizations.set(sessionId, { ...organization, tags: nextTags });
+        }
+        undoHistory.push({
+          token,
+          createdAtMs: Date.now(),
+          sessionCount: sessionIds.length,
+          operationLabel: mode === "append" ? "Added activity tags" : "Removed activity tags",
+        });
+        return { affectedCount: sessionIds.length, undoToken: token };
+      }
       case "search_timeline_range": {
         const offset = Number(args.offset ?? 0);
         const limit = Number(args.limit ?? 200);

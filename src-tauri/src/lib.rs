@@ -1161,6 +1161,7 @@ pub fn run() {
             commands::projects::get_session_organization,
             commands::projects::set_session_organization,
             commands::projects::set_sessions_organization,
+            commands::projects::update_sessions_tags,
             commands::statistics::get_today_summary,
             commands::statistics::get_today_focus_summary,
             commands::statistics::get_timeline,
