@@ -6,6 +6,7 @@ import {
   getTimelinePage,
 } from "../../lib/ipc";
 import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
+import { appendTimelinePage } from "./timelinePageModel";
 
 interface TimelineState {
   entries: TimelineEntry[];
@@ -32,6 +33,8 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
     hasMore: false,
   });
   const requestRevision = useRef(0);
+  const paginationRequest = useRef<object | null>(null);
+  const nextOffset = useRef(0);
   const requestFilters = useMemo<TimelineFilters>(() => ({
     query: filters.query ?? null,
     state: filters.state ?? null,
@@ -56,10 +59,13 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
 
   const load = useCallback(async () => {
     const revision = ++requestRevision.current;
+    paginationRequest.current = null;
+    nextOffset.current = 0;
     setState((current) => ({ ...current, loading: true }));
     try {
       const page = await getTimelinePage(date, 0, 200, requestFilters);
       if (revision !== requestRevision.current) return;
+      nextOffset.current = page.offset + page.entries.length;
       setState({
         entries: page.entries,
         loading: false,
@@ -80,44 +86,64 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
   }, [date, requestFilters]);
 
   const loadMore = useCallback(async () => {
-    if (state.loading || !state.hasMore) return;
+    if (paginationRequest.current || state.loading || !state.hasMore) return;
     const revision = requestRevision.current;
+    const offset = nextOffset.current;
+    const request = {};
+    paginationRequest.current = request;
     setState((current) => ({ ...current, loading: true }));
     try {
-      const page = await getTimelinePage(date, state.entries.length, 200, requestFilters);
+      const page = await getTimelinePage(date, offset, 200, requestFilters);
       if (revision !== requestRevision.current) return;
-      setState((current) => ({
-        ...current,
-        entries: [...current.entries, ...page.entries],
-        loading: false,
-        error: null,
-        hasMore: page.hasMore,
-      }));
+      if (page.offset === offset) nextOffset.current = page.offset + page.entries.length;
+      setState((current) => {
+        const entries = appendTimelinePage(current.entries, page, offset);
+        return entries === null ? { ...current, loading: false } : {
+          ...current,
+          entries,
+          loading: false,
+          error: null,
+          hasMore: page.hasMore,
+        };
+      });
     } catch (error) {
       if (revision !== requestRevision.current) return;
       setState((current) => ({ ...current, loading: false, error: errorMessage(error) }));
+    } finally {
+      if (paginationRequest.current === request) paginationRequest.current = null;
     }
-  }, [date, requestFilters, state.entries.length, state.hasMore, state.loading]);
+  }, [date, requestFilters, state.hasMore, state.loading]);
 
   const loadAll = useCallback(async () => {
-    if (state.loading || !state.hasMore) return;
+    if (paginationRequest.current || state.loading || !state.hasMore) return;
     const revision = requestRevision.current;
+    const offset = nextOffset.current;
+    const request = {};
+    paginationRequest.current = request;
     setState((current) => ({ ...current, loading: true }));
     try {
-      const remaining = await getTimelinePage(date, state.entries.length, 1_000, requestFilters);
+      const remaining = await getTimelinePage(date, offset, 1_000, requestFilters);
       if (revision !== requestRevision.current) return;
-      setState((current) => ({
-        ...current,
-        entries: [...current.entries, ...remaining.entries],
-        loading: false,
-        error: null,
-        hasMore: remaining.hasMore,
-      }));
+      if (remaining.offset === offset) {
+        nextOffset.current = remaining.offset + remaining.entries.length;
+      }
+      setState((current) => {
+        const entries = appendTimelinePage(current.entries, remaining, offset);
+        return entries === null ? { ...current, loading: false } : {
+          ...current,
+          entries,
+          loading: false,
+          error: null,
+          hasMore: remaining.hasMore,
+        };
+      });
     } catch (error) {
       if (revision !== requestRevision.current) return;
       setState((current) => ({ ...current, loading: false, error: errorMessage(error) }));
+    } finally {
+      if (paginationRequest.current === request) paginationRequest.current = null;
     }
-  }, [date, requestFilters, state.entries.length, state.hasMore, state.loading]);
+  }, [date, requestFilters, state.hasMore, state.loading]);
 
   useEffect(() => {
     void load();

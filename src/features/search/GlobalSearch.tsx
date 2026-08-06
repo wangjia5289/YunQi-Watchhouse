@@ -24,6 +24,7 @@ import {
   inclusiveDayCount,
   rangeForPreset,
 } from "./searchModel";
+import { appendTimelinePage } from "../timeline/timelinePageModel";
 import "./GlobalSearch.css";
 
 const PAGE_SIZE = 200;
@@ -154,6 +155,8 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
     error: null,
   });
   const requestRevision = useRef(0);
+  const paginationRequest = useRef<object | null>(null);
+  const nextOffset = useRef(0);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setDebouncedQuery(query), 180);
@@ -206,6 +209,8 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
 
   const load = useCallback(async () => {
     const revision = ++requestRevision.current;
+    paginationRequest.current = null;
+    nextOffset.current = 0;
     if (!searchIsValid) {
       setState({
         entries: [],
@@ -228,6 +233,7 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
         filters,
       );
       if (revision !== requestRevision.current) return;
+      nextOffset.current = page.offset + page.entries.length;
       setState({
         entries: page.entries,
         totalCount: page.totalCount,
@@ -268,25 +274,32 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
   }, []);
 
   const loadMore = async () => {
-    if (state.loading || !state.hasMore || !searchIsValid) return;
+    if (paginationRequest.current || state.loading || !state.hasMore || !searchIsValid) return;
     const revision = requestRevision.current;
+    const offset = nextOffset.current;
+    const request = {};
+    paginationRequest.current = request;
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
       const page = await searchTimelineRange(
         startDate,
         endDate,
-        state.entries.length,
+        offset,
         PAGE_SIZE,
         filters,
       );
       if (revision !== requestRevision.current) return;
-      setState((current) => ({
-        ...current,
-        entries: [...current.entries, ...page.entries],
-        hasMore: page.hasMore,
-        loading: false,
-        error: null,
-      }));
+      if (page.offset === offset) nextOffset.current = page.offset + page.entries.length;
+      setState((current) => {
+        const entries = appendTimelinePage(current.entries, page, offset);
+        return entries === null ? { ...current, loading: false } : {
+          ...current,
+          entries,
+          hasMore: page.hasMore,
+          loading: false,
+          error: null,
+        };
+      });
     } catch (reason) {
       if (revision !== requestRevision.current) return;
       setState((current) => ({
@@ -294,6 +307,8 @@ export function GlobalSearch({ onOpenDate }: GlobalSearchProps) {
         loading: false,
         error: errorMessage(reason),
       }));
+    } finally {
+      if (paginationRequest.current === request) paginationRequest.current = null;
     }
   };
 

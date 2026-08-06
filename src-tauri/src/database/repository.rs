@@ -506,6 +506,12 @@ fn restore_session_organization_snapshots(
     Ok(())
 }
 
+fn random_undo_token(connection: &Connection) -> AppResult<String> {
+    connection
+        .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+        .map_err(Into::into)
+}
+
 fn session_ids_matching_snapshots(
     connection: &Connection,
     snapshots: &[ActivitySession],
@@ -2438,7 +2444,7 @@ impl ActivityRepository {
             })
             .collect::<Vec<_>>();
         restore_session_organization_snapshots(&transaction, &copied_organizations)?;
-        let token = format!("{}-{session_id}", now_millis());
+        let token = random_undo_token(&transaction)?;
         let snapshot = TimelineUndoSnapshot {
             sessions: vec![original],
             delete_session_ids: vec![session_id, new_id],
@@ -2511,7 +2517,7 @@ impl ActivityRepository {
         let snapshot = closed_session_snapshots(&transaction, &ids)?;
         let organizations = session_organization_snapshots(&transaction, &ids)?;
         let affected_count = operation(&transaction, &ids)?;
-        let token = format!("{}-{}", now_millis(), snapshot[0].id);
+        let token = random_undo_token(&transaction)?;
         transaction.execute(
             "DELETE FROM timeline_undo WHERE created_at_ms < ?1",
             [now_millis().saturating_sub(24 * 60 * 60 * 1_000)],

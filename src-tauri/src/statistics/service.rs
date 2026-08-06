@@ -539,89 +539,37 @@ impl StatisticsService {
         let records = self
             .repository
             .records_overlapping(range.start_ms, range.end_ms)?;
-        let mut usage: HashMap<String, (i64, HashSet<i64>)> = HashMap::new();
-
-        for record in records {
-            if record.session.state != ActivityState::Active {
-                continue;
-            }
-            let Some((start, end)) = clipped_bounds(&record, range) else {
-                continue;
-            };
-            let Some(application) = record.application else {
-                continue;
-            };
-            let category = record
-                .effective_category
-                .unwrap_or_else(|| application.category.clone());
-            let item = usage.entry(category).or_default();
-            item.0 += end - start;
-            item.1.insert(application.id);
-        }
-
-        let mut usage = usage
-            .into_iter()
-            .map(|(category, (duration_ms, applications))| CategoryUsage {
-                category,
-                duration_ms,
-                application_count: applications.len(),
-            })
-            .collect::<Vec<_>>();
-        usage.sort_by(|left, right| {
-            right
-                .duration_ms
-                .cmp(&left.duration_ms)
-                .then_with(|| left.category.cmp(&right.category))
-        });
-        Ok(usage)
+        Ok(category_usage_from_records(&records, range))
     }
 
     pub fn daily_usage(&self, range: TimeRange) -> AppResult<Vec<DailyUsage>> {
         let records = self
             .repository
             .records_overlapping(range.start_ms, range.end_ms)?;
-        let mut days: BTreeMap<NaiveDate, (i64, i64)> = BTreeMap::new();
-
-        for record in records {
-            let Some((mut cursor, end)) = clipped_bounds(&record, range) else {
-                continue;
-            };
-            while cursor < end {
-                let local = Local.timestamp_millis_opt(cursor).single().ok_or_else(|| {
-                    AppError::InvalidTimeRange("timestamp cannot be represented locally".to_owned())
-                })?;
-                let date = local.date_naive();
-                let next_date = date
-                    .succ_opt()
-                    .ok_or_else(|| AppError::InvalidTimeRange("local date overflow".to_owned()))?;
-                let next_midnight = local_day_range(next_date)?.start_ms;
-                let segment_end = end.min(next_midnight);
-                let totals = days.entry(date).or_default();
-                match record.session.state {
-                    ActivityState::Active => totals.0 += segment_end - cursor,
-                    ActivityState::Idle => totals.1 += segment_end - cursor,
-                }
-                cursor = segment_end;
-            }
-        }
-
-        Ok(days
-            .into_iter()
-            .map(
-                |(date, (active_duration_ms, idle_duration_ms))| DailyUsage {
-                    date: date.to_string(),
-                    active_duration_ms,
-                    idle_duration_ms,
-                },
-            )
-            .collect())
+        daily_usage_from_records(&records, range)
     }
 
     pub fn productivity_report(&self, range: TimeRange) -> AppResult<ProductivityReport> {
         let duration = range.end_ms - range.start_ms;
         let previous = TimeRange::new(range.start_ms.saturating_sub(duration), range.start_ms)?;
-        let timeline = self.timeline(range)?;
-        let previous_timeline = self.timeline(previous)?;
+        let records = self
+            .repository
+            .records_overlapping(previous.start_ms, range.end_ms)?;
+        let (previous_active_duration_ms, previous_idle_duration_ms) =
+            duration_totals_from_records(&records, previous);
+        let records = records
+            .into_iter()
+            .filter(|record| clipped_bounds(record, range).is_some())
+            .collect::<Vec<_>>();
+        let daily_usage = daily_usage_from_records(&records, range)?;
+        let category_usage = category_usage_from_records(&records, range);
+        let organizations = self.repository.session_organizations(
+            &records
+                .iter()
+                .map(|record| record.session.id)
+                .collect::<Vec<_>>(),
+        )?;
+        let timeline = timeline_entries(records, range, organizations);
         let mut hourly = [0_i64; 24];
         let mut active_duration_ms = 0;
         let mut idle_duration_ms = 0;
@@ -653,24 +601,13 @@ impl StatisticsService {
                 ActivityState::Idle => idle_duration_ms += entry.duration_ms,
             }
         }
-        let previous_active_duration_ms = previous_timeline
-            .iter()
-            .filter(|entry| entry.state == ActivityState::Active)
-            .map(|entry| entry.duration_ms)
-            .sum();
-        let previous_idle_duration_ms = previous_timeline
-            .iter()
-            .filter(|entry| entry.state == ActivityState::Idle)
-            .map(|entry| entry.duration_ms)
-            .sum();
-
         Ok(ProductivityReport {
             range,
             active_duration_ms,
             idle_duration_ms,
             previous_active_duration_ms,
             previous_idle_duration_ms,
-            daily_usage: self.daily_usage(range)?,
+            daily_usage,
             hourly_usage: hourly
                 .into_iter()
                 .enumerate()
@@ -679,7 +616,7 @@ impl StatisticsService {
                     active_duration_ms,
                 })
                 .collect(),
-            category_usage: self.category_usage(range)?,
+            category_usage,
             organization_insights: organization_insights(&timeline),
         })
     }
@@ -726,6 +663,98 @@ impl StatisticsService {
             })
             .collect())
     }
+}
+
+fn duration_totals_from_records(records: &[ActivityRecord], range: TimeRange) -> (i64, i64) {
+    records.iter().fold((0, 0), |mut totals, record| {
+        let Some((start, end)) = clipped_bounds(record, range) else {
+            return totals;
+        };
+        match record.session.state {
+            ActivityState::Active => totals.0 += end - start,
+            ActivityState::Idle => totals.1 += end - start,
+        }
+        totals
+    })
+}
+
+fn category_usage_from_records(records: &[ActivityRecord], range: TimeRange) -> Vec<CategoryUsage> {
+    let mut usage: HashMap<String, (i64, HashSet<i64>)> = HashMap::new();
+    for record in records {
+        if record.session.state != ActivityState::Active {
+            continue;
+        }
+        let Some((start, end)) = clipped_bounds(record, range) else {
+            continue;
+        };
+        let Some(application) = record.application.as_ref() else {
+            continue;
+        };
+        let category = record
+            .effective_category
+            .as_ref()
+            .unwrap_or(&application.category)
+            .clone();
+        let item = usage.entry(category).or_default();
+        item.0 += end - start;
+        item.1.insert(application.id);
+    }
+
+    let mut usage = usage
+        .into_iter()
+        .map(|(category, (duration_ms, applications))| CategoryUsage {
+            category,
+            duration_ms,
+            application_count: applications.len(),
+        })
+        .collect::<Vec<_>>();
+    usage.sort_by(|left, right| {
+        right
+            .duration_ms
+            .cmp(&left.duration_ms)
+            .then_with(|| left.category.cmp(&right.category))
+    });
+    usage
+}
+
+fn daily_usage_from_records(
+    records: &[ActivityRecord],
+    range: TimeRange,
+) -> AppResult<Vec<DailyUsage>> {
+    let mut days: BTreeMap<NaiveDate, (i64, i64)> = BTreeMap::new();
+    for record in records {
+        let Some((mut cursor, end)) = clipped_bounds(record, range) else {
+            continue;
+        };
+        while cursor < end {
+            let local = Local.timestamp_millis_opt(cursor).single().ok_or_else(|| {
+                AppError::InvalidTimeRange("timestamp cannot be represented locally".to_owned())
+            })?;
+            let date = local.date_naive();
+            let next_date = date
+                .succ_opt()
+                .ok_or_else(|| AppError::InvalidTimeRange("local date overflow".to_owned()))?;
+            let next_midnight = local_day_range(next_date)?.start_ms;
+            let segment_end = end.min(next_midnight);
+            let totals = days.entry(date).or_default();
+            match record.session.state {
+                ActivityState::Active => totals.0 += segment_end - cursor,
+                ActivityState::Idle => totals.1 += segment_end - cursor,
+            }
+            cursor = segment_end;
+        }
+    }
+
+    Ok(days
+        .into_iter()
+        .map(
+            |(date, (active_duration_ms, idle_duration_ms))| DailyUsage {
+                date: date.to_string(),
+                active_duration_ms,
+                idle_duration_ms,
+            },
+        )
+        .collect())
 }
 
 struct FocusBlockBuilder {
@@ -1331,6 +1360,30 @@ mod tests {
         assert_eq!(report.idle_duration_ms, 50);
         assert_eq!(report.previous_active_duration_ms, 50);
         assert_eq!(report.hourly_usage.len(), 24);
+        assert_eq!(
+            report
+                .daily_usage
+                .iter()
+                .map(|day| day.active_duration_ms)
+                .sum::<i64>(),
+            100
+        );
+        assert_eq!(
+            report
+                .daily_usage
+                .iter()
+                .map(|day| day.idle_duration_ms)
+                .sum::<i64>(),
+            50
+        );
+        assert_eq!(
+            report
+                .category_usage
+                .iter()
+                .map(|category| category.duration_ms)
+                .sum::<i64>(),
+            100
+        );
     }
 
     #[test]
