@@ -218,7 +218,9 @@ const report = (startMs: number, endMs: number) => ({
 });
 
 export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") {
-  const organizationFlow = new URLSearchParams(window.location.search).has("organization-flow");
+  const searchParams = new URLSearchParams(window.location.search);
+  const organizationFlow = searchParams.has("organization-flow");
+  const timelinePagination = searchParams.has("timeline-pagination");
   const timelineEntries = organizationFlow ? [{
     sessionId: 501,
     applicationId: 1,
@@ -234,7 +236,56 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
     endedAtMs: dayStart.getTime() + 10 * 3_600_000,
     durationMs: 3_600_000,
     isOpen: false,
-  }] : [];
+  }] : timelinePagination ? [
+    {
+      sessionId: 601,
+      applicationId: 2,
+      state: "IDLE",
+      applicationName: "Safari",
+      bundleIdentifier: "com.apple.Safari",
+      category: "Browsing",
+      windowTitle: null,
+      note: null,
+      project: null,
+      tags: [],
+      startedAtMs: dayStart.getTime() + 9 * 3_600_000,
+      endedAtMs: dayStart.getTime() + 9 * 3_600_000 + 600_000,
+      durationMs: 600_000,
+      isOpen: false,
+    },
+    {
+      sessionId: 602,
+      applicationId: 3,
+      state: "IDLE",
+      applicationName: "Mail",
+      bundleIdentifier: "com.apple.mail",
+      category: "Communication",
+      windowTitle: null,
+      note: null,
+      project: null,
+      tags: [],
+      startedAtMs: dayStart.getTime() + 10 * 3_600_000,
+      endedAtMs: dayStart.getTime() + 10 * 3_600_000 + 900_000,
+      durationMs: 900_000,
+      isOpen: false,
+    },
+    {
+      sessionId: 603,
+      applicationId: 4,
+      state: "IDLE",
+      applicationName: "Notes",
+      bundleIdentifier: "com.apple.Notes",
+      category: "Productivity",
+      windowTitle: null,
+      note: null,
+      project: null,
+      tags: [],
+      startedAtMs: dayStart.getTime() + 11 * 3_600_000,
+      endedAtMs: dayStart.getTime() + 11 * 3_600_000 + 1_200_000,
+      durationMs: 1_200_000,
+      isOpen: false,
+    },
+  ] : [];
   const undoOrganizations = new Map<string, Map<number, SessionOrganizationState>>();
   const undoHistory: Array<{
     token: string;
@@ -252,6 +303,7 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
   });
   const filteredTimelineEntries = (filters: Record<string, unknown> = {}) => (
     hydratedTimelineEntries().filter((entry) => {
+      if (filters.state != null && entry.state !== filters.state) return false;
       if (filters.projectId != null && entry.project?.id !== Number(filters.projectId)) return false;
       if (filters.tagId != null && !entry.tags.some((tag) => tag.id === Number(filters.tagId))) return false;
       if (filters.unassignedOnly && (entry.project || entry.tags.length > 0)) return false;
@@ -272,13 +324,21 @@ export function installBrowserMock(windowLabel: "main" | "tray-panel" = "main") 
       case "get_timeline": return hydratedTimelineEntries();
       case "get_timeline_page": {
         const filtered = filteredTimelineEntries((args.filters ?? {}) as Record<string, unknown>);
+        const offset = Number(args.offset ?? 0);
+        const requestedLimit = Number(args.limit ?? 200);
+        const limit = timelinePagination ? 1 : requestedLimit;
+        const entries = filtered.slice(offset, offset + limit);
         return {
-        entries: Number(args.offset ?? 0) === 0 ? filtered : [],
-        totalCount: filtered.length,
-        activeDurationMs: filtered.reduce((total, entry) => total + entry.durationMs, 0),
-        idleDurationMs: 0,
-        offset: Number(args.offset ?? 0),
-        hasMore: false,
+          entries,
+          totalCount: filtered.length,
+          activeDurationMs: filtered
+            .filter((entry) => entry.state === "ACTIVE")
+            .reduce((total, entry) => total + entry.durationMs, 0),
+          idleDurationMs: filtered
+            .filter((entry) => entry.state === "IDLE")
+            .reduce((total, entry) => total + entry.durationMs, 0),
+          offset,
+          hasMore: offset + entries.length < filtered.length,
         };
       }
       case "list_projects": return sortedOrganizationItems(

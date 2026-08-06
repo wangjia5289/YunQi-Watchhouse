@@ -277,6 +277,16 @@ export function Timeline({
     unassignedOnly,
   ]);
   useEffect(() => {
+    if (loading) return;
+    const availableIds = new Set(entries.map((entry) => entry.sessionId));
+    setSelectedIds((current) => {
+      const availableSelection = new Set(
+        [...current].filter((sessionId) => availableIds.has(sessionId)),
+      );
+      return availableSelection.size === current.size ? current : availableSelection;
+    });
+  }, [entries, loading]);
+  useEffect(() => {
     if (view === "overview" && hasMore && !loading) loadAll();
   }, [hasMore, loadAll, loading, view]);
   useEffect(() => {

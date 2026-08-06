@@ -47,7 +47,7 @@ export function WeeklyArchivePanel({
     try {
       await archiveWeeklyReport(input);
       await loadArchives();
-      setMessage(t("Weekly report archived locally."));
+      setMessage(t("Current weekly snapshot saved locally."));
     } catch (reason) {
       setMessage(t(errorMessage(reason)));
     } finally {

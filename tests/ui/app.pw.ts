@@ -22,8 +22,24 @@ test("opens reports and exposes weekly archive controls", async ({ page }) => {
   await expect(page.getByText("Client launch", { exact: true })).toBeVisible();
   await expect(page.getByText("Tags may overlap; durations do not add up.", { exact: true }))
     .toBeVisible();
-  await page.getByRole("button", { name: "Archive this week" }).click();
-  await expect(page.getByText("Weekly report archived locally.")).toBeVisible();
+  await page.getByRole("button", { name: "Save current snapshot", exact: true }).click();
+  await expect(page.getByText("Current weekly snapshot saved locally.")).toBeVisible();
+});
+
+test("selects every matching timeline session across pages", async ({ page }) => {
+  await page.goto("./?browser-mock&timeline-pagination");
+  await page.getByRole("button", { name: "Timeline", exact: true }).click();
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  await page.getByRole("combobox", { name: "State", exact: true }).selectOption("IDLE");
+
+  await page.getByRole("button", { name: "Select all matching", exact: true }).click();
+  await expect(page.getByText("3 selected", { exact: true })).toBeVisible();
+  const sessionSelections = page.getByRole("checkbox", { name: /Select .* session/ });
+  await expect(sessionSelections).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    await expect(sessionSelections.nth(index)).toBeChecked();
+  }
+  await expect(page.getByRole("button", { name: /Show more sessions/ })).toHaveCount(0);
 });
 
 test("loads each top-level page on demand", async ({ page }, testInfo) => {

@@ -8,6 +8,8 @@ import {
 import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
 import { appendTimelinePage } from "./timelinePageModel";
 
+const TIMELINE_PAGE_CHANGED_ERROR = "Timeline data changed while loading. Refresh and try again.";
+
 interface TimelineState {
   entries: TimelineEntry[];
   loading: boolean;
@@ -98,7 +100,11 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
       if (page.offset === offset) nextOffset.current = page.offset + page.entries.length;
       setState((current) => {
         const entries = appendTimelinePage(current.entries, page, offset);
-        return entries === null ? { ...current, loading: false } : {
+        return entries === null || (page.entries.length === 0 && page.hasMore) ? {
+          ...current,
+          loading: false,
+          error: TIMELINE_PAGE_CHANGED_ERROR,
+        } : {
           ...current,
           entries,
           loading: false,
@@ -130,7 +136,11 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
         if (revision !== requestRevision.current) return null;
         const merged = appendTimelinePage(entries, remaining, offset);
         if (merged === null || (remaining.entries.length === 0 && remaining.hasMore)) {
-          setState((current) => ({ ...current, loading: false }));
+          setState((current) => ({
+            ...current,
+            loading: false,
+            error: TIMELINE_PAGE_CHANGED_ERROR,
+          }));
           return null;
         }
         if (remaining.entries.length === 0) {

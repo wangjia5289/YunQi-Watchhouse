@@ -193,15 +193,14 @@ const zh: Record<string, string> = {
   "Automatic encrypted backup password removed.": "自动加密备份密码已移除。",
   "Automatic encrypted backup password is not configured.": "尚未配置自动加密备份密码。",
   "Disable automatic encrypted backups before removing its password.": "请先关闭自动加密备份，再移除密码。",
-  "Archive this week": "归档本周",
   "Save current snapshot": "保存当前快照",
   "Archiving…": "正在归档…",
-  "Save a private snapshot on this Mac and optionally send a local notification.":
-    "在这台 Mac 上保存私密快照，并可选择发送本地通知。",
   "Automatic weekly archives finalize current-week snapshots after the week ends.":
     "启用自动周报归档后，本周快照会在周结束后更新为完整周报。",
   "In progress": "进行中",
-  "Weekly report archived locally.": "周报已在本机归档。",
+  "Current weekly snapshot saved locally.": "当前周报快照已保存在本机。",
+  "Timeline data changed while loading. Refresh and try again.":
+    "时间线数据在加载时发生变化，请刷新后重试。",
   "Weekly report notification sent.": "周报通知已发送。",
   "notification permission has not been granted": "尚未获得通知权限。",
   "weekly report archive was not found": "未找到周报归档。",
