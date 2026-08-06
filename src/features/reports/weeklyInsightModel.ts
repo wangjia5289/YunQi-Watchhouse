@@ -22,6 +22,12 @@ export function shiftReportRangeByDays(
   return { startMs: start.getTime(), endMs: end.getTime() };
 }
 
+export function usageComparison(current: number, previous: number): string {
+  if (previous === 0) return current === 0 ? "No change" : "New activity";
+  const percent = Math.round(((current - previous) / previous) * 100);
+  return `${percent >= 0 ? "+" : ""}${percent}% vs previous`;
+}
+
 export function buildWeeklyInsights(
   report: ProductivityReport,
   focusHistory: FocusPlanHistorySummary | null,

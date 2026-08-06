@@ -11,7 +11,7 @@ import {
   sendWeeklyReportNotification,
 } from "../../lib/ipc";
 import { useLocale } from "../../lib/i18n";
-import { buildWeeklyArchiveInput } from "./weeklyArchiveModel";
+import { buildWeeklyArchiveInput, weeklyArchiveIsComplete } from "./weeklyArchiveModel";
 import "./WeeklyArchivePanel.css";
 
 export function WeeklyArchivePanel({
@@ -92,11 +92,11 @@ export function WeeklyArchivePanel({
           <h2 id="weekly-archive-title">{t("Weekly report archive")}</h2>
         </div>
         <button type="button" disabled={busy !== null} onClick={() => void saveArchive()}>
-          {t(busy === "save" ? "Archiving…" : "Archive this week")}
+          {t(busy === "save" ? "Archiving…" : "Save current snapshot")}
         </button>
       </div>
       <p className="weekly-archive-note">
-        {t("Save a private snapshot on this Mac and optionally send a local notification.")}
+        {t("Automatic weekly archives finalize current-week snapshots after the week ends.")}
       </p>
       {message && <p className="weekly-archive-message" role="status">{message}</p>}
       {archives.length ? (
@@ -111,7 +111,10 @@ export function WeeklyArchivePanel({
                   month: "short",
                   day: "numeric",
                 })}</strong>
-                <small>{formatDuration(archive.activeDurationMs, locale)} {t("active")}</small>
+                <small>
+                  {formatDuration(archive.activeDurationMs, locale)} {t("active")}
+                  {!weeklyArchiveIsComplete(archive) && ` · ${t("In progress")}`}
+                </small>
               </div>
               <span>{archive.leadingCategory ?? t("No category data")}</span>
               <span>{archive.focusCompletionRate === null ? "-" : `${archive.focusCompletionRate}%`} {t("focus completion")}</span>

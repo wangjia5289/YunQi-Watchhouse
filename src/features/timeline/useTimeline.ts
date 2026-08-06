@@ -21,7 +21,7 @@ interface TimelineState {
 export function useTimeline(date: string, filters: TimelineFilters = {}): TimelineState & {
   refresh: () => void;
   loadMore: () => void;
-  loadAll: () => void;
+  loadAll: () => Promise<TimelineEntry[] | null>;
 } {
   const [state, setState] = useState<TimelineState>({
     entries: [],
@@ -115,35 +115,49 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
   }, [date, requestFilters, state.hasMore, state.loading]);
 
   const loadAll = useCallback(async () => {
-    if (paginationRequest.current || state.loading || !state.hasMore) return;
+    if (paginationRequest.current || state.loading) return null;
+    if (!state.hasMore) return state.entries;
     const revision = requestRevision.current;
-    const offset = nextOffset.current;
     const request = {};
     paginationRequest.current = request;
     setState((current) => ({ ...current, loading: true }));
     try {
-      const remaining = await getTimelinePage(date, offset, 1_000, requestFilters);
-      if (revision !== requestRevision.current) return;
-      if (remaining.offset === offset) {
-        nextOffset.current = remaining.offset + remaining.entries.length;
+      let entries = state.entries;
+      let offset = nextOffset.current;
+      let hasMore: boolean = state.hasMore;
+      while (hasMore) {
+        const remaining = await getTimelinePage(date, offset, 1_000, requestFilters);
+        if (revision !== requestRevision.current) return null;
+        const merged = appendTimelinePage(entries, remaining, offset);
+        if (merged === null || (remaining.entries.length === 0 && remaining.hasMore)) {
+          setState((current) => ({ ...current, loading: false }));
+          return null;
+        }
+        if (remaining.entries.length === 0) {
+          hasMore = false;
+          break;
+        }
+        entries = merged;
+        offset = remaining.offset + remaining.entries.length;
+        hasMore = remaining.hasMore;
       }
-      setState((current) => {
-        const entries = appendTimelinePage(current.entries, remaining, offset);
-        return entries === null ? { ...current, loading: false } : {
-          ...current,
-          entries,
-          loading: false,
-          error: null,
-          hasMore: remaining.hasMore,
-        };
-      });
+      nextOffset.current = offset;
+      setState((current) => ({
+        ...current,
+        entries,
+        loading: false,
+        error: null,
+        hasMore,
+      }));
+      return entries;
     } catch (error) {
-      if (revision !== requestRevision.current) return;
+      if (revision !== requestRevision.current) return null;
       setState((current) => ({ ...current, loading: false, error: errorMessage(error) }));
+      return null;
     } finally {
       if (paginationRequest.current === request) paginationRequest.current = null;
     }
-  }, [date, requestFilters, state.hasMore, state.loading]);
+  }, [date, requestFilters, state.entries, state.hasMore, state.loading]);
 
   useEffect(() => {
     void load();
@@ -157,6 +171,6 @@ export function useTimeline(date: string, filters: TimelineFilters = {}): Timeli
     ...state,
     refresh: () => void load(),
     loadMore: () => void loadMore(),
-    loadAll: () => void loadAll(),
+    loadAll,
   };
 }

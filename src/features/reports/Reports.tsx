@@ -14,7 +14,7 @@ import { useLocale } from "../../lib/i18n";
 import { ACTIVITY_DATA_CHANGED } from "../../lib/events";
 import { WeeklyInsights } from "./WeeklyInsights";
 import { WeeklyArchivePanel } from "./WeeklyArchivePanel";
-import { shiftReportRangeByDays } from "./weeklyInsightModel";
+import { shiftReportRangeByDays, usageComparison } from "./weeklyInsightModel";
 import "./Reports.css";
 
 type ReportPeriod = "week" | "month" | "custom";
@@ -48,26 +48,23 @@ function reportRange(
   return { startMs: start.getTime(), endMs: end.getTime() + 1 };
 }
 
-function comparison(current: number, previous: number): string {
-  if (previous === 0) return current === 0 ? "No change" : "New activity";
-  const percent = Math.round(((current - previous) / previous) * 100);
-  return `${percent >= 0 ? "+" : ""}${percent}% vs previous`;
-}
-
 function OrganizationUsageList({
   items,
+  previousItems,
   totalDurationMs,
   locale,
   t,
   emptyCopy,
 }: {
   items: OrganizationUsage[];
+  previousItems?: OrganizationUsage[];
   totalDurationMs: number;
   locale: string;
   t: (value: string) => string;
   emptyCopy: string;
 }) {
   if (!items.length) return <p className="report-empty">{t(emptyCopy)}</p>;
+  const previousById = new Map(previousItems?.map((item) => [item.id, item.durationMs]));
   return (
     <div className="report-organization-list">
       {items.map((item) => (
@@ -82,6 +79,9 @@ function OrganizationUsageList({
           <span className="report-organization-value">
             <strong>{formatDuration(item.durationMs, locale)}</strong>
             <small>{t(`${item.sessionCount} sessions`)}</small>
+            {previousItems && (
+              <small>{t(usageComparison(item.durationMs, previousById.get(item.id) ?? 0))}</small>
+            )}
           </span>
         </div>
       ))}
@@ -232,12 +232,12 @@ export function Reports() {
         <article>
           <span>{t("Active time")}</span>
           <strong>{formatDuration(report?.activeDurationMs ?? 0, locale)}</strong>
-          <small>{t(comparison(report?.activeDurationMs ?? 0, report?.previousActiveDurationMs ?? 0))}</small>
+          <small>{t(usageComparison(report?.activeDurationMs ?? 0, report?.previousActiveDurationMs ?? 0))}</small>
         </article>
         <article>
           <span>{t("Idle time")}</span>
           <strong>{formatDuration(report?.idleDurationMs ?? 0, locale)}</strong>
-          <small>{t(comparison(report?.idleDurationMs ?? 0, report?.previousIdleDurationMs ?? 0))}</small>
+          <small>{t(usageComparison(report?.idleDurationMs ?? 0, report?.previousIdleDurationMs ?? 0))}</small>
         </article>
         <article>
           <span>{t("Daily average")}</span>
@@ -381,6 +381,7 @@ export function Reports() {
             </div>
             <OrganizationUsageList
               items={report?.organizationInsights.projectUsage ?? []}
+              previousItems={previousWeekReport?.organizationInsights.projectUsage}
               totalDurationMs={report?.activeDurationMs ?? 0}
               locale={locale}
               t={t}
@@ -390,7 +391,15 @@ export function Reports() {
               <div className="report-unassigned-activity">
                 <span>{t("Unassigned activity")}</span>
                 <strong>{formatDuration(report?.organizationInsights.unassignedActiveDurationMs ?? 0, locale)}</strong>
-                <small>{t(`${report?.organizationInsights.unassignedSessionCount ?? 0} sessions`)}</small>
+                <small>
+                  {t(`${report?.organizationInsights.unassignedSessionCount ?? 0} sessions`)}
+                  {previousWeekReport && (
+                    <> · {t(usageComparison(
+                      report?.organizationInsights.unassignedActiveDurationMs ?? 0,
+                      previousWeekReport.organizationInsights.unassignedActiveDurationMs,
+                    ))}</>
+                  )}
+                </small>
               </div>
             )}
           </div>
@@ -401,6 +410,7 @@ export function Reports() {
             </div>
             <OrganizationUsageList
               items={report?.organizationInsights.tagUsage ?? []}
+              previousItems={previousWeekReport?.organizationInsights.tagUsage}
               totalDurationMs={report?.activeDurationMs ?? 0}
               locale={locale}
               t={t}

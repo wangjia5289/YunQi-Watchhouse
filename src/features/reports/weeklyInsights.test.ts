@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { FocusPlanHistorySummary, ProductivityReport } from "../../lib/ipc";
-import { buildWeeklyInsights, shiftReportRangeByDays } from "./weeklyInsightModel";
+import {
+  buildWeeklyInsights,
+  shiftReportRangeByDays,
+  usageComparison,
+} from "./weeklyInsightModel";
 
 const report: ProductivityReport = {
   range: { startMs: 0, endMs: 1 },
@@ -39,6 +43,12 @@ const focusHistory: FocusPlanHistorySummary = {
 };
 
 describe("buildWeeklyInsights", () => {
+  it("formats comparable usage changes", () => {
+    expect(usageComparison(0, 0)).toBe("No change");
+    expect(usageComparison(10, 0)).toBe("New activity");
+    expect(usageComparison(75, 100)).toBe("-25% vs previous");
+  });
+
   it("finds weekly peaks and progress", () => {
     expect(buildWeeklyInsights(report, focusHistory)).toEqual({
       activityTrend: "up",

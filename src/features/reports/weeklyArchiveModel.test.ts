@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { buildWeeklyArchiveInput } from "./weeklyArchiveModel";
+import { buildWeeklyArchiveInput, weeklyArchiveIsComplete } from "./weeklyArchiveModel";
 
 describe("buildWeeklyArchiveInput", () => {
+  it("distinguishes in-progress snapshots from completed weeks", () => {
+    expect(weeklyArchiveIsComplete({
+      weekEndDate: "2026-08-02",
+      generatedAtMs: new Date(2026, 7, 2, 18).getTime(),
+    })).toBe(false);
+    expect(weeklyArchiveIsComplete({
+      weekEndDate: "2026-08-02",
+      generatedAtMs: new Date(2026, 7, 3, 0).getTime(),
+    })).toBe(true);
+  });
+
   it("creates a stable seven-date archive snapshot", () => {
     const input = buildWeeklyArchiveInput({
       range: {

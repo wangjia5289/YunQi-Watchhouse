@@ -3,8 +3,16 @@ import {
   ProductivityReport,
   WeeklyReportArchiveInput,
 } from "../../lib/ipc";
-import { localIsoDate, shiftLocalDate } from "../../lib/format";
+import { dateFromLocalIso, localIsoDate, shiftLocalDate } from "../../lib/format";
 import { buildWeeklyInsights } from "./weeklyInsightModel";
+
+export function weeklyArchiveIsComplete(
+  archive: { weekEndDate: string; generatedAtMs: number },
+): boolean {
+  const completedAt = dateFromLocalIso(shiftLocalDate(archive.weekEndDate, 1));
+  completedAt.setHours(0, 0, 0, 0);
+  return archive.generatedAtMs >= completedAt.getTime();
+}
 
 export function buildWeeklyArchiveInput(
   report: ProductivityReport,

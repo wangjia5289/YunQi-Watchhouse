@@ -205,6 +205,7 @@ export function Timeline({
   const [bulkProjectId, setBulkProjectId] = useState<number | null>(null);
   const [bulkTagIds, setBulkTagIds] = useState<Set<number>>(new Set());
   const [bulkOrganizationSaving, setBulkOrganizationSaving] = useState(false);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [dialogValue, setDialogValue] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [importContents, setImportContents] = useState("");
@@ -331,6 +332,23 @@ export function Timeline({
     };
   }, [bulkOrganizationOpen]);
   const selected = [...selectedIds];
+
+  const selectAllMatching = async () => {
+    if (loading || selectingAll) return;
+    setSelectingAll(true);
+    try {
+      const matchingEntries = await loadAll();
+      if (matchingEntries) {
+        setSelectedIds(new Set(
+          matchingEntries
+            .filter((entry) => !entry.isOpen)
+            .map((entry) => entry.sessionId),
+        ));
+      }
+    } finally {
+      setSelectingAll(false);
+    }
+  };
 
   const completeMutation = (message: string, token?: string | null) => {
     setSelectedIds(new Set());
@@ -934,6 +952,13 @@ export function Timeline({
             />
             {t(selected.length ? `${selected.length} selected` : "Select sessions")}
           </label>
+          {hasMore && (
+            <button
+              type="button"
+              disabled={loading || selectingAll}
+              onClick={() => void selectAllMatching()}
+            >{t(selectingAll ? "Selecting all…" : "Select all matching")}</button>
+          )}
           {selected.length > 0 && (
             <div>
               <button type="button" disabled={selected.length < 2} onClick={() => void runOperation(async () => {

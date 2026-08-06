@@ -61,6 +61,8 @@ const zh: Record<string, string> = {
     "Watchhouse 当天没有记录到电脑活动。",
   "No active application in this hour.": "这一小时没有活跃应用。",
   "Select sessions": "选择会话",
+  "Select all matching": "选择全部匹配会话",
+  "Selecting all…": "正在选择全部…",
   Merge: "合并",
   Note: "备注",
   Category: "分类",
@@ -192,9 +194,13 @@ const zh: Record<string, string> = {
   "Automatic encrypted backup password is not configured.": "尚未配置自动加密备份密码。",
   "Disable automatic encrypted backups before removing its password.": "请先关闭自动加密备份，再移除密码。",
   "Archive this week": "归档本周",
+  "Save current snapshot": "保存当前快照",
   "Archiving…": "正在归档…",
   "Save a private snapshot on this Mac and optionally send a local notification.":
     "在这台 Mac 上保存私密快照，并可选择发送本地通知。",
+  "Automatic weekly archives finalize current-week snapshots after the week ends.":
+    "启用自动周报归档后，本周快照会在周结束后更新为完整周报。",
+  "In progress": "进行中",
   "Weekly report archived locally.": "周报已在本机归档。",
   "Weekly report notification sent.": "周报通知已发送。",
   "notification permission has not been granted": "尚未获得通知权限。",
